@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Runs the LLM calibration benchmark from the command line.
-Usage:
-    - exemplary: run_benchmark --model gpt2 --results-dir './results/test/' --data-dir '../llm_fairness/folktexts/data' --task ACSIncome --subsampling 0.01 --variation "format=bullet,connector=is" --logger-level ERROR
+Exemplary Usage:
+    run_benchmark --model gpt2 --results-dir './results/test/' --data-dir '../llm_fairness/folktexts/data' --task ACSIncome --subsampling 0.01 --variation "format=bullet,connector=is" --logger-level ERROR
 """
 import json
 import logging
@@ -131,6 +131,15 @@ def setup_arg_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
+        "--threshold-obj",
+        type=str,
+        help="[str] The objective to use for fitting the threshold",
+        choices=["accuracy", "balanced_accuracy"],
+        required=False,
+        default="balanced_accuracy",
+    )
+
+    parser.add_argument(
         "--variation",
         help="[dict] Dictionary specifying variations of data point serialization.",
         nargs="*",
@@ -222,7 +231,10 @@ def main():
     logging.info(f"Saving results to {results_dir.as_posix()}")
 
     # Run benchmark
-    bench.run(results_root_dir=results_dir, fit_threshold=args.fit_threshold)
+    bench.run(results_root_dir=results_dir,
+              fit_threshold=args.fit_threshold,
+              threshold_obj=args.threshold_obj,
+              )
     bench.save_results()
 
     # Save results

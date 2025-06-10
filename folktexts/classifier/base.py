@@ -184,7 +184,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         """Converts positive class scores to multiclass scores."""
         return np.column_stack([1 - pos_class_scores, pos_class_scores])
 
-    def fit(self, X, y, *, false_pos_cost=1.0, false_neg_cost=1.0, **kwargs):
+    def fit(self, X, y, *, false_pos_cost=1.0, false_neg_cost=1.0, threshold_obj='balanced_accuracy', **kwargs):
         """Uses the provided data sample to fit the prediction threshold."""
 
         # Compute risk estimates for the data
@@ -197,6 +197,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
             y, y_pred_scores,
             false_pos_cost=false_pos_cost,
             false_neg_cost=false_neg_cost,
+            maximize=threshold_obj
         )
 
         # Update sklearn is_fitted status

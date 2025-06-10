@@ -256,7 +256,10 @@ class Benchmark:
         assert data_split in ("train", "val", "test")
         return self.results_dir / f"{self.dataset.name}.{data_split}_predictions.csv"
 
-    def run(self, results_root_dir: str | Path, fit_threshold: int | bool = 0) -> float:
+    def run(self, results_root_dir: str | Path,
+            fit_threshold: int | bool = 0,
+            threshold_obj: str = 'balanced_accuracy'
+            ) -> float:
         """Run the calibration benchmark experiment.
 
         Parameters
@@ -314,33 +317,38 @@ class Benchmark:
             self.llm_clf.fit(X_train,
                              y_train,
                              predictions_save_path=self._get_predictions_save_path("train"),
-                             labels=y_train)
+                             labels=y_train,
+                             threshold_obj=threshold_obj)
 
         # Evaluate test risk scores
         count_nan = np.isnan(self._y_test_scores).sum()
         if count_nan > 0:
             logging.warning(f'Predicted scores contain NaN values, dropping {count_nan} indices.')
             # Get indices of NaNs
-            nan_indices = np.where(np.isnan(self._y_test_scores))[0]   
-            nan_mask = ~np.isnan(self._y_test_scores)  
+            nan_indices = np.where(np.isnan(self._y_test_scores))[0]
+            nan_mask = ~np.isnan(self._y_test_scores)
             logging.info(f'Indices with NaN values: {nan_indices}')
-            logging.info(f'New shapes: {y_test.to_numpy().shape} -> {y_test.to_numpy()[nan_mask].shape} {self._y_test_scores.shape,} -> {self._y_test_scores[nan_mask].shape}, {s_test.to_numpy().shape} -> {s_test.to_numpy()[nan_mask].shape}')
+            logging.info("New shapes:"
+                         f"y_test: {y_test.to_numpy().shape} -> {y_test.to_numpy()[nan_mask].shape},"
+                         f"y_test_scores: {self._y_test_scores.shape} -> {self._y_test_scores[nan_mask].shape},"
+                         f"s_test: {s_test.to_numpy().shape} -> {s_test.to_numpy()[nan_mask].shape}"
+                         )
             self._results = evaluate_predictions(
                 y_true=y_test.to_numpy()[nan_mask],
                 y_pred_scores=self._y_test_scores[nan_mask],
-                sensitive_attribute=s_test.to_numpy()[nan_mask], #.drop(index=nan_indices, axis=0),
+                sensitive_attribute=s_test.to_numpy()[nan_mask],  # .drop(index=nan_indices, axis=0),
                 threshold=self.llm_clf.threshold,
                 model_name=self.llm_clf.model_name,
-        )
+            )
 
-        else: 
+        else:
             self._results = evaluate_predictions(
                 y_true=y_test.to_numpy(),
                 y_pred_scores=self._y_test_scores,
                 sensitive_attribute=s_test,
                 threshold=self.llm_clf.threshold,
                 model_name=self.llm_clf.model_name,
-        )
+            )
 
         self._results["threshold_fitted_on"] = self.llm_clf._threshold_fitted_on
 

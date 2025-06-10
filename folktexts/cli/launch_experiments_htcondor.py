@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Launch htcondor jobs for all benchmark experiments.
 Usage:
-    - exemplary: python -m folktexts.cli.launch_experiments_htcondor --executable-path ./folktexts/cli/run_acs_benchmark.py --results-dir './results/test/' --task ACSIncome --model openai-community/gpt2 --subsampling=0.01 style='format=bullet,connector=is'
-    - exemplary: python -m folktexts.cli.launch_experiments_htcondor --executable-path ./folktexts/cli/run_tableshift_benchmark.py --results-dir './results/test/' --task BRFSS_Diabetes --model openai-community/gpt2 --subsampling=0.01 style='format=bullet,connector=is'
+    - ACS: python -m folktexts.cli.launch_experiments_htcondor --executable-path ./folktexts/cli/run_benchmark.py --results-dir './results/test/' --logger-level=INFO --task ACSIncome --model openai-community/gpt2 --subsampling=0.01  --variation="format=bullet;connector=is"
+    - TableShift: python -m folktexts.cli.launch_experiments_htcondor --executable-path ./folktexts/cli/run_benchmark.py --results-dir './results/test/' --logger-level=INFO --task BRFSS_Diabetes --model openai-community/gpt2 --subsampling=0.01  --variation="format=bullet;connector=is"
+    - web-API: python -m folktexts.cli.launch_experiments_htcondor --executable-path ./folktexts/cli/run_benchmark.py --results-dir '/fast/mgorecki/monoculture/results/folktexts/0-bullet-is/' --logger-level=INFO --task=ACSIncome --variation="format=bullet;connector=is" --model=gpt-4.1  --use-web-api-model --environment="AZURE_API_BASE=$AZURE_API_BASE;AZURE_API_KEY=$AZURE_API_KEY"
+    - few-shot: python -m folktexts.cli.launch_experiments_htcondor --executable-path ./folktexts/cli/run_benchmark.py --results-dir '/fast/mgorecki/monoculture/results/folktexts/10-variations/' --logger-level=INFO --models-dir /fast/mgorecki/models/ --task=ACSIncome --fit-threshold=2000 --variation="format=comma;connector=:;granularity=original;order=RAC1P,SEX,WKHP,RELP,POBP,OCCP,MAR,SCHL,COW,AGEP" --subsampling=0.01 --model openai-community/gpt2 --reuse-few-shot-examples=True --few-shot=10 --balance-few-shot-examples=True
 """
 import argparse
 import math

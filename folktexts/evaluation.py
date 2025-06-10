@@ -226,7 +226,7 @@ def compute_best_threshold(
     best_threshold : float
         The threshold value that maximizes accuracy for the given predictions.
     """
-    assert maximize in ['balanced_accuracy','accuracy'], "Provide one of ['balanced_accuracy','accuracy']."
+    assert maximize in ['balanced_accuracy', 'accuracy'], "Provide one of ['balanced_accuracy','accuracy']."
 
     # Compute TPR and FPR for all possible thresholds
     fpr, tpr, thresholds = roc_curve(y_true, y_pred_scores)
