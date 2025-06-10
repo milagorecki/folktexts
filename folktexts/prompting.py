@@ -8,7 +8,7 @@ e.g.,
 from __future__ import annotations
 
 import logging
-from functools import partial
+# from functools import partial
 
 from copy import deepcopy
 import inspect
@@ -22,8 +22,16 @@ from .task import TaskMetadata
 
 from folktexts.acs.acs_columns_alt import simplified_value_maps
 from folktexts.acs._utils import reset_cache
-from folktexts.acs import ACSTaskMetadata, ACS_TASK_DESCRIPTION, ACS_TASK_DESCRIPTION_DEFAULTS
-from folktexts.ts import TableshiftBRFSSTaskMetadata, TABLESHIFT_TASK_DESCRIPTION, TABLESHIFT_TASK_DESCRIPTION_DEFAULTS
+from folktexts.acs import (
+    ACSTaskMetadata,
+    ACS_TASK_DESCRIPTION,
+    ACS_TASK_DESCRIPTION_DEFAULTS,
+)
+from folktexts.ts import (
+    TableshiftBRFSSTaskMetadata,
+    TABLESHIFT_TASK_DESCRIPTION,
+    TABLESHIFT_TASK_DESCRIPTION_DEFAULTS,
+)
 
 
 SYSTEM_PROMPT = """\
@@ -51,85 +59,105 @@ _valid_keys_cache = {}
 
 
 class PromptVariation:
-    def __init__(self, description: str, task: ACSTaskMetadata | TableshiftBRFSSTaskMetadata):
+    def __init__(
+        self, description: str, task: ACSTaskMetadata | TableshiftBRFSSTaskMetadata
+    ):
         assert isinstance(task, ACSTaskMetadata) or isinstance(
             task, TableshiftBRFSSTaskMetadata
         ), "Provide task object."
         self.description = description
         self.task = deepcopy(task)
+        self.cache = {}
 
-    def __call__(self, row: pd.Series, **kwds):
-        raise NotImplementedError
+        # define how to apply the transformation (on each cell of a cell or row-wise)
+        if hasattr(self, 'transform_row'):
+            self._apply = self.transform_row
+        elif hasattr(self, 'transform_feature'):
+            self._apply = self._loop_over_features
+        else:
+            raise NotImplementedError("Subclass must define 'transform_row' or 'transform_feature'.")
+
+    def __call__(self, row: pd.Series, **kwds) -> pd.Series:
+        return self._apply(row, **kwds)
+
+    def _loop_over_features(self, row: pd.Series, **kwds) -> pd.Series:
+        # apply variation to every feature in the given row
+        for col in row.index:
+            if col in self.task.features:
+                row[col] = self.transform_feature(col, row[col], **kwds)
         return row
+
+    # def transform_feature(self, col, val):
+    #     pass
+
+    # def tranform_row():
+    #     pass
 
 
 class VaryFormat(PromptVariation):
     def __init__(self, task, format: str = "bullet"):
-        description = "Vary the format of the prompt, by default 'bullet' is used."
+        description = "Vary prompt format, default is 'bullet'."
         super().__init__(description, task)
-        assert format in [
+        assert format in {
             "bullet",
             "comma",
             "text",
             "textbullet",
-        ], "Currently only 'bullet', 'comma', 'text', 'textbullet' implemented."
+        }, "Currently only 'bullet', 'comma', 'text', 'textbullet' implemented."
         self.format = format
         logging.warning(
             "VaryFormat should be applied after the value mapping and adding the connector."
         )
 
-    def __call__(self, row: pd.Series, **kwds) -> pd.Series:
-        for col, val in row.items():
-            if col in self.task.features:
-                if self.format == "bullet":
-                    row[col] = f"- {val}\n"
-                elif self.format == "comma":
-                    row[col] = f"{val}, "
-                elif self.format == "text":
-                    row[col] = f"The {val}. "
-                elif self.format == "textbullet":
-                    row[col] = f"- The {val}.\n"
-        return row
+    def transform_feature(self, col, val, **kwds):
+        formats = {
+            "bullet": lambda val: f"- {val}\n",
+            "comma": lambda val: f"{val}, ",
+            "text": lambda val: f"The {val}. ",
+            "textbullet": lambda val: f"- The {val}.\n",
+        }
+        return formats[self.format](val)
 
 
 class VaryConnector(PromptVariation):
     def __init__(self, task, connector: str = "is"):
-        description = "Vary the connector word or symbol used between feature name and value, by default 'is' is used."
+        description = "Vary symbol used between feature name and value, default is 'is'."
         super().__init__(description, task)
-        if connector == ':':
+        if connector == ":":
             self.connector = f"{connector} "
         else:
             self.connector = f" {connector} "
-        logging.warning("VaryConnector should be applied after value mapping has already been applied.")
+        logging.warning(
+            "VaryConnector should be applied after value mapping has already been applied."
+        )
 
-    def __call__(self, row: pd.Series, **kwds) -> pd.Series:
-        for col, val in row.items():
-            if col in self.task.features:
-                row[col] = (
-                    f"{self.task.cols_to_text[col].short_description}{self.connector}{val}"
-                )
-        return row
+    def transform_feature(self, col, val, **kwds):
+        return f"{self.task.cols_to_text[col].short_description}{self.connector}{val}"
 
 
 class VaryValueMap(PromptVariation):
     def __init__(self, task, granularity="original"):
-        description = "Vary the granulariy of the feature map, default: original (higher granularity) value map."
+        description = "Vary the granulariy of the feature map, default is original (higher granularity)."
         super().__init__(description, task)
         assert granularity in ["original", "low"]
         self.granularity = granularity
-        if self.granularity == 'low':
+        self.reduced_granularity = False
+
+    def transform_row(self, row: pd.Series, **kwds) -> pd.Series:
+        if self.granularity == "low" and not self.reduced_granularity:
+            logging.debug('Set col_to_text to lower granularity.')
             # empty cache of previously parsed pums codes to overwrite with new postprocessing for value map
             reset_cache()
-
-    def __call__(self, row: pd.Series, **kwds) -> pd.Series:
-        for col, val in row.items():
-            if col in self.task.features:
-                # overwrite value map if wanted
-                if self.granularity == "low" and col in simplified_value_maps.keys():
+            for col in self.task.features:
+                if col in simplified_value_maps:
                     self.task.cols_to_text[col]._value_map = simplified_value_maps[col]
-                # apply value map
-                row[col] = self.task.cols_to_text[col][val]
-        return row
+            self.reduced_granularity = True
+        return self._loop_over_features(row, **kwds)
+
+    def transform_feature(self, col, val, **kwds) -> pd.Series:
+        # apply value map
+        # TODO: can fail if val not in map, use get?
+        return self.task.cols_to_text[col][val]
 
 
 class VaryFeatureOrder(PromptVariation):
@@ -138,21 +166,25 @@ class VaryFeatureOrder(PromptVariation):
         super().__init__(description, task)
         if order:
             if isinstance(order, str):
-                order = list(order.split(','))
+                order = list(order.split(","))
             else:
-                assert isinstance(order, list), "Expected order provided as list"  # mutable
-            assert set(order) == set(self.task.features), 'Provide a complete ordering of all features'
+                assert isinstance(
+                    order, list
+                ), "Expected order provided as list"  # mutable
+            assert set(order) == set(
+                self.task.features
+            ), "Provide a complete ordering of all features"
         self.order = order
 
-    def __call__(self, row: pd.Series, **kwds):
+    def transform_row(self, row: pd.Series, **kwds):
         if not self.order:
             return row
         feature_set = set(self.task.features)  # for fast lookup
-        # Build a mapping from original position → whether to use reordered feature or keep original
+        # create iterator
         reordered_iter = iter(self.order)
+        # reorder only feature-columns
         order_all = [
-            next(reordered_iter) if col in feature_set else col
-            for col in row.index
+            next(reordered_iter) if col in feature_set else col for col in row.index
         ]
         return row[order_all]
 
@@ -164,17 +196,17 @@ class VaryPrefix(PromptVariation):
         task: TaskMetadata,
         add_task_description: bool = True,
         custom_prompt_prefix: str = None,
-        task_description: str = None
+        task_description: str = None,
     ):
         description = "Vary the prefix printed before the prompt, by default the task description is printed."
         super().__init__(description, task)
         if add_task_description:
-            assert task_description is not None, 'Provide a task description to add.'
+            assert task_description is not None, "Provide a task description to add."
         self.task_description = task_description
         self.add_task_description = add_task_description
         self.custom_prefix = custom_prompt_prefix
 
-    def __call__(
+    def transform_row(
         self,
         row: pd.Series,
         **kwds,
@@ -196,7 +228,7 @@ class VaryPrefix(PromptVariation):
         else:
             row = pd.Series(
                 {
-                    '_PREFIX': "Information:\n",
+                    "_PREFIX": "Information:\n",
                     **{index: val for index, val in row.items()},
                 }
             )
@@ -212,7 +244,7 @@ class VarySuffix(PromptVariation):
         self.question = question if question else task.question
         self.custom_suffix = custom_prompt_suffix
 
-    def __call__(
+    def transform_row(
         self,
         row,
         **kwds,
@@ -229,16 +261,125 @@ class VarySuffix(PromptVariation):
 def get_valid_keys(cls):
     if cls not in _valid_keys_cache:
         params = inspect.signature(cls.__init__).parameters
-        _valid_keys_cache[cls] = set(params) - {'self', 'args', 'kwargs'}
+        _valid_keys_cache[cls] = set(params) - {"self", "args", "kwargs"}
     return _valid_keys_cache[cls]
 
 
-_building_blocks_cache = []
+_building_blocks_cache = {}
+_last_cache_config = {}  # store the params used for the cache
+
+
+def build_config_dict(
+    task: TaskMetadata,
+    question: QAInterface,
+    add_task_description: bool,
+    custom_prompt_prefix: str,
+    custom_prompt_suffix: str,
+    prompt_variation: dict | None,
+):
+    return {
+        "task_name": task.name,
+        "add_task_description": add_task_description,
+        "custom_prompt_prefix": custom_prompt_prefix,
+        "custom_prompt_suffix": custom_prompt_suffix,
+        "prompt_variation": prompt_variation,
+        "question": question,
+    }
+
+
+CONFIG_KEYS = ['task_name', 'add_task_description', 'custom_prompt_prefix',
+               'custom_prompt_suffix', 'prompt_variation', 'question']
+BLOCK_MAPPING = {
+    'task_name': ['prefix'],
+    'add_task_description': ['prefix'],
+    'custom_prompt_prefix': ['prefix'],
+    'custom_prompt_suffix': ['suffix'],
+    'question': ['suffix'],
+    'prompt_variation': ['prefix', 'suffix', 'order', 'granularity', 'connector', 'format'],
+    # map indivdiual prompt variations
+    'task_description': ['prefix'],
+    'granularity': ['granularity'],
+    'connector': ['connector'],
+    'format': ['format'],
+    'order': ['order']
+}
 
 
 def reset_building_block_cache():
     global _building_blocks_cache
     _building_blocks_cache.clear()
+
+
+def update_building_blocks_if_needed(current_config, task):
+    global _building_blocks_cache, _last_cache_config
+
+    if len(_last_cache_config) == 0 or len(_building_blocks_cache) == 0:  # nothing cached yet
+        changed_keys = CONFIG_KEYS
+    else:
+        changed_keys = []
+        last_config = _last_cache_config or {}
+        for key, value in current_config.items():
+            logging.debug(f'key: {key}')
+            if key == 'prompt_variation':  # is itself a dict
+                all_varkeys = set(value.keys()).union(last_config.get(key, {}).keys())
+                for varkey in all_varkeys:
+                    logging.debug(f"curr: {value.get(varkey)}\n last: {last_config.get(key, {}).get(varkey)}")
+
+                    if value.get(varkey) != last_config.get(key, {}).get(varkey):
+                        changed_keys.append(varkey)
+            else:
+                if value != last_config.get(key):
+                    changed_keys.append(key)
+    logging.debug(f'Changed keys: {changed_keys}')
+
+    affected_blocks = set()
+    for key in changed_keys:
+        affected_blocks.update(BLOCK_MAPPING.get(key, []))
+
+    def _configure_variation(cls, default_kwargs):
+        valid_keys = get_valid_keys(cls)
+        # merge and overwrite defaults with variations
+        merged = {**default_kwargs, **(current_config.get('prompt_variation', {}))}
+        # filter out keys not in class __init__
+        filtered_kwargs = {k: v for k, v in merged.items() if k in valid_keys}
+        return cls(task=task, **filtered_kwargs)
+
+    if len(affected_blocks) > 0:
+        logging.info(f'Updating config for block: {affected_blocks}')
+        if 'prefix' in affected_blocks:
+            _building_blocks_cache['prefix'] = _configure_variation(
+                    VaryPrefix,
+                    {
+                        "add_task_description": current_config['add_task_description'],
+                        "custom_prompt_prefix": current_config['custom_prompt_prefix'],
+                        "task_description": (
+                            ACS_TASK_DESCRIPTION.substitute(ACS_TASK_DESCRIPTION_DEFAULTS)
+                            if task.name.startswith("ACS")
+                            else TABLESHIFT_TASK_DESCRIPTION.substitute(
+                                TABLESHIFT_TASK_DESCRIPTION_DEFAULTS
+                            )
+                        ),
+                    },
+                )
+        if 'suffix' in affected_blocks:
+            _building_blocks_cache['suffix'] = _configure_variation(
+                    VarySuffix,
+                    {
+                        "question": current_config['question'],
+                        "custom_prompt_suffix": current_config['custom_prompt_suffix'],
+                    },
+                )
+        if 'order' in affected_blocks:
+            _building_blocks_cache['prder'] = _configure_variation(VaryFeatureOrder, {"order": None})
+        # order of value map (granularity), connector and format should not be changed
+        if 'granularity' in affected_blocks:
+            _building_blocks_cache['granularity'] = _configure_variation(VaryValueMap, {"granularity": "original"})
+        if 'connector' in affected_blocks:
+            _building_blocks_cache['connector'] = _configure_variation(VaryConnector, {"connector": "is"})
+        if 'format' in affected_blocks:
+            _building_blocks_cache['format'] = _configure_variation(VaryFormat, {"format": "textbullet"})
+
+        _last_cache_config = current_config
 
 
 def encode_row_prompt(
@@ -251,56 +392,23 @@ def encode_row_prompt(
     prompt_variation: dict | None = None,
 ) -> str:
     """Encode a question regarding a given row."""
-    global _building_blocks_cache
+    global _building_blocks_cache, _last_cache_config
+
     # ensure only feature defined for the task are used
     row = row[task.features]
-    # Get the question to ask
     question = question or task.question
 
-    def use_variation(cls, default_kwargs):
-        if prompt_variation is None:
-            return cls(task=task, **default_kwargs)
-        # get parameters from class __init__
-        valid_keys = get_valid_keys(cls)
+    # current config
+    curr_config = build_config_dict(
+        task, question, add_task_description, custom_prompt_prefix, custom_prompt_suffix, prompt_variation
+    )
 
-        # merge and overwrite defaults with variations
-        merged = {**default_kwargs, **prompt_variation}
+    # if update cache is different
+    update_building_blocks_if_needed(current_config=curr_config, task=task)
 
-        # filter out keys not in class __init__
-        filtered_kwargs = {k: v for k, v in merged.items() if k in valid_keys}
-
-        return cls(task=task, **filtered_kwargs)
-
-    if len(_building_blocks_cache) == 0:
-        _building_blocks_cache = [
-            use_variation(
-                VaryPrefix,
-                {
-                    "add_task_description": add_task_description,
-                    "custom_prompt_prefix": custom_prompt_prefix,
-                    "task_description": (
-                        ACS_TASK_DESCRIPTION.substitute(ACS_TASK_DESCRIPTION_DEFAULTS)
-                        if task.name.startswith("ACS")
-                        else TABLESHIFT_TASK_DESCRIPTION.substitute(TABLESHIFT_TASK_DESCRIPTION_DEFAULTS)
-                        )
-                },
-            ),
-            use_variation(
-                VarySuffix,
-                {
-                    "question": question,
-                    "custom_prompt_suffix": custom_prompt_suffix,
-                },
-            ),
-            use_variation(VaryFeatureOrder, {"order": None}),
-            # order of value map, connector and format should not be changed
-            use_variation(VaryValueMap, {"granularity": "original"}),
-            use_variation(VaryConnector, {"connector": "is"}),
-            use_variation(VaryFormat, {"format": "textbullet"}),
-        ]
-
-    for fun in _building_blocks_cache:
-        row = fun(row)
+    for variation in ['prefix', 'suffix', 'order', 'granularity', 'connector', 'format']:
+        if variation in _building_blocks_cache.keys():
+            row = _building_blocks_cache[variation](row)
     return "".join(row.values)
 
 
@@ -335,12 +443,17 @@ def encode_row_prompt_few_shot(
     prompt : str
         The encoded few-shot prompt.
     """
+    logging.debug("class_balancing:", class_balancing)
     # Take `n_shots` random samples from the train set
     X_examples, y_examples = dataset.sample_n_train_examples(
         n_shots,
         reuse_examples=reuse_examples,
         class_balancing=class_balancing,
     )
+    logging.debug("Sorting examples by index to keep prompt fixed. Change by modifying the example order.")
+    X_examples = X_examples.sort_index()
+    y_examples = y_examples.sort_index()
+    logging.debug("ys:", y_examples.values)
 
     # Start with task description
     prompt = ""  # ACS_FEW_SHOT_TASK_DESCRIPTION + "\n"
@@ -348,49 +461,51 @@ def encode_row_prompt_few_shot(
     # Get the question to ask
     question = question or task.question
 
-    ## TODO 
-    if prompt_variation and prompt_variation.get('example_order'):
-        logging.info('Varying the order of the examples.')
-        order_examples =  list(prompt_variation.pop('example_order').split(','))
-        logging.info(f"Received order: {order_examples} with length {len(order_examples)}, n_shots={n_shots}.")
+    if prompt_variation and prompt_variation.get("example_order"):
+        logging.debug("Varying the order of the examples.")
+        print("Varying the order of the examples.")
+        order_examples = list(prompt_variation.get("example_order", "").split(","))
+        logging.debug(
+            f"Received order: {order_examples} with length {len(order_examples)}, n_shots={n_shots}."
+        )
         assert len(order_examples) == n_shots
         X_examples = X_examples.iloc[order_examples]
         y_examples = y_examples.iloc[order_examples]
 
+    prompt_var = (prompt_variation.copy() or {})
+    prompt_var.pop('example_order', 0)
+
     # Add `n` example rows with respective labels
     for i in range(n_shots):
-        prompt += (
-            encode_row_prompt(
-                X_examples.iloc[i],
-                task=task,
-                add_task_description=(i == 0),
-                custom_prompt_prefix=custom_prompt_prefix,
-                prompt_variation={
-                    **(prompt_variation or {}),
-                    "task_description": (
-                        ACS_TASK_DESCRIPTION.substitute(
-                            {
-                                **ACS_TASK_DESCRIPTION_DEFAULTS,
-                                "respondent": "different survey respondents",
-                                "suffix": " for each person",
-                            }
-                        )
-                        if task.name.startswith("ACS")
-                        else TABLESHIFT_TASK_DESCRIPTION.substitute(
-                            {
-                                **TABLESHIFT_TASK_DESCRIPTION_DEFAULTS,
-                                "respondent": "different survey respondents",
-                                "suffix": " for each person",
-                            }
-                        )
-                    ),
-                    "custom_prompt_suffix": f" {question.get_answer_key_from_value(y_examples.iloc[i])}\n\n"
-                },
-            )
+        logging.debug(f"{i} {question.get_answer_key_from_value(y_examples.iloc[i])} index:{y_examples.index}")
+        print(f"{i} {question.get_answer_key_from_value(y_examples.iloc[i])} {y_examples.index[i]}")
+        prompt += encode_row_prompt(
+            X_examples.iloc[i],
+            task=task,
+            add_task_description=(i == 0),  # only add task description before first example
+            custom_prompt_prefix=custom_prompt_prefix,
+            prompt_variation={
+                **prompt_var,
+                "task_description": (
+                    ACS_TASK_DESCRIPTION.substitute(
+                        {
+                            **ACS_TASK_DESCRIPTION_DEFAULTS,
+                            "respondent": "different survey respondents",
+                            "suffix": " for each person",
+                        }
+                    )
+                    if task.name.startswith("ACS")
+                    else TABLESHIFT_TASK_DESCRIPTION.substitute(
+                        {
+                            **TABLESHIFT_TASK_DESCRIPTION_DEFAULTS,
+                            "respondent": "different survey respondents",
+                            "suffix": " for each person",
+                        }
+                    )
+                ),
+                "custom_prompt_suffix": f" {question.get_answer_key_from_value(y_examples.iloc[i])}\n\n",
+            },
         )
-        # only add task description before first examples
-        if i == 0:
-            reset_building_block_cache()
 
     # Add the target row without its label
     prompt += encode_row_prompt(
@@ -401,6 +516,7 @@ def encode_row_prompt_few_shot(
         question=question,
         prompt_variation=prompt_variation,
     )
+    logging.debug(prompt)
     return prompt
 
 
@@ -457,8 +573,8 @@ def apply_chat_template(
     return filled_prompt
 
 
-# def encode_row_split(split: str | pd.DataFrame, 
-#                      task: str | ACSTaskMetadata | TableshiftBRFSSTaskMetadata, 
+# def encode_row_split(split: str | pd.DataFrame,
+#                      task: str | ACSTaskMetadata | TableshiftBRFSSTaskMetadata,
 #                      prompt_variation: dict = {'connector': 'is', 'format': 'text', 'granularity': 'original'},
 #                      ):
 #     from tqdm import tqdm
