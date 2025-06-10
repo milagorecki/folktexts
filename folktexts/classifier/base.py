@@ -313,7 +313,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
     def compute_risk_estimates_for_dataframe(
         self,
         df: pd.DataFrame,
-        save_intermed = {'path': None, 'labels': None}
+        save_intermed: dict = {'path': None, 'labels': None}
     ) -> np.ndarray:
         """Compute risk estimates for a specific dataframe (internal helper function).
 
@@ -379,7 +379,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
 
             risk_scores[start_idx: end_idx] = batch_risk_scores.mean(axis=1)
 
-            if batch_idx % 10 == 0:
+            if batch_idx % 50 == 0:
                 # Save to disk if `predictions_save_path` is provided
                 if 'path' in save_intermed.keys() and 'labels' in save_intermed.keys():
                     path = save_intermed['path']
