@@ -47,6 +47,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         threshold: float = 0.5,
         correct_order_bias: bool = True,
         seed: int = 42,
+        prompt_variation: dict | None = None,
         **inference_kwargs,
     ):
         """Creates an LLMClassifier object.
@@ -82,11 +83,13 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
 
         self._task = TaskMetadata.get_task(task) if isinstance(task, str) else task
         self._custom_prompt_prefix = custom_prompt_prefix
+        self._prompt_variation = prompt_variation
 
-        # TODO: Add default custom_prompt_prefix to row encoder here?
         self._encode_row = encode_row or partial(
             default_encode_row_prompt,
             task=self.task,
+            custom_prompt_prefix=self.custom_prompt_prefix,
+            prompt_variation=self.prompt_variation
         )
 
         self._threshold = threshold
@@ -110,6 +113,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
             model_name=self.model_name,
             task_hash=hash(self.task),
             custom_prompt_prefix=self.custom_prompt_prefix,
+            prompt_variation=hash_dict(self.prompt_variation),
             correct_order_bias=self.correct_order_bias,
             threshold=self.threshold,
             encode_row_hash=hash_function(self.encode_row),
@@ -128,6 +132,10 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
     @property
     def custom_prompt_prefix(self) -> str:
         return self._custom_prompt_prefix
+
+    @property
+    def prompt_variation(self) -> dict:
+        return self._prompt_variation
 
     @property
     def encode_row(self) -> Callable[[pd.Series], str]:
