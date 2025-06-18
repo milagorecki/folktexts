@@ -19,7 +19,7 @@ from .classifier import LLMClassifier, TransformersLLMClassifier, WebAPILLMClass
 from .dataset import Dataset
 from .evaluation import evaluate_predictions
 from .plotting import render_evaluation_plots, render_fairness_plots
-from .prompting import encode_row_prompt, encode_row_prompt_few_shot
+from .prompting import encode_row_prompt, encode_row_prompt_few_shot, DEFAULT_PROMPT_STYLE
 from .task import TaskMetadata
 
 DEFAULT_SEED = 42
@@ -72,7 +72,6 @@ class BenchmarkConfig:
     feature_subset: list[str] | None = None
     population_filter: dict | None = None
     seed: int = DEFAULT_SEED
-    randomize_feature_order: bool = False
     prompt_variation: dict | None = None
 
     @classmethod
@@ -117,6 +116,9 @@ class BenchmarkConfig:
         )
         cfg["population_filter_hash"] = (
             hash_dict(cfg["population_filter"]) if cfg["population_filter"] else None
+        )
+        cfg["prompt_variation"] = (
+            hash_dict(cfg["prompt_variation"]) if cfg["prompt_variation"] else None
         )
         return int(hash_dict(cfg), 16)
 
@@ -682,7 +684,8 @@ class Benchmark:
             )
 
         # Parse LLMClassifier parameters
-        llm_inference_kwargs = {"correct_order_bias": config.correct_order_bias}
+        llm_inference_kwargs = {"correct_order_bias": config.correct_order_bias,
+                                "prompt_variation": config.prompt_variation}
         if config.batch_size is not None:
             llm_inference_kwargs["batch_size"] = config.batch_size
         if config.context_size is not None:
