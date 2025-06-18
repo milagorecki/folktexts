@@ -57,6 +57,14 @@ GEMMA_CHAT_PROMPT = """The provided information suggests that the answer is"""
 
 _valid_keys_cache = {}
 
+DEFAULT_PROMPT_STYLE = {'format': 'bullet',
+                        'connector': 'is',
+                        'granularity': 'original',
+                        'order': None,
+                        'custom_prompt_prefix': None,
+                        'custom_prompt_suffix': None
+                        }
+
 
 class PromptVariation:
     def __init__(
@@ -95,7 +103,7 @@ class PromptVariation:
 
 
 class VaryFormat(PromptVariation):
-    def __init__(self, task, format: str = "bullet"):
+    def __init__(self, task, format: str = DEFAULT_PROMPT_STYLE['format']):
         description = "Vary prompt format, default is 'bullet'."
         super().__init__(description, task)
         assert format in {
@@ -120,7 +128,7 @@ class VaryFormat(PromptVariation):
 
 
 class VaryConnector(PromptVariation):
-    def __init__(self, task, connector: str = "is"):
+    def __init__(self, task, connector: str = DEFAULT_PROMPT_STYLE['connector']):
         description = "Vary symbol used between feature name and value, default is 'is'."
         super().__init__(description, task)
         if connector == ":":
@@ -136,7 +144,7 @@ class VaryConnector(PromptVariation):
 
 
 class VaryValueMap(PromptVariation):
-    def __init__(self, task, granularity="original"):
+    def __init__(self, task, granularity=DEFAULT_PROMPT_STYLE['granularity']):
         description = "Vary the granulariy of the feature map, default is original (higher granularity)."
         super().__init__(description, task)
         assert granularity in ["original", "low"]
@@ -161,7 +169,7 @@ class VaryValueMap(PromptVariation):
 
 
 class VaryFeatureOrder(PromptVariation):
-    def __init__(self, task, order: list | str = None):
+    def __init__(self, task, order: list | str = DEFAULT_PROMPT_STYLE['order']):
         description = "Vary the order of the features."
         super().__init__(description, task)
         if order:
@@ -195,7 +203,7 @@ class VaryPrefix(PromptVariation):
         self,
         task: TaskMetadata,
         add_task_description: bool = True,
-        custom_prompt_prefix: str = None,
+        custom_prompt_prefix: str = DEFAULT_PROMPT_STYLE['custom_prompt_prefix'],
         task_description: str = None,
     ):
         description = "Vary the prefix printed before the prompt, by default the task description is printed."
@@ -237,7 +245,7 @@ class VaryPrefix(PromptVariation):
 
 class VarySuffix(PromptVariation):
     def __init__(
-        self, task, question: QAInterface = None, custom_prompt_suffix: str = None
+        self, task, question: QAInterface = None, custom_prompt_suffix: str = DEFAULT_PROMPT_STYLE['custom_prompt_suffix']
     ):
         description = "Vary the suffix, in particular the question."
         super().__init__(description, task)
@@ -370,8 +378,7 @@ def update_building_blocks_if_needed(current_config, task):
                     },
                 )
         if 'order' in affected_blocks:
-            _building_blocks_cache['prder'] = _configure_variation(VaryFeatureOrder, {"order": None})
-        # order of value map (granularity), connector and format should not be changed
+            _building_blocks_cache['order'] = _configure_variation(VaryFeatureOrder, {"order": None})
         if 'granularity' in affected_blocks:
             _building_blocks_cache['granularity'] = _configure_variation(VaryValueMap, {"granularity": "original"})
         if 'connector' in affected_blocks:
@@ -406,6 +413,7 @@ def encode_row_prompt(
     # if update cache is different
     update_building_blocks_if_needed(current_config=curr_config, task=task)
 
+    # order of value map (granularity), connector and format should not be changed
     for variation in ['prefix', 'suffix', 'order', 'granularity', 'connector', 'format']:
         if variation in _building_blocks_cache.keys():
             row = _building_blocks_cache[variation](row)
@@ -455,8 +463,7 @@ def encode_row_prompt_few_shot(
     y_examples = y_examples.sort_index()
     logging.debug("ys:", y_examples.values)
 
-    # Start with task description
-    prompt = ""  # ACS_FEW_SHOT_TASK_DESCRIPTION + "\n"
+    prompt = ""
 
     # Get the question to ask
     question = question or task.question

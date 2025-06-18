@@ -9,6 +9,7 @@ import sys
 from argparse import ArgumentParser
 from folktexts._utils import ParseDict
 from pathlib import Path
+from folktexts.prompting import DEFAULT_PROMPT_STYLE
 
 DEFAULT_ACS_TASK = "ACSIncome"
 ACS_TASKS = (
@@ -71,8 +72,8 @@ def setup_arg_parser() -> ArgumentParser:
     parser.add_argument(
         "--dont-correct-order-bias",
         help="[bool] Whether to avoid correcting ordering bias, by default will correct it",
-        action="store_false",
-        default=True,
+        action="store_true",
+        default=False,
     )
 
     parser.add_argument(
@@ -169,6 +170,11 @@ def main():
         from folktexts.cli._utils import cmd_line_args_to_kwargs
         population_filter_dict = cmd_line_args_to_kwargs(args.use_population_filter)
 
+    prompt_variation_dict = DEFAULT_PROMPT_STYLE
+    if args.variation != {}:
+        # update with args.variation
+        prompt_variation_dict = {**prompt_variation_dict, **args.variation}
+
     # Load model and tokenizer
     # > Web-hosted LLM
     if args.use_web_api_model:
@@ -193,7 +199,7 @@ def main():
         feature_subset=args.use_feature_subset or None,
         population_filter=population_filter_dict,
         seed=args.seed,
-        prompt_variation=args.variation if args.variation != {} else None,
+        prompt_variation=prompt_variation_dict,
     )
 
     # Create Benchmark object
