@@ -19,7 +19,7 @@ from .classifier import LLMClassifier, TransformersLLMClassifier, WebAPILLMClass
 from .dataset import Dataset
 from .evaluation import evaluate_predictions
 from .plotting import render_evaluation_plots, render_fairness_plots
-from .prompting import encode_row_prompt, encode_row_prompt_few_shot, DEFAULT_PROMPT_STYLE
+from .prompting import encode_row_prompt, encode_row_prompt_few_shot
 from .task import TaskMetadata
 
 DEFAULT_SEED = 42

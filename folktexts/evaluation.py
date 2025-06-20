@@ -304,8 +304,8 @@ def evaluate_predictions(
     if sensitive_attribute is not None:
         results.update(
             evaluate_binary_predictions_fairness(
-                y_true, 
-                y_pred_binary, 
+                y_true,
+                y_pred_binary,
                 sensitive_attribute,
                 return_groupwise_metrics=return_groupwise_metrics,
                 ))
