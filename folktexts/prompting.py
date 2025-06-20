@@ -327,13 +327,11 @@ def update_building_blocks_if_needed(current_config, task):
         changed_keys = []
         last_config = _last_cache_config or {}
         for key, value in current_config.items():
-            logging.debug(f'key: {key}')
             if key == 'prompt_variation':  # is itself a dict
                 all_varkeys = set(value.keys()).union(last_config.get(key, {}).keys())
                 for varkey in all_varkeys:
-                    logging.debug(f"curr: {value.get(varkey)}\n last: {last_config.get(key, {}).get(varkey)}")
-
                     if value.get(varkey) != last_config.get(key, {}).get(varkey):
+                        logging.debug(f"(last -> curr) {last_config.get(key, {}).get(varkey)} -> {value.get(varkey)}")
                         changed_keys.append(varkey)
             else:
                 if value != last_config.get(key):
@@ -458,7 +456,7 @@ def encode_row_prompt_few_shot(
         reuse_examples=reuse_examples,
         class_balancing=class_balancing,
     )
-    logging.debug("Sorting examples by index to keep prompt fixed. Change by modifying the example order.")
+    # Sorting examples by index to keep prompt fixed. Change by modifying the example order.
     X_examples = X_examples.sort_index()
     y_examples = y_examples.sort_index()
     logging.debug("ys:", y_examples.values)
