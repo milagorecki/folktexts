@@ -353,7 +353,7 @@ class Benchmark:
             )
 
         self._results["threshold_fitted_on"] = self.llm_clf._threshold_fitted_on
-        self._results["threshold_obj"] = self.llm_clf._threshold_onj
+        self._results["threshold_obj"] = self.llm_clf._threshold_obj
 
         if self.task.sensitive_attribute is not None:
             self._results["sensitive_attribute"] = self.task.sensitive_attribute
