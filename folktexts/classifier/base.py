@@ -94,6 +94,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
 
         self._threshold = threshold
         self._threshold_fitted_on = 0
+        self._threshold_obj = 'balanced_accuracy'
         self._correct_order_bias = correct_order_bias
         self._seed = seed
 
@@ -207,6 +208,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
             false_neg_cost=false_neg_cost,
             maximize=threshold_obj
         )
+        self._threshold_obj = threshold_obj
 
         # Update sklearn is_fitted status
         self._is_fitted = True
