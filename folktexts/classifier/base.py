@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 from functools import partial
 from pathlib import Path
 from typing import Callable
+from os import remove
 
 import numpy as np
 import pandas as pd
@@ -412,6 +413,10 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
 
         # Check that all risk scores were computed
         assert not np.isclose(risk_scores, fill_value).any()
+        # remove intermediate saves
+        if Path(path).exists() and str(path).endswith('_batch.csv'):
+            logging.info(f"Removing file '{path}'.")
+            remove(path)
         return risk_scores
 
     def compute_risk_estimates_for_dataset(
