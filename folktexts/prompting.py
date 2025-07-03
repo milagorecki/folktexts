@@ -12,6 +12,7 @@ import logging
 
 from copy import deepcopy
 import inspect
+import re
 
 import pandas as pd
 from transformers import AutoTokenizer
@@ -331,7 +332,7 @@ def update_building_blocks_if_needed(current_config, task):
                 all_varkeys = set(value.keys()).union(last_config.get(key, {}).keys())
                 for varkey in all_varkeys:
                     if value.get(varkey) != last_config.get(key, {}).get(varkey):
-                        logging.debug(f"{varkey}(last -> curr): {last_config.get(key, {}).get(varkey)} -> {value.get(varkey)}")
+                        logging.debug(f"{varkey}(last -> curr): {re.sub('\s+', str(last_config.get(key, {}).get(varkey)))} -> {re.sub('\s+', str(value.get(varkey)))}")
                         changed_keys.append(varkey)
             else:
                 if value != last_config.get(key):
@@ -483,7 +484,7 @@ def encode_row_prompt_few_shot(
 
     # Add `n` example rows with respective labels
     for i in range(n_shots):
-        logging.debug(f"shot {i}: label = {question.get_answer_key_from_value(y_examples.iloc[i])},\t index = {y_examples.index[i]}")
+        logging.debug(f"shot {i}: label = {question.get_answer_key_from_value(y_examples.iloc[i])}\t index = {y_examples.index[i]}")
         prompt += encode_row_prompt(
             X_examples.iloc[i],
             task=task,
