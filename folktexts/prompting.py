@@ -449,7 +449,7 @@ def encode_row_prompt_few_shot(
     prompt : str
         The encoded few-shot prompt.
     """
-    logging.debug("class_balancing:", class_balancing)
+    logging.debug(f"class_balancing: {class_balancing}")
     # Take `n_shots` random samples from the train set
     X_examples, y_examples = dataset.sample_n_train_examples(
         n_shots,
