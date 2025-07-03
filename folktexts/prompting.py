@@ -331,12 +331,12 @@ def update_building_blocks_if_needed(current_config, task):
                 all_varkeys = set(value.keys()).union(last_config.get(key, {}).keys())
                 for varkey in all_varkeys:
                     if value.get(varkey) != last_config.get(key, {}).get(varkey):
-                        logging.debug(f"(last -> curr) {last_config.get(key, {}).get(varkey)} -> {value.get(varkey)}")
+                        logging.debug(f"{varkey}(last -> curr): {last_config.get(key, {}).get(varkey)} -> {value.get(varkey)}")
                         changed_keys.append(varkey)
             else:
                 if value != last_config.get(key):
+                    logging.debug(f"{key} (last -> curr): {last_config.get(key)} -> {value}")
                     changed_keys.append(key)
-    logging.debug(f'Changed keys: {changed_keys}')
 
     affected_blocks = set()
     for key in changed_keys:
@@ -459,7 +459,8 @@ def encode_row_prompt_few_shot(
     # Sorting examples by index to keep prompt fixed. Change by modifying the example order.
     X_examples = X_examples.sort_index()
     y_examples = y_examples.sort_index()
-    logging.debug("ys:", y_examples.values)
+    logging.debug(f"ys  index:{y_examples.index.tolist()}")
+    logging.debug(f"ys: {y_examples.values.tolist()}")
 
     prompt = ""
 
@@ -482,8 +483,7 @@ def encode_row_prompt_few_shot(
 
     # Add `n` example rows with respective labels
     for i in range(n_shots):
-        logging.debug(f"{i} {question.get_answer_key_from_value(y_examples.iloc[i])} index:{y_examples.index}")
-        print(f"{i} {question.get_answer_key_from_value(y_examples.iloc[i])} {y_examples.index[i]}")
+        logging.debug(f"shot {i}: label = {question.get_answer_key_from_value(y_examples.iloc[i])},\t index = {y_examples.index[i]}")
         prompt += encode_row_prompt(
             X_examples.iloc[i],
             task=task,
