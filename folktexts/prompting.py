@@ -332,7 +332,9 @@ def update_building_blocks_if_needed(current_config, task):
                 all_varkeys = set(value.keys()).union(last_config.get(key, {}).keys())
                 for varkey in all_varkeys:
                     if value.get(varkey) != last_config.get(key, {}).get(varkey):
-                        logging.debug(f"{varkey}(last -> curr): {re.sub('\s+', str(last_config.get(key, {}).get(varkey)))} -> {re.sub('\s+', str(value.get(varkey)))}")
+                        prev = re.sub('\s+', ' ', str(last_config.get(key, {}).get(varkey))).strip()
+                        curr = re.sub('\s+', ' ', str(value.get(varkey))).strip()
+                        logging.debug(f"{varkey}(last -> curr): {prev} -> {curr}")
                         changed_keys.append(varkey)
             else:
                 if value != last_config.get(key):
