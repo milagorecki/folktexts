@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 from functools import partial
+from typing import Union
 
 import numpy as np
 import pandas as pd
@@ -297,7 +298,7 @@ class Dataset:
         self,
         n: int,
         reuse_examples: bool = False,
-        class_balancing: bool = False,
+        composition='random',
     ) -> tuple[pd.DataFrame, pd.Series]:
         """Return a set of samples from the training set.
 
@@ -314,43 +315,50 @@ class Dataset:
         X, y : tuple[pd.DataFrame, pd.Series]
             The features and target data for the sampled examples.
         """
-        if class_balancing:
+        assert composition in ['random', 'balanced'] or isinstance(composition, list), "Provided sample composition has to be one of ['random', 'balanced'] or a list specifying class counts."
 
-            train_labels = self.get_target_data().iloc[self._train_indices]
-            unique_labels, counts = np.unique(train_labels, return_counts=True)
-
-            per_label_n = n // len(unique_labels)
-            remaining = n % len(unique_labels)  # distribute extra samples
-
-            if min(counts) < per_label_n:
-                logging.error(
-                    f"Labels are very imbalanced: Attempting to sample {per_label_n}, "
-                    f"but minimal group size is {min(counts)}."
-                )
-
-            example_indices = []
-            for i, label in enumerate(unique_labels):
-                class_indices = self._train_indices[train_labels == label]
-
-                if reuse_examples:
-                    selected = class_indices[: per_label_n + int(i < remaining)]
-                else:
-                    selected = self._rng.choice(
-                        class_indices,
-                        size=per_label_n + int(i < remaining),
-                        replace=False,
-                    )
-                example_indices.extend(selected)
-
-            # shuffle indices to ensure classes are mixed
-            example_indices = self._rng.permutation(example_indices)
-        else:
+        if composition == 'random':
             if reuse_examples:
                 example_indices = self._train_indices[:n]
             else:
                 example_indices = self._rng.choice(
                     self._train_indices, size=n, replace=False
                 )
+        elif composition == 'balanced' or isinstance(composition, list):
+            train_labels = self.get_target_data().iloc[self._train_indices]
+            unique_labels, counts = np.unique(train_labels, return_counts=True)
+
+            if composition == 'balanced':
+                per_label_counts = [n // len(unique_labels)] * len(unique_labels)
+                remaining = n % len(unique_labels)  # distribute extra samples
+                if remaining != 0:
+                    logging.warning(f"Cannot evenly divide {n} samples among {len(unique_labels)} classes. Distributing {remaining} samples evenly.")
+                    for i in range(remaining):
+                        per_label_counts[i] += 1
+            elif isinstance(composition, list):
+                assert len(composition) == len(unique_labels), 'Provide a count for every class, they will be assigned in order of the labels.'
+                assert sum(composition) == n, 'Counts have to add up to n.'
+                per_label_counts = composition
+
+            if any(counts < per_label_counts):
+                raise ValueError("Not enough samples to draw from:\n" + "\n".join([f"- class {unique_labels[i]}: {counts[i]} samples available, attempting to draw {per_label_counts[i]}" for i in (unique_labels[counts < per_label_counts])]))
+
+            example_indices = []
+            for i, label in enumerate(unique_labels):
+                class_indices = self._train_indices[train_labels == label]
+                per_label_n = per_label_counts[i]
+                if reuse_examples:
+                    selected = class_indices[: per_label_n]
+                else:
+                    selected = self._rng.choice(
+                        class_indices,
+                        size=per_label_n,
+                        replace=False,
+                    )
+                example_indices.extend(selected)
+
+            # shuffle indices to ensure classes are mixed
+            example_indices = self._rng.permutation(example_indices)
 
         return (
             self.data.iloc[example_indices][self.task.features],
