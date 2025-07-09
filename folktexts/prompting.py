@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 # from functools import partial
+from typing import Union
 
 from copy import deepcopy
 import inspect
@@ -428,7 +429,7 @@ def encode_row_prompt_few_shot(
     n_shots: int,
     question: QAInterface = None,
     reuse_examples: bool = False,
-    class_balancing: bool = False,
+    compose_few_shot_examples: Union[bool,list] = False,
     custom_prompt_prefix: str = None,
     prompt_variation: dict | None = None,
 ) -> str:
@@ -452,12 +453,12 @@ def encode_row_prompt_few_shot(
     prompt : str
         The encoded few-shot prompt.
     """
-    logging.debug(f"class_balancing: {class_balancing}")
+    logging.debug(f"Composition of few shot examples: {compose_few_shot_examples}")
     # Take `n_shots` random samples from the train set
     X_examples, y_examples = dataset.sample_n_train_examples(
         n_shots,
         reuse_examples=reuse_examples,
-        class_balancing=class_balancing,
+        composition=compose_few_shot_examples,
     )
     # Sorting examples by index to keep prompt fixed. Change by modifying the example order.
     X_examples = X_examples.sort_index()

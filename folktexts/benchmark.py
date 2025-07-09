@@ -65,7 +65,7 @@ class BenchmarkConfig:
     numeric_risk_prompting: bool = False
     few_shot: int | None = None
     reuse_few_shot_examples: bool = False
-    balance_few_shot_examples: bool = False
+    compose_few_shot_examples: str = "random"
     batch_size: int | None = None
     context_size: int | None = None
     correct_order_bias: bool = True
@@ -111,6 +111,8 @@ class BenchmarkConfig:
     def __hash__(self) -> int:
         """Generates a unique hash for the configuration."""
         cfg = dataclasses.asdict(self)
+        if isinstance(cfg["compose_few_shot_examples"],list):
+            cfg["compose_few_shot_examples"] = tuple(cfg["compose_few_shot_examples"]) 
         cfg["feature_subset"] = (
             tuple(cfg["feature_subset"]) if cfg["feature_subset"] else None
         )
@@ -673,7 +675,7 @@ class Benchmark:
                 n_shots=config.few_shot,
                 dataset=dataset,
                 reuse_examples=config.reuse_few_shot_examples,
-                class_balancing=config.balance_few_shot_examples,
+                compose_few_shot_examples=config.compose_few_shot_examples,
                 prompt_variation=config.prompt_variation,
                 **kwargs,
             )

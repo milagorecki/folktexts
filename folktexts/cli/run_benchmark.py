@@ -91,10 +91,10 @@ def setup_arg_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
-        "--balance-few-shot-examples",
-        help="[bool] Whether to class-balance samples in few-shot prompting",
-        action="store_true",
-        default=False,
+        "--compose-few-shot-examples",
+        help="[str|list] How to select samples in few-shot prompting: random, balanced or list of speicified class counts. Defaults to random.",
+        default="random",
+        required=False,
     )
 
     # Optionally, receive a list of features to use (subset of original list)
@@ -180,11 +180,14 @@ def main():
     if args.use_web_api_model:
         model = args.model
         tokenizer = None
-
     # > Local LLM
     else:
         from folktexts.llm_utils import load_model_tokenizer
         model, tokenizer = load_model_tokenizer(args.model)
+
+    example_composition = args.compose_few_shot_examples
+    if "," in example_composition:
+        example_composition = [int(count) for count in example_composition.split(',')]
 
     # Fill Benchmark config
     from folktexts.benchmark import BenchmarkConfig
@@ -192,7 +195,7 @@ def main():
         few_shot=args.few_shot,
         numeric_risk_prompting=args.numeric_risk_prompting,
         reuse_few_shot_examples=args.reuse_few_shot_examples,
-        balance_few_shot_examples=args.balance_few_shot_examples,
+        compose_few_shot_examples=example_composition,
         batch_size=args.batch_size,
         context_size=args.context_size,
         correct_order_bias=not args.dont_correct_order_bias,
