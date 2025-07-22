@@ -190,6 +190,76 @@ acs_race = ColumnToText(
     verbalize=lambda x: f"The person identifies {'as ' if not(x.startswith('Some') or  x.startswith('Two')) else 'with '}{x}.",
 )
 
+acs_race_native_hawaiian= ColumnToText(
+    "RACNH", 
+    short_description="Native Hawaiian",
+    value_map={
+        0: "No",
+        1: "Yes",
+    },
+    verbalize=lambda x: f"The person {'identifies' if x=='Yes' else 'does not indetify'} as Native Hawaiian.",
+)
+
+acs_race_black= ColumnToText(
+    "RACBLK", 
+    short_description="Black or African American",
+    value_map={
+        0: "No",
+        1: "Yes",
+    },
+    verbalize=lambda x: f"The person {'identifies' if x=='Yes' else 'does not indetify'} as Black or African American.",
+)
+
+acs_race_asian= ColumnToText(
+    "RACASN", 
+    short_description="Asian",
+    value_map={
+        0: "No",
+        1: "Yes",
+    },
+    verbalize=lambda x: f"The person {'identifies' if x=='Yes' else 'does not indetify'} as Asian.",
+)
+
+acs_race_white= ColumnToText(
+    "RACWHT", 
+    short_description="White",
+    value_map={
+        0: "No",
+        1: "Yes",
+    },
+    verbalize=lambda x: f"The person {'identifies' if x=='Yes' else 'does not indetify'} as White.",
+)
+
+acs_race_pi= ColumnToText(
+    "RACPI", 
+    short_description="Pacific Islander other than Native Hawaiian",
+    value_map={
+        0: "No",
+        1: "Yes",
+    },
+    verbalize=lambda x: f"The person {'identifies' if x=='Yes' else 'does not indetify'} as Pacific Islander other than Native Hawaiian.",
+)
+
+acs_race_other= ColumnToText(
+    "RACSOR", 
+    short_description="Some other race",
+    value_map={
+        0: "No",
+        1: "Yes",
+    },
+    verbalize=lambda x: f"The person {'identifies' if x=='Yes' else 'does not indetify'} with some other race.",
+)
+
+acs_race_aian= ColumnToText(
+    "RACAIAN", 
+    short_description="American Indian and Alaska Native",
+    value_map={
+        0: "No",
+        1: "Yes",
+    },
+    verbalize=lambda x: f"The person {'identifies' if x=='Yes' else 'does not indetify'} as American Indian and Alaska Native.",
+)
+
 # PINCP: Yearly Income
 acs_income = ColumnToText(
     "PINCP",
