@@ -157,7 +157,7 @@ acs_income_poverty_ratio_task = ACSTaskMetadata.make_folktables_task(
     description="predict whether an individual's income-to-poverty ratio is below 2.5",
 )
 
-acs_income_poverty_ratio_task = ACSTaskMetadata.make_folktables_task(
+acs_health_insurance_task = ACSTaskMetadata.make_folktables_task(
     name="ACSHealthInsurance",
     target_threshold=acs_health_insurance_threshold,
     description=(
