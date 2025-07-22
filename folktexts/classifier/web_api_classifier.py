@@ -22,25 +22,17 @@ class WebAPILLMClassifier(LLMClassifier):
     """Use an LLM through a web API to produce risk scores."""
 
     _model_to_azure_api_version = {
-        "o1": "2024-12-01-preview",
-        "gpt-4o": "2024-08-01-preview",
-        "gpt-3.5-turbo-0125": "2024-08-01-preview",
-        "o3-mini": "2025-01-01-preview",
-        "gpt-4.5": "2025-01-01-preview",
+        "gpt-4o-mini": "2025-01-01-preview",
         "gpt-4.1": "2025-01-01-preview",
-        "o3": "2025-01-01-preview",
-        "o4-mini": "2025-01-01-preview",
+        "gpt-4-turbo-2024-04-09": "2025-01-01-preview",
+        "gpt-3.5-turbo-0125": "2025-01-01-preview",
     }
 
     _model_to_azure_deployment_name = {
-        "o1": "azure/mremeli-o1-2024-12-17",
-        "gpt-4o": "azure/mremeli-gpt-4o-2024-08-06",
-        "gpt-3.5-turbo-0125": "azure/mremeli-gpt-35-turbo-0125",
-        "o3-mini": "azure/mremeli-o3-mini-2025-01-31",
-        "gpt-4.5": "azure/mremeli-gpt-4.5-preview-2025-02-27",
-        "gpt-4.1": "azure/mremeli-gpt-4.1-2025-04-14",
-        "o3": "azure/mremeli-o3-2025-04-16",
-        "o4-mini": "azure/mremeli-o4-mini-2025-04-16",
+        "gpt-4o-mini": "azure/mgorecki-gpt-4o-mini",
+        "gpt-4.1": "azure/mgorecki-gpt-4.1",
+        "gpt-4-turbo-2024-04-09": "azure/mgorecki-gpt-4-turbo-2024-04-09",
+        "gpt-3.5-turbo-0125": "azure/mgorecki-gpt-35-turbo-0125",
     }
 
     def __init__(
@@ -126,7 +118,7 @@ class WebAPILLMClassifier(LLMClassifier):
         if "AZURE_API_KEY" not in os.environ:
             raise ValueError("AZURE_API_KEY not found in environment variables")
         if "AZURE_API_BASE" not in os.environ:
-            raise ValueError("AZURE_API_BASEy not found in environment variables")
+            raise ValueError("AZURE_API_BASE not found in environment variables")
         if "AZURE_API_VERSION" not in os.environ:
             api_version = self._model_to_azure_api_version.get(self.model_name)
             if api_version:
@@ -249,7 +241,7 @@ class WebAPILLMClassifier(LLMClassifier):
 
             for prompt in prompts_batch
             ]
-        responses_batch = self.client.make_requests_with_retries(requests_data, max_retries = 10)
+        responses_batch = self.client.make_requests_with_retries(requests_data, max_retries = 10, sanitize=False)
 
         return responses_batch
 
