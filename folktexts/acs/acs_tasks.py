@@ -157,6 +157,16 @@ acs_income_poverty_ratio_task = ACSTaskMetadata.make_folktables_task(
     description="predict whether an individual's income-to-poverty ratio is below 2.5",
 )
 
+acs_income_poverty_ratio_task = ACSTaskMetadata.make_folktables_task(
+    name="ACSHealthInsurance",
+    target_threshold=acs_health_insurance_threshold,
+    description=(
+        "predict whether an individual has purchased health insurance directly "
+        "from an insurance company (as opposed to being insured through an "
+        "employer, Medicare, Medicaid, or any other source)"
+    ),
+)
+
 # Dummy/test ACS task to predict health insurance coverage using all other available features
 acs_full_task = ACSTaskMetadata.make_task(
     name="ACSHealthInsurance-test",
