@@ -8,6 +8,7 @@ import logging
 import sys
 from argparse import ArgumentParser
 from folktexts._utils import ParseDict
+from folktexts.llm_utils import get_model_folder_path
 from pathlib import Path
 from folktexts.prompting import DEFAULT_PROMPT_STYLE
 
@@ -69,6 +70,13 @@ def setup_arg_parser() -> ArgumentParser:
         help="[bool] Whether use a model hosted on a web API (instead of a local model)",
         action="store_true",
         default=False,
+    )
+
+    parser.add_argument(
+        "--models-dir",
+        type=str,
+        help="[string] Directory under which models are saved.",
+        required=False,
     )
 
     parser.add_argument(
@@ -185,6 +193,11 @@ def main():
     # > Local LLM
     else:
         from folktexts.llm_utils import load_model_tokenizer
+        model_path = args.model
+        if args.models_dir:
+            model_path = get_model_folder_path(args.model, root_dir=args.models_dir)
+            if not Path(model_path).exists():
+                raise FileNotFoundError(f"Model folder not found at '{model_path}'.")
         model, tokenizer = load_model_tokenizer(args.model)
 
     example_composition = args.compose_few_shot_examples
