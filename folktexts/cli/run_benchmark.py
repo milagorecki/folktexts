@@ -18,6 +18,8 @@ ACS_TASKS = (
     "ACSMobility",
     "ACSTravelTime",
     "ACSPublicCoverage",
+    "ACSHealthInsurance",
+    "ACSIncomePovertyRatio"
 )
 TABLESHIFT_TASKS = (
     "BRFSS_Diabetes",
