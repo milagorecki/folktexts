@@ -99,9 +99,7 @@ class TableshiftBRFSSDataset(Dataset):
         if csv_file.exists():
             logging.info("Loading TableShift task data from cache...")
             logging.warning("Assuming dataset is preprocessed as wanted.")
-            df = pd.read_csv(csv_file.as_posix(), index_col=0)
-            # with open(cache_dir / f"{task_obj.name}.pickle", "rb") as f:
-            #     tab_dataset = pickle.load(f)
+            df = pd.read_csv(csv_file.as_posix())
         else:
             if not load_dataset_if_not_cached:
                 raise ValueError(
@@ -117,6 +115,12 @@ class TableshiftBRFSSDataset(Dataset):
                 )
                 X, y, _, _ = tab_dataset.get_pandas("all")
                 df = pd.concat([X, y], axis=1)
+                for col in df.select_dtypes(include="category").columns:
+                    if col not in ["SMOKDAY2", "TOLDHI"]:
+                        df[col] = pd.to_numeric(df[col].astype(str), errors="coerce")
+                df.to_csv(csv_file, index=0)
+                # will convert categorical columns to numeric
+                df = pd.read_csv(csv_file.as_posix())
 
         # Parse data for this task
         parsed_data = cls._parse_task_data(df, task_obj)
