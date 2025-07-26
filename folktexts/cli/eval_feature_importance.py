@@ -12,7 +12,6 @@ from folktexts.dataset import Dataset
 from folktexts.llm_utils import get_model_folder_path, load_model_tokenizer
 
 # Local paths
-# DEFAULT_ROOT_DIR = Path("/fast/groups/sf")            # CLUSTER dir
 DEFAULT_ROOT_DIR = Path("~").expanduser().resolve()     # LOCAL dir
 
 DEFAULT_MODELS_DIR = DEFAULT_ROOT_DIR / "huggingface-models"
