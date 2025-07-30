@@ -27,11 +27,11 @@ ACS_TASKS = (
     "ACSPublicCoverage",
 )
 TABLESHIFT_TASKS = (
-    "BRFSS_Diabetes",
+    # "BRFSS_Diabetes",
     "BRFSS_Blood_Pressure",
 )
-TASKS = ACS_TASKS + TABLESHIFT_TASKS
-
+SIPP_TASKS = ("SIPP",)
+TASKS = ACS_TASKS + TABLESHIFT_TASKS + SIPP_TASKS
 ################
 # Useful paths #
 ################

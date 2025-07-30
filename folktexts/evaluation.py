@@ -235,7 +235,7 @@ def compute_best_threshold(
         costs = false_pos_cost * fpr + false_neg_cost * (1-tpr)
     else:
         baserate = y_true.sum()/y_true.shape[0]
-        logging.info("baserate: ", baserate)
+        logging.info("baserate: {baserate}")
         fp = fpr * (1-baserate)
         fn = (1 - tpr) * baserate
         costs = false_pos_cost * fp + false_neg_cost * fn

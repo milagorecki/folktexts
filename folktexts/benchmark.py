@@ -15,6 +15,7 @@ from ._io import load_json, save_json
 from ._utils import hash_dict, is_valid_number, get_current_timestamp
 from .acs import ACSDataset, ACSTaskMetadata
 from .ts import TableshiftBRFSSDataset, TableshiftBRFSSTaskMetadata
+from .sipp import SIPPDataset, SIPPTaskMetadata
 from .classifier import LLMClassifier, TransformersLLMClassifier, WebAPILLMClassifier
 from .dataset import Dataset
 from .evaluation import evaluate_predictions
@@ -144,7 +145,7 @@ class Benchmark:
         "seed": 42,
     }
 
-    TABLESHIFT_DATASET_CONFIGS = {
+    DATASET_CONFIGS = {
         # survey configs should be defined in task
         # Data split configs
         "test_size": 0.1,
@@ -316,6 +317,7 @@ class Benchmark:
                 raise ValueError(f"Invalid fit_threshold={fit_threshold}")
 
             self.llm_clf._threshold_fitted_on = fit_threshold
+            self.llm_clf._threshold_obj = threshold_obj
             logging.info(f"Fitting threshold on {fit_threshold} train samples")
             X_train, y_train = self.dataset.sample_n_train_examples(fit_threshold)
             self.llm_clf.fit(X_train,
@@ -355,7 +357,8 @@ class Benchmark:
             )
 
         self._results["threshold_fitted_on"] = self.llm_clf._threshold_fitted_on
-        self._results["threshold_obj"] = self.llm_clf._threshold_obj
+        self._results["threshold_obj"] = self.llm_clf._threshold_obj if self.llm_clf._threshold_fitted_on > 0 else None
+        ## TODO: set to None by default, only change when fitting, then this check is no longer needed 
 
         if self.task.sensitive_attribute is not None:
             self._results["sensitive_attribute"] = self.task.sensitive_attribute
@@ -543,6 +546,79 @@ class Benchmark:
         config: BenchmarkConfig = BenchmarkConfig.default_config(),
         **kwargs,
     ) -> Benchmark:
+        """Create a standardized calibration benchmark on TableShift BRFSS data.
+
+        Parameters
+        ----------
+        task_name : str
+            The name of the ACS task to use.
+        model : AutoModelForCausalLM | str
+            The transformers language model to use, or the model ID for a webAPI
+            hosted model (e.g., "openai/gpt-4o-mini").
+        tokenizer : AutoTokenizer, optional
+            The tokenizer used to train the model (if using a transformers
+            model). Not required for webAPI models.
+        data_dir : str | Path, optional
+            Path to the directory to load data from and save data in.
+        max_api_rpm : int, optional
+            The maximum number of API requests per minute for webAPI models.
+        config : BenchmarkConfig, optional
+            Extra benchmark configurations, by default will use
+            `BenchmarkConfig.default_config()`.
+        **kwargs
+            Additional arguments passed to `TableshiftBRFSSDataset` and `BenchmarkConfig`.
+            By default will use a set of standardized configurations for
+            reproducibility.
+
+        Returns
+        -------
+        bench : Benchmark
+            The ACS calibration benchmark object.
+        """
+        # Handle non-standard Tableshift arguments
+        tableshift_dataset_configs = cls.DATASET_CONFIGS.copy()
+        for arg in tableshift_dataset_configs:
+            if arg in kwargs and kwargs[arg] != cls.DATASET_CONFIGS[arg]:
+                logging.warning(
+                    f"Received non-standard Tableshift argument '{arg}' (using "
+                    f"{arg}={kwargs[arg]} instead of default {arg}={cls.DATASET_CONFIGS[arg]}). "
+                    f"This may affect reproducibility."
+                )
+                tableshift_dataset_configs[arg] = kwargs.pop(arg)
+
+        # Update config with any additional kwargs
+        config = config.update(**kwargs)
+
+        # Fetch Tableshift task and dataset
+        tableshift_task = TableshiftBRFSSTaskMetadata.get_task(
+            name=task_name, use_numeric_qa=config.numeric_risk_prompting
+        )
+
+        tableshift_dataset = TableshiftBRFSSDataset.make_from_task(
+            task=tableshift_task, cache_dir=data_dir, **tableshift_dataset_configs
+        )
+
+        return cls.make_benchmark(
+            task=tableshift_task,
+            dataset=tableshift_dataset,
+            model=model,
+            tokenizer=tokenizer,
+            max_api_rpm=max_api_rpm,
+            config=config,
+        )
+    
+    @classmethod
+    def make_sipp_benchmark(
+        cls,
+        task_name: str,
+        *,
+        model: AutoModelForCausalLM | str,
+        tokenizer: AutoTokenizer = None,
+        data_dir: str | Path = None,
+        max_api_rpm: int = None,
+        config: BenchmarkConfig = BenchmarkConfig.default_config(),
+        **kwargs,
+    ) -> Benchmark:
         """Create a standardized calibration benchmark on ACS data.
 
         Parameters
@@ -563,41 +639,41 @@ class Benchmark:
             Extra benchmark configurations, by default will use
             `BenchmarkConfig.default_config()`.
         **kwargs
-            Additional arguments passed to `ACSDataset` and `BenchmarkConfig`.
+            Additional arguments passed to `SIPPDataset` and `BenchmarkConfig`.
             By default will use a set of standardized configurations for
             reproducibility.
 
         Returns
         -------
         bench : Benchmark
-            The ACS calibration benchmark object.
+            The calibration benchmark object.
         """
-        # Handle non-standard ACS arguments
-        tableshift_dataset_configs = cls.TABLESHIFT_DATASET_CONFIGS.copy()
-        for arg in tableshift_dataset_configs:
-            if arg in kwargs and kwargs[arg] != cls.TABLESHIFT_DATASET_CONFIGS[arg]:
+        # Handle non-standard SIPP arguments
+        sipp_dataset_configs = cls.DATASET_CONFIGS.copy()
+        for arg in sipp_dataset_configs:
+            if arg in kwargs and kwargs[arg] != cls.DATASET_CONFIGS[arg]:
                 logging.warning(
-                    f"Received non-standard Tableshift argument '{arg}' (using "
-                    f"{arg}={kwargs[arg]} instead of default {arg}={cls.TABLESHIFT_DATASET_CONFIGS[arg]}). "
+                    f"Received non-standard SIPP argument '{arg}' (using "
+                    f"{arg}={kwargs[arg]} instead of default {arg}={cls.DATASET_CONFIGS[arg]}). "
                     f"This may affect reproducibility."
                 )
-                tableshift_dataset_configs[arg] = kwargs.pop(arg)
+                sipp_dataset_configs[arg] = kwargs.pop(arg)
 
         # Update config with any additional kwargs
         config = config.update(**kwargs)
 
-        # Fetch Tableshift task and dataset
-        tableshift_task = TableshiftBRFSSTaskMetadata.get_task(
+        # Fetch SIPP task and dataset
+        sipp_task = SIPPTaskMetadata.get_task(
             name=task_name, use_numeric_qa=config.numeric_risk_prompting
         )
 
-        tableshift_dataset = TableshiftBRFSSDataset.make_from_task(
-            task=tableshift_task, cache_dir=data_dir, **tableshift_dataset_configs
+        sipp_dataset = SIPPDataset.make_from_task(
+            task=sipp_task, cache_dir=data_dir, **sipp_dataset_configs
         )
 
         return cls.make_benchmark(
-            task=tableshift_task,
-            dataset=tableshift_dataset,
+            task=sipp_task,
+            dataset=sipp_dataset,
             model=model,
             tokenizer=tokenizer,
             max_api_rpm=max_api_rpm,

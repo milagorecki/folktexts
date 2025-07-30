@@ -34,6 +34,11 @@ from folktexts.ts import (
     TABLESHIFT_TASK_DESCRIPTION,
     TABLESHIFT_TASK_DESCRIPTION_DEFAULTS,
 )
+from folktexts.sipp import(
+    SIPPTaskMetadata,
+    SIPP_TASK_DESCRIPTION,
+    SIPP_TASK_DESCRIPTION_DEFAULTS,
+)
 
 
 SYSTEM_PROMPT = """\
@@ -74,7 +79,7 @@ class PromptVariation:
     ):
         assert isinstance(task, ACSTaskMetadata) or isinstance(
             task, TableshiftBRFSSTaskMetadata
-        ), "Provide task object."
+        ) or isinstance(task,SIPPTaskMetadata), "Provide task object."
         self.description = description
         self.task = deepcopy(task)
         self.cache = {}
@@ -349,11 +354,15 @@ def update_building_blocks_if_needed(current_config, task):
     def _configure_variation(cls, default_kwargs):
         valid_keys = get_valid_keys(cls)
         # merge and overwrite defaults with variations
-        merged = {**default_kwargs, **(current_config.get('prompt_variation', {}))}
+        merged = {**default_kwargs, **(current_config.get('prompt_variation', {}) or {})}
         # filter out keys not in class __init__
         filtered_kwargs = {k: v for k, v in merged.items() if k in valid_keys}
         return cls(task=task, **filtered_kwargs)
-
+    
+    task_description_dict = {"ACS": ACS_TASK_DESCRIPTION.substitute(ACS_TASK_DESCRIPTION_DEFAULTS), 
+                             "BRFSS": TABLESHIFT_TASK_DESCRIPTION.substitute(TABLESHIFT_TASK_DESCRIPTION_DEFAULTS),
+                             "SIPP": SIPP_TASK_DESCRIPTION.substitute(SIPP_TASK_DESCRIPTION_DEFAULTS)} 
+    task_description =  next(task_description_dict[key] for key in task_description_dict.keys() if key in task.name)
     if len(affected_blocks) > 0:
         logging.info(f'Updating config for block: {affected_blocks}')
         if 'prefix' in affected_blocks:
@@ -362,13 +371,7 @@ def update_building_blocks_if_needed(current_config, task):
                     {
                         "add_task_description": current_config['add_task_description'],
                         "custom_prompt_prefix": current_config['custom_prompt_prefix'],
-                        "task_description": (
-                            ACS_TASK_DESCRIPTION.substitute(ACS_TASK_DESCRIPTION_DEFAULTS)
-                            if task.name.startswith("ACS")
-                            else TABLESHIFT_TASK_DESCRIPTION.substitute(
-                                TABLESHIFT_TASK_DESCRIPTION_DEFAULTS
-                            )
-                        ),
+                        "task_description": task_description,
                     },
                 )
         if 'suffix' in affected_blocks:

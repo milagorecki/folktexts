@@ -26,6 +26,7 @@ TABLESHIFT_TASKS = (
     "BRFSS_Diabetes",
     "BRFSS_Blood_Pressure",
 )
+SIPP_TASKS = ("SIPP",)
 
 DEFAULT_BATCH_SIZE = 16
 DEFAULT_CONTEXT_SIZE = 600
@@ -223,28 +224,27 @@ def main():
     # Create Benchmark object
     from folktexts.benchmark import Benchmark
     task = args.task
+    benchmark_fun_dict = {"acs" : Benchmark.make_acs_benchmark, 
+                          "tableshift": Benchmark.make_tableshift_benchmark, 
+                          "sipp": Benchmark.make_sipp_benchmark}
     if task in ACS_TASKS:
-        bench = Benchmark.make_acs_benchmark(
-            task_name=args.task,
-            model=model,
-            tokenizer=tokenizer,
-            data_dir=args.data_dir,
-            config=config,
-            subsampling=args.subsampling,
-            max_api_rpm=args.max_api_rpm,
-        )
+        benchmark_fun = benchmark_fun_dict["acs"]
     elif task in TABLESHIFT_TASKS:
-        bench = Benchmark.make_tableshift_benchmark(
-            task_name=args.task,
-            model=model,
-            tokenizer=tokenizer,
-            data_dir=args.data_dir,
-            config=config,
-            subsampling=args.subsampling,
-            max_api_rpm=args.max_api_rpm,
-        )
+        benchmark_fun = benchmark_fun_dict["tableshift"]
+    elif task in SIPP_TASKS:
+        benchmark_fun = benchmark_fun_dict["sipp"]
     else:
         raise ValueError(f"Unknown task name: {args.task}")
+    bench = benchmark_fun(
+            task_name=args.task,
+            model=model,
+            tokenizer=tokenizer,
+            data_dir=args.data_dir,
+            config=config,
+            subsampling=args.subsampling,
+            max_api_rpm=args.max_api_rpm,
+        )
+    
     # Set-up results directory
     from folktexts.cli._utils import get_or_create_results_dir
     results_dir = get_or_create_results_dir(
