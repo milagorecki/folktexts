@@ -210,7 +210,7 @@ def load_model_tokenizer(model_name_or_path: str | Path, **kwargs) -> tuple[Auto
 
     # Set default keyword arguments for loading the pretrained model
     model_kwargs = dict(
-        torch_dtype=torch.bfloat16 if is_bf16_compatible() else torch.float16,
+        dtype=torch.bfloat16 if is_bf16_compatible() else torch.float16,
         trust_remote_code=True,
         device_map="auto",
     )
