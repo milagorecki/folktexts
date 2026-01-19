@@ -43,7 +43,7 @@ sipp_livown = ColumnToText(
 
 sipp_snap = ColumnToText(
     name='SNAP_ASSISTANCE',
-    short_description="percentage of the year the repsondent received SNAP/food stamps assistance",
+    short_description="percentage of the year the respondent received SNAP/food stamps assistance",
     value_map=lambda x: f"{x*100:.2f}%",
     missing_value_fill="N/A (refused or unknown)",
 )
@@ -238,7 +238,7 @@ sipp_gender = ColumnToText(
 
 sipp_race = ColumnToText(
     name='RACE',
-    short_description="races the person indentifies with",
+    short_description="races the person identifies with",
     value_map={
         1.0: "White only",
         2.0: "Black only",
@@ -305,7 +305,7 @@ sipp_marital = ColumnToText(
 
 sipp_citizen = ColumnToText(
     name='CITIZENSHIP_STATUS',
-    short_description="is a US citizenship status",
+    short_description="US citizenship status",
     value_map={
         1.0: "Yes",
         2.0: "No",
@@ -339,7 +339,7 @@ sipp_incomehh = ColumnToText(
 
 sipp_workcomp = ColumnToText(
     name='RECEIVED_WORK_COMP',
-    short_description="receives Worker's Compensation payments",
+    short_description="received worker's compensation payments",
     value_map={
         1.0: "Yes",
         2.0: "No",
@@ -356,7 +356,7 @@ sipp_tanf = ColumnToText(
 
 sipp_unemp = ColumnToText(
     name='UNEMPLOYMENT_COMP',
-    short_description="receives Unemployment Compensation payments",
+    short_description="receives unemployment compensation payments",
     value_map={
         1.0: "Yes",
         2.0: "No",
@@ -504,14 +504,14 @@ sipp_qa = MultipleChoiceQA(
 sipp_numeric_qa = DirectNumericQA(
     column=sipp_threshold.apply_to_column_name("OPM_RATIO"),
     text=(
-        "What is the probability that this household's income is at least three times the poverty threshold based on the Officual Poverty Measure (OPM)?"
+        "What is the probability that this individual's income is at least three times the poverty threshold based on the Official Poverty Measure (OPM)?"
     ),
 )
 
 # We consider Wave 1 and Wave 2 of the SIPP 2014 panel data. The target variable is based on the official poverty measure (OPM), a cash-income based measure of poverty.
 sipp_target_col = ColumnToText(
     name=sipp_threshold.apply_to_column_name("OPM_RATIO"),
-    short_description="Is this household's income at least three times the poverty threshold based on the Officual Poverty Measure (OPM)",
+    short_description="Is this individual's income at least three times the poverty threshold based on the Official Poverty Measure (OPM)",
     value_map={
         0: "No",
         1: "Yes",
