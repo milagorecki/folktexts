@@ -210,7 +210,7 @@ sipp_core_disab = ColumnToText(
 
 sipp_supp_disab = ColumnToText(
     name='HEALTH_SUPPLEMENTAL_DISABILITY',
-    short_description="answered positvely to at least one core questions, three child disability questions, or two work disability questions",
+    short_description="answered positively to at least one core questions, three child disability questions, or two work disability questions",
     value_map={
         1.0: "Yes, with a disability",
         2.0: "No, without a disability",
