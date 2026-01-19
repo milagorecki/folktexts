@@ -48,7 +48,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         threshold: float = 0.5,
         correct_order_bias: bool = True,
         seed: int = 42,
-        prompt_variation: dict | None = None,
+        prompt_variation: dict = {},
         **inference_kwargs,
     ):
         """Creates an LLMClassifier object.
@@ -95,7 +95,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
 
         self._threshold = threshold
         self._threshold_fitted_on = 0
-        self._threshold_obj = 'balanced_accuracy'
+        self._threshold_obj = 'balanced_accuracy' ##TODO: remove (but will change benchmark hash)
         self._correct_order_bias = correct_order_bias
         self._seed = seed
 
@@ -209,7 +209,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
             false_neg_cost=false_neg_cost,
             maximize=threshold_obj
         )
-        self._threshold_obj = threshold_obj
+        self._threshold_obj = threshold_obj ## TODO: save in llm_clf._threshold_obj before calling fun
 
         # Update sklearn is_fitted status
         self._is_fitted = True
