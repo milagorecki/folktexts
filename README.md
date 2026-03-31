@@ -32,6 +32,7 @@ as a natural-language Q&A task.
 
 
 ## Table of contents   <!-- omit in toc -->
+- [Changes in this fork](#changes-in-this-fork)
 - [Getting started](#getting-started)
   - [Installing](#installing)
   - [Basic setup](#basic-setup)
@@ -43,15 +44,56 @@ as a natural-language Q&A task.
 - [Citation](#citation)
 - [License and terms of use](#license-and-terms-of-use)
 
+## Changes in this fork
+
+This repository is a fork of [socialfoundations/folktexts](https://github.com/socialfoundations/folktexts) with the following additions and modifications.
+
+### New datasets
+
+**SIPP** (`folktexts/sipp/`):
+- Survey of Income and Program Participation (SIPP) data loader, column definitions, question templates, and benchmark tasks.
+
+**TableShift / BRFSS** (`folktexts/ts/`):
+- Integration with [TableShift](https://github.com/mlfoundations/tableshift) benchmark tasks, in particular the BRFSS (Behavioral Risk Factor Surveillance System) dataset.
+
+**New ACS tasks** (`folktexts/acs/`):
+- Added `ACSHealthInsurance` and `ACSIncomePovertyRatio` tasks.
+- Added simplified ACS column encodings (`acs_columns_alt.py`) and UN country/subregion classification data.
+
+### Prompt variation framework
+
+Added `PromptVariation` class hierarchy in `folktexts/prompting.py` for systematically varying prompt surface form:
+
+| Class | What it varies |
+|:---|:---|
+| `VaryFormat` | Formatting of the information (bullet-list, plain text, comma-separated) |
+| `VaryConnector` | Symbol linking feature name and value (e.g. "is", "=", ":") |
+| `VaryValueMap` | Granularity of value discretization |
+| `VaryFeatureOrder` | Order in which features appear in the prompt |
+| `VaryPrefix` / `VarySuffix` | Prefix/suffix text around the feature list |
+
+Pass prompt variations via `--prompt-variation` on the CLI or `prompt_variation=` in `BenchmarkConfig`.
+
+### Web API modifications
+
+- **`dotenv` integration**: credentials are loaded from a `.env` file automatically (if not passed via `environment` arg)
+- **Batched inference with checkpointing**: intermediate results are saved to disk during long runs; temporary batch files are cleaned up on completion.
+- `llm_api_client` integration
+
+### Benchmark modifications
+
+- **Threshold fitting objective**: `--threshold-obj` controls the metric used when fitting the binarization threshold (e.g. `balanced_accuracy`).
+- **Class-balanced sampling**: `--compose-few-shot-examples` controls class representation in fewshot samples.
+- **Unified benchmark runner**: `run_benchmark.py` replaces `run_acs_benchmark.py` and supports ACS, TableShift, and SIPP tasks.
 
 ## Getting started
 
 ### Installing
 
-Install package from [PyPI](https://pypi.org/project/folktexts/):
+Install this fork directly from GitHub:
 
 ```
-pip install folktexts
+pip install git+https://github.com/milagorecki/folktexts.git
 ```
 
 ### Basic setup
@@ -68,7 +110,7 @@ conda activate folktexts
 2. Install folktexts package
 
 ```
-pip install folktexts
+pip install git+https://github.com/milagorecki/folktexts.git
 ```
 
 3. Create models dataset and results folder
