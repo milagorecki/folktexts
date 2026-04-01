@@ -49,6 +49,13 @@ class TaskMetadata:
     _use_numeric_qa: bool = False
     """Whether to use numeric Q&A instead of multiple-choice Q&A prompts. Default is False."""
 
+    _use_generated_text_for_qa: int = None
+    """Whether to use the text output of the model to extract answers and how many samples are considered. Default is None."""
+
+    # _enable_thinking: bool = False
+    # """Whether model is used in thinking mode."""
+
+
     # Class-level task storage
     _tasks: ClassVar[dict[str, "TaskMetadata"]] = field(default={}, init=False, repr=False)
 
@@ -144,11 +151,29 @@ class TaskMetadata:
         if isinstance(question, MultipleChoiceQA):
             self.multiple_choice_qa = question
             self._use_numeric_qa = False
+            self._use_generated_text_for_qa = question.use_generated_text
         elif isinstance(question, DirectNumericQA):
             self.direct_numeric_qa = question
             self._use_numeric_qa = True
+            self._use_generated_text_for_qa = question.use_generated_text
         else:
             raise ValueError(f"Invalid question type: {type(question).__name__}")
+        
+    @property
+    def use_text_output_for_qa(self) -> bool:
+        """Getter for whether to use numeric Q&A instead of multiple-choice Q&A prompts."""
+        return self._use_generated_text_for_qa
+    
+    @use_text_output_for_qa.setter
+    def use_text_output_for_qa(self, use_text_output_for_qa: bool):
+        """Setter for whether to use generated text to extract answers instead of token probabilities."""
+        logging.info(
+            f"Changing Q&A answer extraction for task '{self.name}' to "
+            f"{'text-based' if use_text_output_for_qa else 'based on token-probabilities'}.\n")
+        self.set_question(
+            dataclasses.replace(self.question, use_generated_text=use_text_output_for_qa)
+            )
+        self._use_generated_text_for_qa = use_text_output_for_qa
 
     @property
     def use_numeric_qa(self) -> bool:
@@ -164,7 +189,7 @@ class TaskMetadata:
         self._use_numeric_qa = use_numeric_qa
 
     @classmethod
-    def get_task(cls, name: str, use_numeric_qa: bool = False) -> TaskMetadata:
+    def get_task(cls, name: str, use_numeric_qa: bool = False, use_text_output_for_qa: bool = False) -> TaskMetadata:
         """Fetches a previously created task by its name.
 
         Parameters
@@ -174,6 +199,9 @@ class TaskMetadata:
         use_numeric_qa : bool, optional
             Whether to set the retrieved task to use verbalized numeric Q&A
             instead of the default multiple-choice Q&A prompts. Default is False.
+        use_text_output_for_qa : bool, optional
+            Whether to set the retrieved task to extract answer from generated 
+            text instead of token log probabilities. Default is None.
 
         Returns
         -------
@@ -193,6 +221,7 @@ class TaskMetadata:
 
         # Set Q&A interface type
         task.use_numeric_qa = use_numeric_qa
+        task.use_text_output_for_qa = use_text_output_for_qa
 
         return task
 

@@ -37,6 +37,13 @@ class BenchmarkConfig:
     numeric_risk_prompting : bool, optional
         Whether to prompt for numeric risk-estimates instead of multiple-choice
         Q&A, by default False.
+    use_generated_text : bool | False, optional
+        Whether to  extract answer from generated text.  Default is False.
+    enable_thinking : bool, optional
+        Whether to enable thinking mode for models that support it (e.g., Qwen3).
+        Only applies when  `use_generated_text` is set. When enabled, uses the 
+        tokenizer's  `apply_chat_template` with `enable_thinking=True`. Default 
+        is False.
     few_shot : int | None, optional
         Whether to use few-shot prompting with a given number of examples, by
         default None.
@@ -64,6 +71,8 @@ class BenchmarkConfig:
     """
 
     numeric_risk_prompting: bool = False
+    use_generated_text: bool = False
+    enable_thinking: bool = False
     few_shot: int | None = None
     reuse_few_shot_examples: bool = False
     compose_few_shot_examples: str = "random"
@@ -518,7 +527,9 @@ class Benchmark:
 
         # Fetch ACS task and dataset
         acs_task = ACSTaskMetadata.get_task(
-            name=task_name, use_numeric_qa=config.numeric_risk_prompting
+            name=task_name, 
+            use_numeric_qa=config.numeric_risk_prompting,
+            use_text_output_for_qa=config.use_generated_text
         )
 
         acs_dataset = ACSDataset.make_from_task(
@@ -591,7 +602,9 @@ class Benchmark:
 
         # Fetch Tableshift task and dataset
         tableshift_task = TableshiftBRFSSTaskMetadata.get_task(
-            name=task_name, use_numeric_qa=config.numeric_risk_prompting
+            name=task_name, 
+            use_numeric_qa=config.numeric_risk_prompting,
+            use_text_output_for_qa=config.use_generated_text
         )
 
         tableshift_dataset = TableshiftBRFSSDataset.make_from_task(
@@ -664,7 +677,9 @@ class Benchmark:
 
         # Fetch SIPP task and dataset
         sipp_task = SIPPTaskMetadata.get_task(
-            name=task_name, use_numeric_qa=config.numeric_risk_prompting
+            name=task_name, 
+            use_numeric_qa=config.numeric_risk_prompting,
+            use_text_output_for_qa=config.use_generated_text
         )
 
         sipp_dataset = SIPPDataset.make_from_task(
@@ -725,6 +740,12 @@ class Benchmark:
 
         # Handle TaskMetadata object
         task = TaskMetadata.get_task(task) if isinstance(task, str) else task
+        
+        if config.use_generated_text and config.use_generated_text != task.use_text_output_for_qa:
+            task.use_text_output_for_qa = config.use_generated_text
+            if config.numeric_risk_prompting:
+                raise NotImplementedError #TODO
+
         if config.numeric_risk_prompting:
             task.use_numeric_qa = True
 

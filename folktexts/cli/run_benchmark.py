@@ -11,6 +11,7 @@ from folktexts._utils import ParseDict
 from folktexts.llm_utils import get_model_folder_path
 from pathlib import Path
 from folktexts.prompting import DEFAULT_PROMPT_STYLE
+import dotenv
 
 DEFAULT_ACS_TASK = "ACSIncome"
 ACS_TASKS = (
@@ -88,8 +89,24 @@ def setup_arg_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
+        "--use-generated-text",
+        # type = bool,
+        help="[bool] Whether to extract answers from generated text",
+        # required=False,
+        action="store_true",
+        default=False,
+    )
+
+    parser.add_argument(
         "--numeric-risk-prompting",
         help="[bool] Whether to prompt for numeric risk-estimates instead of multiple-choice Q&A",
+        action="store_true",
+        default=False,
+    )
+
+    parser.add_argument(
+        "--enable-thinking",
+        help="[bool] Whether to enable thinking mode for models that support it (e.g., Qwen3). Only applies with --reasoning-prompting",
         action="store_true",
         default=False,
     )
@@ -175,6 +192,9 @@ def main():
     logging.info(f"Current python executable: '{sys.executable}'")
     logging.info(f"Received the following cmd-line args: {pretty_args_str}")
 
+    dotenv_succes = dotenv.load_dotenv()
+    logging.debug(f"dotenv.load_dotenv() returned {dotenv_succes}.")
+
     # Parse population filter if provided
     population_filter_dict = None
     if args.use_population_filter:
@@ -199,7 +219,12 @@ def main():
             model_path = get_model_folder_path(args.model, root_dir=args.models_dir)
             if not Path(model_path).exists():
                 raise FileNotFoundError(f"Model folder not found at '{model_path}'.")
-        model, tokenizer = load_model_tokenizer(args.model)
+        if args.use_generated_text: 
+            logging.info("Tokenizer padding_side set to 'left'.")
+            model, tokenizer = load_model_tokenizer(args.model, padding_side='left')
+        else: 
+            model, tokenizer = load_model_tokenizer(args.model)
+
 
     example_composition = args.compose_few_shot_examples
     if "," in example_composition:
@@ -209,7 +234,9 @@ def main():
     from folktexts.benchmark import BenchmarkConfig
     config = BenchmarkConfig(
         few_shot=args.few_shot,
+        use_generated_text = args.use_generated_text, # when thinking is enabled, also set text-based extraction, TODO: check - default number? 
         numeric_risk_prompting=args.numeric_risk_prompting,
+        enable_thinking=args.enable_thinking,
         reuse_few_shot_examples=args.reuse_few_shot_examples,
         compose_few_shot_examples=example_composition,
         batch_size=args.batch_size,
