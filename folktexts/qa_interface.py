@@ -13,6 +13,7 @@ import re
 from abc import ABC
 from dataclasses import dataclass
 from typing import Iterator
+from collections import Counter
 
 import numpy as np
 
@@ -25,6 +26,10 @@ ANSWER_PROB_THRESHOLD = 0.1
 # Default answer keys for multiple-choice questions
 _ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
+_ANSWER_PATTERNS = [
+    # matches "Answer", followed by optional ":" and zero or more whitespaces
+    r"[Aa]nswer:?\s*"
+]
 
 @dataclass(frozen=True)
 class QAInterface(ABC):
@@ -43,6 +48,34 @@ class QAInterface(ABC):
         raise NotImplementedError
 
     def get_answer_from_model_output(
+        self, 
+        last_token_probs: np.ndarray | None = None,
+        tokenizer_vocab: dict[str, int] | None = None,
+        text: str | None = None,
+    ):
+        if not self.use_generated_text:
+            if last_token_probs is None:
+                raise ValueError(
+                    "last_token_probs must be provided when use_generated_text is False"
+                )
+            if tokenizer_vocab is None:
+                raise ValueError(
+                    "tokenizer_vocab must be provided when use_generated_text is False"
+                )
+            return self.get_answer_from_token_probs(
+                last_token_probs=last_token_probs, 
+                tokenizer_vocab=tokenizer_vocab)
+        else: 
+            if text is None:
+                raise ValueError(
+                    "text must be provided when use_generated_text is True"
+                )
+            # check conistency if using multiple text samples: assert(len(text) == self.use_generated_text)
+            return self.get_answer_from_generated_text(
+                text=text
+            )
+
+    def get_answer_from_token_probs(
         self,
         last_token_probs: np.ndarray,
         tokenizer_vocab: dict[str, int],
@@ -55,6 +88,25 @@ class QAInterface(ABC):
             The model's last token probabilities for the question. The first
             dimension corresponds to the number of forward passes as specified
             by `self.num_forward_passes`.
+        tokenizer : dict[str, int]
+            The tokenizer's vocabulary.
+
+        Returns
+        -------
+        answer : float
+            The answer to the question.
+        """
+        raise NotImplementedError
+    
+    def get_answer_from_generated_text(
+        self,
+        text: str,
+    ) -> float:
+        """Decodes the model's outputs into an answer for the given question.
+
+        Parameters
+        ----------
+        text : generated outputs
         tokenizer : dict[str, int]
             The tokenizer's vocabulary.
 
@@ -97,7 +149,7 @@ class DirectNumericQA(QAInterface):
 
     def get_answer_prefix(self) -> str:
         if self.answer_probability:
-            return "Answer: 0."
+            return "Answer (between 0 and 1): 0."
         return "Answer: "
 
     def get_question_prompt(self) -> str:
@@ -119,7 +171,7 @@ class DirectNumericQA(QAInterface):
 
         return numeric_tokens
 
-    def get_answer_from_model_output(
+    def get_answer_from_token_probs(
         self,
         last_token_probs: np.ndarray,
         tokenizer_vocab: dict[str, int],
@@ -283,12 +335,13 @@ class MultipleChoiceQA(QAInterface):
         logging.error(f"Could not find choice for value: {value}")
         return None
 
-    def get_answer_from_text(self, text: str) -> Choice:
+    def get_choice_from_answer_key(self, text: str) -> Choice:
+        """ Returns the choice object corresponding to the answer key (letter)."""
         text = text.strip().upper()
         if text in self.key_to_choice:
             return self.key_to_choice[text]
 
-        logging.error(f"Could not find answer for text: {text}")
+        logging.error(f"Could not find answer choice for text: {text}")
         return None
 
     def get_answer_prefix(self) -> str:
@@ -303,13 +356,13 @@ class MultipleChoiceQA(QAInterface):
         return (f"""\
 Question: {self.text}
 {choice_str}
-{self.get_answer_prefix()}""")
+{self.get_answer_prefix() if not self.use_generated_text else ''}""") ## TODO: only when thinking is enabled -> store in question? or remove again somewhere else? 
 
     def _decode_model_output_to_choice_distribution(
         self,
         last_token_probs: np.ndarray,
         tokenizer_vocab: dict[str, int],
-    ) -> float:
+    ) -> dict[Choice, float]:
         """Decodes the model's output into an answer distribution.
 
         Parameters
@@ -375,7 +428,7 @@ Question: {self.text}
             for choice, prob in answers.items()
         }
 
-    def get_answer_from_model_output(
+    def get_answer_from_token_probs(
         self,
         last_token_probs: np.ndarray,
         tokenizer_vocab: dict[str, int],
@@ -429,3 +482,141 @@ Question: {self.text}
 
         logging.debug(f"Risk estimate: {risk_estimate:.2f}")
         return risk_estimate
+
+    def get_answer_from_generated_text(
+        self,
+        text: str
+    ) -> float:
+        """Decodes the model's output into an answer for the given question.
+
+        Parameters
+        ----------
+        text : str
+            The model's generated outputs for the question. 
+            TODO The length corresponds to the number of samples used to estimate probabilities.
+        tokenizer_vocab: dict[str, int],
+            The tokenizer's vocabulary.
+
+        Returns
+        -------
+        answer : float
+            The answer to the question.
+        """
+        # extract answers
+        # estimate choice probabilities 
+
+        choices = self._decode_choice_distribution_from_generated_texts(text=text)
+        
+        sorted_choices_by_value = sorted(
+            choices.keys(),
+            key=lambda choice: choice.get_numeric_value(),
+        )
+
+        # If binary question, return probability of positive answer
+        # > positive answer always has the highest numeric value
+        if len(choices) == 2:
+            positive_choice = sorted_choices_by_value[-1]
+            return choices[positive_choice]
+
+        # Compute risk estimate by summing weighted choices
+        risk_estimate = sum(
+            choice.get_numeric_value() * prob
+            for choice, prob in choices.items()
+        )
+
+        logging.debug(f"Risk estimate: {risk_estimate:.2f}")
+        return risk_estimate
+    
+    def _extract_answer_key_from_generated_text(self, text: str) -> str:
+        """ Extract anser key from a single model output using regex patterns. """
+        matched_answer_index = 0 
+        for answer_indicator in _ANSWER_PATTERNS:
+            # match = re.search(answer_indicator, text, re.IGNORECASE) #ignore case to catch also all caps 
+            # only take last occurence
+            matches = list(re.finditer(answer_indicator, text, re.IGNORECASE))
+            if matches: 
+                last_match = matches[-1]
+                if last_match.end() > matched_answer_index: 
+                    matched_answer_index = last_match.end()
+        text = text[matched_answer_index:]
+        best_key = None
+        best_match_len = -1
+
+        # TODO: use last matched key? 
+        for key in self.answer_keys: 
+            choice_text = re.escape(self.get_choice_from_answer_key(key).text)
+
+            # patterns to check sorted by priority (most specific first)
+            no_alphanumeric_before = "(?<![A-Za-z0-9])"
+            no_alphanumeric_after = "(?![A-Za-z0-9])"
+            optional_punctuation_and_whitespace = r"[\.\)\-:]?\s*"
+            patterns = [
+                # key + punctuation + choice text
+                rf"{no_alphanumeric_before}{key}{no_alphanumeric_after}{optional_punctuation_and_whitespace}{choice_text}",
+                # key + punctuation only (e.g. "A." or "B)")
+                rf"{no_alphanumeric_before}{key}{no_alphanumeric_after}[\.\)\-:]",
+                # choice text only
+                rf"{choice_text}|{choice_text.lower()}",
+                # bare key (lowest priority)
+                rf"{no_alphanumeric_before}{key}{no_alphanumeric_after}",
+            ]
+
+            for pattern in patterns:
+                match = re.search(pattern, text)
+                if match:
+                    match_len = match.end() - match.start()
+                    print(f"key {key}: {re.search(pattern, text)}")
+                    if match_len > best_match_len:
+                        best_match_len = match_len
+                        best_key = key
+                    break
+        if best_key is not None: 
+            return best_key
+        
+        logging.error(f"No answer found in text: {text}")
+        return None
+    
+    def _decode_choice_distribution_from_generated_texts(
+            self, 
+            text: str,
+    ) -> dict[Choice, float]: 
+        logging.debug('Based on single text answer, so answer probabilities are either 0. or 1. when identifiable.')
+        answer_key = self._extract_answer_key_from_generated_text(text)
+        if answer_key is None:
+            p = 1. / len(self.choices)
+            logging.debug(f"No or multiple answers were found, use uniform prior: {p} for all {len(self.choices)} choices")
+            # uniform prior over answers
+            return {c: p for c in self.choices}
+        else: 
+            choice = self.get_choice_from_answer_key(answer_key)
+            logging.debug(f"Successfully extracted answer {choice.text}")
+            return {c: float(c==choice) for c in self.choices}
+    
+    # Assumes multiple text samples
+    def _estimate_choice_distribution_from_generated_texts(
+            self, 
+            text_samples: list[str],
+    ) -> dict[Choice, float]:
+        num_model_outputs = len(text_samples)
+        counts = Counter(answer_key for output in text_samples if (answer_key := self._extract_answer_key_from_generated_text(output)) is not None) # dict
+
+
+        # Compute relative frequencies
+        answer_dist = {self.key_to_choice[answer_key]: count / num_model_outputs for answer_key, count in counts.items()}
+
+       # total prob
+        answers_sum_prob = sum(answer_dist.values())
+
+        # Log total probability density assigned to answers
+        msg = f"Answers have {answers_sum_prob:.2%} probability assigned."
+        if answers_sum_prob < ANSWER_PROB_THRESHOLD:
+            max_choice = max(answer_dist, key=answer_dist.get)
+            logging.warning(msg + f" Argmax choice: '{max_choice}'.")
+        else:
+            logging.debug(msg)
+
+        return {
+            choice: prob / answers_sum_prob
+            for choice, prob in answer_dist.items()
+        }
+

@@ -8,6 +8,7 @@ e.g.,
 from __future__ import annotations
 
 import logging
+
 # from functools import partial
 from typing import Union
 
@@ -19,7 +20,7 @@ import pandas as pd
 from transformers import AutoTokenizer
 
 from .dataset import Dataset
-from .qa_interface import QAInterface
+from .qa_interface import MultipleChoiceQA, QAInterface
 from .task import TaskMetadata
 
 from folktexts.acs.acs_columns_alt import simplified_value_maps
@@ -34,7 +35,7 @@ from folktexts.ts import (
     TABLESHIFT_TASK_DESCRIPTION,
     TABLESHIFT_TASK_DESCRIPTION_DEFAULTS,
 )
-from folktexts.sipp import(
+from folktexts.sipp import (
     SIPPTaskMetadata,
     SIPP_TASK_DESCRIPTION,
     SIPP_TASK_DESCRIPTION_DEFAULTS,
@@ -42,7 +43,7 @@ from folktexts.sipp import(
 
 
 SYSTEM_PROMPT = """\
-You are a helpful assistant. You answer multiple-choice questions based on the information provided.
+You are a helpful assistant. You answer multiple-choice questions based on the information provided. 
 """
 
 # ACS_TASK_DESCRIPTION = """\
@@ -310,15 +311,28 @@ def build_config_dict(
     }
 
 
-CONFIG_KEYS = ['task_name', 'add_task_description', 'custom_prompt_prefix',
-               'custom_prompt_suffix', 'prompt_variation', 'question']
+CONFIG_KEYS = [
+    "task_name",
+    "add_task_description",
+    "custom_prompt_prefix",
+    "custom_prompt_suffix",
+    "prompt_variation",
+    "question",
+]
 BLOCK_MAPPING = {
-    'task_name': ['prefix'],
-    'add_task_description': ['prefix'],
-    'custom_prompt_prefix': ['prefix'],
-    'custom_prompt_suffix': ['suffix'],
-    'question': ['suffix'],
-    'prompt_variation': ['prefix', 'suffix', 'order', 'granularity', 'connector', 'format'],
+    "task_name": ["prefix"],
+    "add_task_description": ["prefix"],
+    "custom_prompt_prefix": ["prefix"],
+    "custom_prompt_suffix": ["suffix"],
+    "question": ["suffix"],
+    "prompt_variation": [
+        "prefix",
+        "suffix",
+        "order",
+        "granularity",
+        "connector",
+        "format",
+    ],
     # map indivdiual prompt variations
     'task_description': ['prefix'],
     'granularity': ['granularity'],
@@ -337,23 +351,30 @@ def reset_building_block_cache():
 def update_building_blocks_if_needed(current_config, task):
     global _building_blocks_cache, _last_cache_config
 
-    if len(_last_cache_config) == 0 or len(_building_blocks_cache) == 0:  # nothing cached yet
+    if (
+        len(_last_cache_config) == 0 or len(_building_blocks_cache) == 0
+    ):  # nothing cached yet
         changed_keys = CONFIG_KEYS
     else:
         changed_keys = []
         last_config = _last_cache_config or {}
         for key, value in current_config.items():
-            if key == 'prompt_variation':  # is itself a dict
+            if key == "prompt_variation":  # is itself a dict
+                ## TODO: handle if None
                 all_varkeys = set(value.keys()).union(last_config.get(key, {}).keys())
                 for varkey in all_varkeys:
                     if value.get(varkey) != last_config.get(key, {}).get(varkey):
-                        prev = re.sub('\s+', ' ', str(last_config.get(key, {}).get(varkey))).strip()
-                        curr = re.sub('\s+', ' ', str(value.get(varkey))).strip()
+                        prev = re.sub(
+                            "\s+", " ", str(last_config.get(key, {}).get(varkey))
+                        ).strip()
+                        curr = re.sub("\s+", " ", str(value.get(varkey))).strip()
                         logging.debug(f"{varkey}(last -> curr): {prev} -> {curr}")
                         changed_keys.append(varkey)
             else:
                 if value != last_config.get(key):
-                    logging.debug(f"{key} (last -> curr): {last_config.get(key)} -> {value}")
+                    logging.debug(
+                        f"{key} (last -> curr): {last_config.get(key)} -> {value}"
+                    )
                     changed_keys.append(key)
 
     affected_blocks = set()
@@ -363,15 +384,26 @@ def update_building_blocks_if_needed(current_config, task):
     def _configure_variation(cls, default_kwargs):
         valid_keys = get_valid_keys(cls)
         # merge and overwrite defaults with variations
-        merged = {**default_kwargs, **(current_config.get('prompt_variation', {}) or {})}
+        merged = {
+            **default_kwargs,
+            **(current_config.get("prompt_variation", {}) or {}),
+        }
         # filter out keys not in class __init__
         filtered_kwargs = {k: v for k, v in merged.items() if k in valid_keys}
         return cls(task=task, **filtered_kwargs)
-    
-    task_description_dict = {"ACS": ACS_TASK_DESCRIPTION.substitute(ACS_TASK_DESCRIPTION_DEFAULTS), 
-                             "BRFSS": TABLESHIFT_TASK_DESCRIPTION.substitute(TABLESHIFT_TASK_DESCRIPTION_DEFAULTS),
-                             "SIPP": SIPP_TASK_DESCRIPTION.substitute(SIPP_TASK_DESCRIPTION_DEFAULTS)} 
-    task_description =  next(task_description_dict[key] for key in task_description_dict.keys() if key in task.name)
+
+    task_description_dict = {
+        "ACS": ACS_TASK_DESCRIPTION.substitute(ACS_TASK_DESCRIPTION_DEFAULTS),
+        "BRFSS": TABLESHIFT_TASK_DESCRIPTION.substitute(
+            TABLESHIFT_TASK_DESCRIPTION_DEFAULTS
+        ),
+        "SIPP": SIPP_TASK_DESCRIPTION.substitute(SIPP_TASK_DESCRIPTION_DEFAULTS),
+    }
+    task_description = next(
+        task_description_dict[key]
+        for key in task_description_dict.keys()
+        if key in task.name
+    )
     if len(affected_blocks) > 0:
         logging.info(f'Updating config for block: {affected_blocks}')
         if 'prefix' in affected_blocks:
@@ -421,14 +453,26 @@ def encode_row_prompt(
 
     # current config
     curr_config = build_config_dict(
-        task, question, add_task_description, custom_prompt_prefix, custom_prompt_suffix, prompt_variation
+        task,
+        question,
+        add_task_description,
+        custom_prompt_prefix,
+        custom_prompt_suffix,
+        prompt_variation,
     )
 
     # if update cache is different
     update_building_blocks_if_needed(current_config=curr_config, task=task)
 
     # order of value map (granularity), connector and format should not be changed
-    for variation in ['prefix', 'suffix', 'order', 'granularity', 'connector', 'format']:
+    for variation in [
+        "prefix",
+        "suffix",
+        "order",
+        "granularity",
+        "connector",
+        "format",
+    ]:
         if variation in _building_blocks_cache.keys():
             row = _building_blocks_cache[variation](row)
     return "".join(row.values)
@@ -441,7 +485,7 @@ def encode_row_prompt_few_shot(
     n_shots: int,
     question: QAInterface = None,
     reuse_examples: bool = False,
-    compose_few_shot_examples: Union[bool,list] = False,
+    compose_few_shot_examples: Union[bool, list] = False,
     custom_prompt_prefix: str = None,
     prompt_variation: dict = {},
 ) -> str:
@@ -495,16 +539,23 @@ def encode_row_prompt_few_shot(
         X_examples = X_examples.iloc[order_examples]
         y_examples = y_examples.iloc[order_examples]
 
-    prompt_var = (prompt_variation.copy() or {})
-    prompt_var.pop('example_order', 0)
+    prompt_var = prompt_variation.copy() or {}
+    prompt_var.pop("example_order", 0)
 
     # Add `n` example rows with respective labels
     for i in range(n_shots):
-        logging.debug(f"shot {i}: label = {question.get_answer_key_from_value(y_examples.iloc[i])}\t index = {y_examples.index[i]}")
+        label = (
+            question.get_answer_key_from_value(y_examples.iloc[i])
+            if isinstance(question, MultipleChoiceQA)
+            else y_examples.iloc[i]
+        )
+        logging.debug(f"shot {i}: label = {label}\t index = {y_examples.index[i]}")
         prompt += encode_row_prompt(
             X_examples.iloc[i],
             task=task,
-            add_task_description=(i == 0),  # only add task description before first example
+            add_task_description=(
+                i == 0
+            ),  # only add task description before first example
             custom_prompt_prefix=custom_prompt_prefix,
             prompt_variation={
                 **prompt_var,
@@ -525,7 +576,7 @@ def encode_row_prompt_few_shot(
                         }
                     )
                 ),
-                "custom_prompt_suffix": f" {question.get_answer_key_from_value(y_examples.iloc[i])}\n\n",
+                "custom_prompt_suffix": f" {label}\n\n",
                 "skip_question": True,
             },
         )
@@ -556,8 +607,13 @@ def encode_row_prompt_chat(
     logging.warning("NOTE :: Untested feature!!")
 
     return apply_chat_template(
-        tokenizer,
-        (SYSTEM_PROMPT + encode_row_prompt(row, task, question=question)),
+        tokenizer=tokenizer,
+        user_prompt=(SYSTEM_PROMPT + encode_row_prompt(row, task, question=question)),
+        system_prompt=(
+            "Please respond with a single letter."
+            if isinstance(question, MultipleChoiceQA)
+            else ""
+        ),
         **chat_template_kwargs,
     )
 
@@ -566,9 +622,10 @@ def apply_chat_template(
     tokenizer: AutoTokenizer,
     user_prompt: str,
     system_prompt: str = None,
-    chat_prompt: str = ANTHROPIC_CHAT_PROMPT,
+    chat_prompt: str = None,
     **kwargs,
 ) -> str:
+    """Apply a chat template to the given user prompt, optionally including a system prompt and a chat prompt."""
     # Add system prompt
     conversation = (
         [{"role": "system", "content": system_prompt}] if system_prompt else []
@@ -577,43 +634,25 @@ def apply_chat_template(
     # Add user prompt
     conversation.append({"role": "user", "content": user_prompt})
 
-    # Using the Anthropic-style chat prompt
-    conversation.append({"role": "assistant", "content": chat_prompt})
-
-    # Default kwargs
-    kwargs.setdefault("add_generation_prompt", False)
+    if chat_prompt:
+        # Using the Anthropic-style chat prompt
+        conversation.append({"role": "assistant", "content": chat_prompt})
+        # Default kwargs
+        kwargs.setdefault("add_generation_prompt", False)
+    else:
+        kwargs.setdefault("add_generation_prompt", True)
 
     # Apply prompt template
-    filled_prompt = tokenizer.apply_chat_template(
+    tokenize = kwargs.pop("tokenize", False)  # False by default, use kwargs to override
+    formatted_prompt = tokenizer.apply_chat_template(
         conversation=conversation,
-        tokenize=False,
+        tokenize=tokenize,
         **kwargs,
     )
-
-    # Make sure no special tokens follow the `CHAT_PROMPT`;
-    # > some models add a newline character and/or a <end_of_turn> token
-    filled_prompt = filled_prompt[: len(chat_prompt) + filled_prompt.find(chat_prompt)]
-    return filled_prompt
-
-
-# def encode_row_split(split: str | pd.DataFrame,
-#                      task: str | ACSTaskMetadata | TableshiftBRFSSTaskMetadata,
-#                      prompt_variation: dict = {'connector': 'is', 'format': 'text', 'granularity': 'original'},
-#                      ):
-#     from tqdm import tqdm
-#     tqdm.pandas()
-#     if isinstance(str, split):
-#         assert split in ['test', 'train']
-#         logging.info('Loading the dataset split..')
-#         if isinstance(ACSTaskMetadata, task):
-#             task = ACSTaskMetadata.get_task(task)
-#             acs_dataset = ACSDataset.make_from_task(task=task, cache_dir=DATA_DIR)
-#         elif isinstance(TableshiftBRFSSTaskMetadata, task):
-#             pass
-#     elif isinstance(split, pd.DataFrame):
-#         data = split
-
-#     encode_row = partial(encode_row_prompt, task=task, prompt_variation=prompt_variation)
-#     data = data.progress_apply(lambda row: encode_row(row), axis=1).to_frame(name='text')
-
-#     return data
+    if chat_prompt:
+        # Make sure no special tokens follow the `CHAT_PROMPT`;
+        # > some models add a newline character and/or a <end_of_turn> token
+        formatted_prompt = formatted_prompt[
+            : len(chat_prompt) + formatted_prompt.find(chat_prompt)
+        ]
+    return formatted_prompt

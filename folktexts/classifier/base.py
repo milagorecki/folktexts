@@ -26,6 +26,7 @@ from .._utils import hash_dict, hash_function
 
 DEFAULT_CONTEXT_SIZE = 600
 DEFAULT_BATCH_SIZE = 16
+DEFAULT_MAX_NEW_TOKENS = 10_000
 
 SCORE_COL_NAME = "risk_score"
 LABEL_COL_NAME = "label"
@@ -37,7 +38,9 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
     DEFAULT_INFERENCE_KWARGS = {
         "context_size": DEFAULT_CONTEXT_SIZE,
         "batch_size": DEFAULT_BATCH_SIZE,
-    }
+        "enable_thinking": False,                   ## TODO: wrong place? 
+        "max_new_tokens": DEFAULT_MAX_NEW_TOKENS    ## TODO: wrong place? 
+    } 
 
     def __init__(
         self,
@@ -81,6 +84,8 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
 
         # Set classifier metadata
         self._model_name = model_name
+        # self.enable_thinking = False
+        # self.max_new_tokens # what is the models native max  
 
         self._task = TaskMetadata.get_task(task) if isinstance(task, str) else task
         self._custom_prompt_prefix = custom_prompt_prefix
@@ -335,7 +340,10 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         ----------
         df : pd.DataFrame
             The dataframe to compute risk estimates for.
-
+        save_intermed: dict
+            A dictionary containing information for saving intermediate results. Should contain the keys:
+                - 'path': str | Path, optional
+                - 'labels': pd.Series | np.ndarray, optional
         Returns
         -------
         risk_scores : np.ndarray
@@ -362,16 +370,24 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
             else:
                 logging.error(f"Unknown question type '{type(q)}'; cannot correct ordering bias.")
 
+        # Prepare storage for model responses
+        model_outputs = [] # either text or tlp
+
+        # initialize path to save intermediate batch results
+        batch_path = None
+
         # Compute risk estimates per batch
         for batch_idx in tqdm(range(num_batches), desc="Computing risk estimates"):
             start_idx = batch_idx * batch_size
             end_idx = min((batch_idx + 1) * batch_size, len(df))
             batch_data = df.iloc[start_idx:end_idx]
+            batch_row_ids = batch_data.index.values
 
             batch_risk_scores = np.empty((len(batch_data), len(questions)))
             for q_idx, q in enumerate(questions):
 
                 # Encode batch data into natural text prompts
+                # TODO: potential improvement: encode outside of loop with question placeholder, only replace placeholder
                 data_texts_batch = [
                     self.encode_row(
                         row,
@@ -382,7 +398,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
                 ]
 
                 # Query the model with the batch of data
-                risk_estimates_batch = self._query_prompt_risk_estimates_batch(
+                risk_estimates_batch, responses_batch = self._query_prompt_risk_estimates_batch(
                     prompts_batch=data_texts_batch,
                     question=q,
                     context_size=context_size,
@@ -390,34 +406,95 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
 
                 # Store risk estimates for current question
                 batch_risk_scores[:, q_idx] = np.clip(risk_estimates_batch, 0, 1)
-
+                if q.get_answer_from_generated_text and isinstance(q, MultipleChoiceQA):
+                    for i, resp in enumerate(responses_batch):
+                        if resp is not None:
+                            extracted_answer = q.get_answer_key_from_value(q.get_answer_from_generated_text(resp.get("response"))) if resp.get("response") is not None else ""
+                            model_outputs.append({
+                                "row_idx" : batch_row_ids[i],
+                                "question_idx" : q_idx,
+                                "prompt" : data_texts_batch[i],  # includes row information and question
+                                "reasoning": resp.get("reasoning", ""),
+                                "response": resp.get("response", ""),
+                                "extracted_answer": extracted_answer or "",
+                            })
+                        else:
+                            model_outputs.append({
+                                "row_idx" : batch_row_ids[i],
+                                "question_idx" : q_idx,
+                                "prompt" : data_texts_batch[i],  # includes row information and question
+                                "reasoning": "",
+                                "response": "",
+                                "extracted_answer": "",
+                            })
+                        
+            # Calculate final risk score (mean across questions)
             risk_scores[start_idx: end_idx] = batch_risk_scores.mean(axis=1)
 
-            if batch_idx % 50 == 0:
-                # Save to disk if `predictions_save_path` is provided
-                if 'path' in save_intermed.keys() and 'labels' in save_intermed.keys():
-                    path = save_intermed['path']
-                    labels = save_intermed['labels']
-                    if path:
-                        if path.suffix:  # assuming presence of suffix implies it's a file
-                            path = path.with_name(path.stem + "_batch" + path.suffix)
-                        else:
-                            path = path.with_name(path.name + "_batch").with_suffix(".csv")
-                        logging.info(f'Saving predictions to {path}')
+            # if questions[0].get_answer_from_generated_text:
+            #     batch_responses_all_questions = zip(*question_responses) if len(questions) > 1 else question_responses
+            #     model_outputs.extend(batch_responses_all_questions)
+            #     logging.debug(f"length model outputs after batch {batch_idx}: {len(model_outputs)}")
+            # else:
+            #     logging.debug("Skip storing last token probabilities, update if needed.")
 
-                        predictions_df = pd.DataFrame(risk_scores[:end_idx],
-                                                      index=labels[:end_idx].index,
-                                                      columns=[SCORE_COL_NAME])
-                        predictions_df[LABEL_COL_NAME] = labels[:end_idx]
-                        predictions_df.to_csv(path, index=True, mode="w")
+            # log items where one answer could not be extracted or permutation of the questions lead to different outcomes
+            tol = 1e-8
+            arr = batch_risk_scores.reshape(-1, 1) if batch_risk_scores.ndim == 1 else batch_risk_scores
+            undecided_or_disagree = ~(np.isclose(arr, 0, atol=tol) | np.isclose(arr, 1, atol=tol))
+            if np.any(undecided_or_disagree):
+                idx_unclear = np.nonzero(undecided_or_disagree)[0] #only row indices (1D)
+                msg = (f"Risk scores: {batch_risk_scores[idx_unclear]}"
+                       f"\nRisk scores mean: {risk_scores[start_idx: end_idx][idx_unclear]}")
+                if questions[0].get_answer_from_generated_text:
+                    tmp_texts = [f"response {i}\n{item}\n\n" for i, item in enumerate(model_outputs[-len(batch_data)*len(questions):]) if i in idx_unclear]
+                logging.debug(msg +  f"\nCorresponding responses: {tmp_texts}")
+
+            # Save intermediate results
+            path = save_intermed.get('path')
+            
+            if batch_idx % 10 == 0 and path is not None:
+                # add _batch + suffix to path
+                batch_path = path.with_stem(path.stem + "_batch")
+                self._save_intermediate_results(
+                    path=batch_path, 
+                    risk_scores = risk_scores[:end_idx],
+                    labels = save_intermed['labels'][:end_idx],
+                    responses = model_outputs if questions[0].get_answer_from_generated_text else None,
+                    )
 
         # Check that all risk scores were computed
         assert not np.isclose(risk_scores, fill_value).any()
-        # remove intermediate saves
-        if Path(path).exists() and str(path).endswith('_batch.csv'):
-            logging.info(f"Removing file '{path}'.")
-            remove(path)
+        # remove intermediate saves after all are computed
+        if batch_path is not None and Path(batch_path).exists() and str(batch_path).endswith('_batch.csv'):
+            logging.info(f"Removing file '{batch_path}'.")
+            remove(batch_path)
+
         return risk_scores
+    
+    def _save_intermediate_results(self, path: str | Path, 
+                                   risk_scores: np.ndarray, 
+                                   labels: pd.Series | np.ndarray, 
+                                   responses:list = None, ):
+        # save risk_scores as pd.DataFrame
+        predictions_df = pd.DataFrame(risk_scores,
+                                      index=labels.index,
+                                      columns=[SCORE_COL_NAME])
+        predictions_df[LABEL_COL_NAME] = labels
+        logging.info(f'Saving intermediate results to {path}')
+        predictions_df.to_csv(path, index=True, mode="w")
+
+        if responses is not None:
+            response_df = pd.DataFrame(responses)
+                                    #    index=labels.index,
+                                    #    columns=[f'response_{i}' for i in range(num_questions)])
+            logging.debug(f"response_df shape: {response_df.shape}, columns: {response_df.columns}")
+            # TODO: match by row index 
+            response_df[SCORE_COL_NAME] = response_df['row_idx'].map(predictions_df[SCORE_COL_NAME])
+            response_df[LABEL_COL_NAME] = response_df['row_idx'].map(predictions_df[LABEL_COL_NAME])
+            responses_file_name = path.with_stem(path.stem.replace("_predictions_batch", "_responses"))
+            logging.info(f'Saving responses to {responses_file_name}')
+            response_df.to_csv(responses_file_name, index=False, encoding='utf-8', mode="w")
 
     def compute_risk_estimates_for_dataset(
         self,
