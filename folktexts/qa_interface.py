@@ -34,6 +34,10 @@ class QAInterface(ABC):
     text: str
     num_forward_passes: int
 
+    def get_answer_prefix(self) -> str:
+        """Returns the answer label that follows the question (e.g. 'Answer:')."""
+        raise NotImplementedError
+
     def get_question_prompt(self) -> str:
         """Returns a question and answer key."""
         raise NotImplementedError
@@ -91,14 +95,13 @@ class DirectNumericQA(QAInterface):
     num_forward_passes: int = 2     # NOTE: overrides superclass default
     answer_probability: bool = True
 
-    def get_question_prompt(self) -> str:
-        question_prompt = f"""Question: {self.text}\n"""
+    def get_answer_prefix(self) -> str:
         if self.answer_probability:
-            question_prompt += "Answer (between 0 and 1): 0."
-        else:
-            question_prompt += "Answer: "
+            return "Answer: 0."
+        return "Answer: "
 
-        return question_prompt
+    def get_question_prompt(self) -> str:
+        return f"Question: {self.text}\n{self.get_answer_prefix()}"
 
     def _get_numeric_tokens(self, tokenizer_vocab: dict[str, int]) -> dict[str, int]:
         """Returns the indices of tokens that correspond to numbers.
@@ -288,6 +291,9 @@ class MultipleChoiceQA(QAInterface):
         logging.error(f"Could not find answer for text: {text}")
         return None
 
+    def get_answer_prefix(self) -> str:
+        return "Answer:"
+
     def get_question_prompt(self) -> str:
         choice_str = "\n".join(
             f"{key}. {choice.text}."
@@ -297,7 +303,7 @@ class MultipleChoiceQA(QAInterface):
         return (f"""\
 Question: {self.text}
 {choice_str}
-Answer:""")
+{self.get_answer_prefix()}""")
 
     def _decode_model_output_to_choice_distribution(
         self,

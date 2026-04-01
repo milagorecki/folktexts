@@ -752,19 +752,19 @@ class Benchmark:
                 dataset=dataset,
                 reuse_examples=config.reuse_few_shot_examples,
                 compose_few_shot_examples=config.compose_few_shot_examples,
-                prompt_variation=config.prompt_variation,
+                prompt_variation=config.prompt_variation or {},
                 **kwargs,
             )
 
         else:
             print("Using zero-shot prompting.")
             encode_row_function = partial(
-                encode_row_prompt, task=task, prompt_variation=config.prompt_variation, **kwargs
+                encode_row_prompt, task=task, prompt_variation=config.prompt_variation or {}, **kwargs
             )
 
         # Parse LLMClassifier parameters
         llm_inference_kwargs = {"correct_order_bias": config.correct_order_bias,
-                                "prompt_variation": config.prompt_variation}
+                                "prompt_variation": config.prompt_variation or {}}
         if config.batch_size is not None:
             llm_inference_kwargs["batch_size"] = config.batch_size
         if config.context_size is not None:

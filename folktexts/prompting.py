@@ -96,6 +96,8 @@ class PromptVariation:
         return self._apply(row, **kwds)
 
     def _loop_over_features(self, row: pd.Series, **kwds) -> pd.Series:
+        # cast to object so string values can be assigned into numeric columns
+        row = row.astype(object)
         # apply variation to every feature in the given row
         for col in row.index:
             if col in self.task.features:
@@ -252,22 +254,28 @@ class VaryPrefix(PromptVariation):
 
 class VarySuffix(PromptVariation):
     def __init__(
-        self, task, question: QAInterface = None, custom_prompt_suffix: str = DEFAULT_PROMPT_STYLE['custom_prompt_suffix']
+        self, task, question: QAInterface = None, custom_prompt_suffix: str = DEFAULT_PROMPT_STYLE['custom_prompt_suffix'],
+        skip_question: bool = False,
     ):
         description = "Vary the suffix, in particular the question."
         super().__init__(description, task)
         self.question = question if question else task.question
         self.custom_suffix = custom_prompt_suffix
+        self.skip_question = skip_question
 
     def transform_row(
         self,
         row,
         **kwds,
     ):
+        if self.skip_question:
+            suffix = f"\n{self.question.get_answer_prefix()}{self.custom_suffix if self.custom_suffix else ''}"
+        else:
+            suffix = f"\n{self.question.get_question_prompt()}{self.custom_suffix if self.custom_suffix else ''}"
         row = pd.Series(
             {
                 **{index: val for index, val in row.items()},
-                "_SUFFIX": f"\n{self.question.get_question_prompt()}{self.custom_suffix if self.custom_suffix else ''}",
+                "_SUFFIX": suffix,
             }
         )
         return row
@@ -316,7 +324,8 @@ BLOCK_MAPPING = {
     'granularity': ['granularity'],
     'connector': ['connector'],
     'format': ['format'],
-    'order': ['order']
+    'order': ['order'],
+    'skip_question': ['suffix'],
 }
 
 
@@ -434,7 +443,7 @@ def encode_row_prompt_few_shot(
     reuse_examples: bool = False,
     compose_few_shot_examples: Union[bool,list] = False,
     custom_prompt_prefix: str = None,
-    prompt_variation: dict | None = None,
+    prompt_variation: dict = {},
 ) -> str:
     """Encode a question regarding a given row using few-shot prompting.
 
@@ -458,10 +467,11 @@ def encode_row_prompt_few_shot(
     """
     logging.debug(f"Composition of few shot examples: {compose_few_shot_examples}")
     # Take `n_shots` random samples from the train set
+    composition = compose_few_shot_examples if compose_few_shot_examples else "random"
     X_examples, y_examples = dataset.sample_n_train_examples(
         n_shots,
         reuse_examples=reuse_examples,
-        composition=compose_few_shot_examples,
+        composition=composition,
     )
     # Sorting examples by index to keep prompt fixed. Change by modifying the example order.
     X_examples = X_examples.sort_index()
@@ -516,6 +526,7 @@ def encode_row_prompt_few_shot(
                     )
                 ),
                 "custom_prompt_suffix": f" {question.get_answer_key_from_value(y_examples.iloc[i])}\n\n",
+                "skip_question": True,
             },
         )
 
