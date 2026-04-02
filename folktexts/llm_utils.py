@@ -109,10 +109,9 @@ def query_model_batch_multiple_passes(
     allowed_tokens_filter = np.ones(len(tokenizer.vocab), dtype=bool)
     vocab_mismatch = False
     if digits_only:
-        allowed_token_ids = np.array([
-            tok_id
-            for token, tok_id in tokenizer.vocab.items() if token.isdecimal()
-        ])
+        allowed_token_ids = np.array(
+            [tok_id for token, tok_id in tokenizer.vocab.items() if token.isdecimal()]
+        )
 
         allowed_tokens_filter = np.zeros(len(tokenizer.vocab), dtype=bool)
         allowed_tokens_filter[allowed_token_ids] = True

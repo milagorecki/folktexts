@@ -785,7 +785,9 @@ class Benchmark:
 
         # Parse LLMClassifier parameters
         llm_inference_kwargs = {"correct_order_bias": config.correct_order_bias,
-                                "prompt_variation": config.prompt_variation or {}}
+                                "prompt_variation": config.prompt_variation or {},
+                                "enable_thinking": config.enable_thinking,
+                                }
         if config.batch_size is not None:
             llm_inference_kwargs["batch_size"] = config.batch_size
         if config.context_size is not None:

@@ -38,6 +38,7 @@ class QAInterface(ABC):
     column: str
     text: str
     num_forward_passes: int
+    use_generated_text: bool = False
 
     def get_answer_prefix(self) -> str:
         """Returns the answer label that follows the question (e.g. 'Answer:')."""
@@ -46,7 +47,7 @@ class QAInterface(ABC):
     def get_question_prompt(self) -> str:
         """Returns a question and answer key."""
         raise NotImplementedError
-
+    
     def get_answer_from_model_output(
         self, 
         last_token_probs: np.ndarray | None = None,
