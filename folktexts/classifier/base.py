@@ -1,5 +1,4 @@
-"""Module containing the base class for all LLM risk classifiers.
-"""
+"""Module containing the base class for all LLM risk classifiers."""
 
 from __future__ import annotations
 
@@ -7,9 +6,9 @@ import logging
 import math
 from abc import ABC, abstractmethod
 from functools import partial
+from os import remove
 from pathlib import Path
 from typing import Callable
-from os import remove
 
 import numpy as np
 import pandas as pd
@@ -90,12 +89,12 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
             default_encode_row_prompt,
             task=self.task,
             custom_prompt_prefix=self.custom_prompt_prefix,
-            prompt_variation=self.prompt_variation
+            prompt_variation=self.prompt_variation,
         )
 
         self._threshold = threshold
         self._threshold_fitted_on = 0
-        self._threshold_obj = 'balanced_accuracy' ##TODO: remove (but will change benchmark hash)
+        self._threshold_obj = "balanced_accuracy"  ##TODO: remove (but will change benchmark hash)
         self._correct_order_bias = correct_order_bias
         self._seed = seed
 
@@ -194,22 +193,17 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         """Converts positive class scores to multiclass scores."""
         return np.column_stack([1 - pos_class_scores, pos_class_scores])
 
-    def fit(self, X, y, *, false_pos_cost=1.0, false_neg_cost=1.0, threshold_obj='balanced_accuracy', **kwargs):
+    def fit(self, X, y, *, false_pos_cost=1.0, false_neg_cost=1.0, threshold_obj="balanced_accuracy", **kwargs):
         """Uses the provided data sample to fit the prediction threshold."""
 
         # Compute risk estimates for the data
-        y_pred_scores = self._get_positive_class_scores(
-            self.predict_proba(X, **kwargs)
-        )
+        y_pred_scores = self._get_positive_class_scores(self.predict_proba(X, **kwargs))
 
         # Compute the best threshold for the given data
         self.threshold = compute_best_threshold(
-            y, y_pred_scores,
-            false_pos_cost=false_pos_cost,
-            false_neg_cost=false_neg_cost,
-            maximize=threshold_obj
+            y, y_pred_scores, false_pos_cost=false_pos_cost, false_neg_cost=false_neg_cost, maximize=threshold_obj
         )
-        self._threshold_obj = threshold_obj ## TODO: save in llm_clf._threshold_obj before calling fun
+        self._threshold_obj = threshold_obj  ## TODO: save in llm_clf._threshold_obj before calling fun
 
         # Update sklearn is_fitted status
         self._is_fitted = True
@@ -278,10 +272,13 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
             logging.error(
                 "** Ignoring `labels` argument as `predictions_save_path` was not provided. **"
                 "The `labels` argument is only used in conjunction with "
-                "`predictions_save_path` to save alongside predictions to disk. ")
+                "`predictions_save_path` to save alongside predictions to disk. "
+            )
 
         # Check if `predictions_save_path` exists and load predictions if possible
-        logging.info(f"Check if predictions_save_path '{predictions_save_path}' exists:{Path(predictions_save_path).exists()}")
+        logging.info(
+            f"Check if predictions_save_path '{predictions_save_path}' exists:{Path(predictions_save_path).exists()}"
+        )
         if predictions_save_path is not None and Path(predictions_save_path).exists():
             result = self._load_predictions_from_disk(predictions_save_path, data=data)
             if result is not None:
@@ -294,18 +291,17 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
                 )
 
         if not isinstance(data, pd.DataFrame):
-            raise ValueError(
-                f"`data` must be a pd.DataFrame, received {type(data)} instead.")
+            raise ValueError(f"`data` must be a pd.DataFrame, received {type(data)} instead.")
 
         # Compute risk estimates
-        risk_scores = self.compute_risk_estimates_for_dataframe(df=data,
-                                                                save_intermed={'path': predictions_save_path,
-                                                                               'labels': labels})
+        risk_scores = self.compute_risk_estimates_for_dataframe(
+            df=data, save_intermed={"path": predictions_save_path, "labels": labels}
+        )
 
         # Save to disk if `predictions_save_path` is provided
         if predictions_save_path is not None:
             predictions_save_path = Path(predictions_save_path).with_suffix(".csv")
-            logging.info(f'Saving predictions to {predictions_save_path}')
+            logging.info(f"Saving predictions to {predictions_save_path}")
 
             predictions_df = pd.DataFrame(risk_scores, index=data.index, columns=[SCORE_COL_NAME])
             predictions_df[LABEL_COL_NAME] = labels
@@ -325,9 +321,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         raise NotImplementedError("Calling an abstract method :: Use one of the subclasses of LLMClassifier.")
 
     def compute_risk_estimates_for_dataframe(
-        self,
-        df: pd.DataFrame,
-        save_intermed: dict = {'path': None, 'labels': None}
+        self, df: pd.DataFrame, save_intermed: dict = {"path": None, "labels": None}
     ) -> np.ndarray:
         """Compute risk estimates for a specific dataframe (internal helper function).
 
@@ -345,7 +339,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         # Initialize risk scores and other constants
         fill_value = -1
         risk_scores = np.empty(len(df))
-        risk_scores.fill(fill_value)    # fill with -1's
+        risk_scores.fill(fill_value)  # fill with -1's
 
         batch_size = self._inference_kwargs["batch_size"]
         context_size = self._inference_kwargs["context_size"]
@@ -370,7 +364,6 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
 
             batch_risk_scores = np.empty((len(batch_data), len(questions)))
             for q_idx, q in enumerate(questions):
-
                 # Encode batch data into natural text prompts
                 data_texts_batch = [
                     self.encode_row(
@@ -391,30 +384,30 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
                 # Store risk estimates for current question
                 batch_risk_scores[:, q_idx] = np.clip(risk_estimates_batch, 0, 1)
 
-            risk_scores[start_idx: end_idx] = batch_risk_scores.mean(axis=1)
+            risk_scores[start_idx:end_idx] = batch_risk_scores.mean(axis=1)
 
             if batch_idx % 50 == 0:
                 # Save to disk if `predictions_save_path` is provided
-                if 'path' in save_intermed.keys() and 'labels' in save_intermed.keys():
-                    path = save_intermed['path']
-                    labels = save_intermed['labels']
+                if "path" in save_intermed.keys() and "labels" in save_intermed.keys():
+                    path = save_intermed["path"]
+                    labels = save_intermed["labels"]
                     if path:
                         if path.suffix:  # assuming presence of suffix implies it's a file
                             path = path.with_name(path.stem + "_batch" + path.suffix)
                         else:
                             path = path.with_name(path.name + "_batch").with_suffix(".csv")
-                        logging.info(f'Saving predictions to {path}')
+                        logging.info(f"Saving predictions to {path}")
 
-                        predictions_df = pd.DataFrame(risk_scores[:end_idx],
-                                                      index=labels[:end_idx].index,
-                                                      columns=[SCORE_COL_NAME])
+                        predictions_df = pd.DataFrame(
+                            risk_scores[:end_idx], index=labels[:end_idx].index, columns=[SCORE_COL_NAME]
+                        )
                         predictions_df[LABEL_COL_NAME] = labels[:end_idx]
                         predictions_df.to_csv(path, index=True, mode="w")
 
         # Check that all risk scores were computed
         assert not np.isclose(risk_scores, fill_value).any()
         # remove intermediate saves
-        if Path(path).exists() and str(path).endswith('_batch.csv'):
+        if Path(path).exists() and str(path).endswith("_batch.csv"):
             logging.info(f"Removing file '{path}'.")
             remove(path)
         return risk_scores

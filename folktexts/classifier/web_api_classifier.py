@@ -5,9 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-import time
 from typing import Callable
-import random
 
 import numpy as np
 import pandas as pd
@@ -87,9 +85,7 @@ class WebAPILLMClassifier(LLMClassifier):
             seed=seed,
             **inference_kwargs,
         )
-        self.deployment_name = self._model_to_azure_deployment_name.get(
-            model_name, model_name
-        )
+        self.deployment_name = self._model_to_azure_deployment_name.get(model_name, model_name)
 
         # Initialize total cost of API calls
         self._total_cost = 0
@@ -126,18 +122,14 @@ class WebAPILLMClassifier(LLMClassifier):
                 # Set environment variable
                 os.environ["AZURE_API_VERSION"] = api_version
             else:
-                raise ValueError(
-                    "AZURE_API_VERSION not found in environment variables."
-                )
+                raise ValueError("AZURE_API_VERSION not found in environment variables.")
 
         # Get supported parameters
         from litellm import get_supported_openai_params
 
         supported_params = get_supported_openai_params(model=self.deployment_name)
         if supported_params is None:
-            raise RuntimeError(
-                f"Failed to get supported parameters for model '{self.deployment_name}'."
-            )
+            raise RuntimeError(f"Failed to get supported parameters for model '{self.deployment_name}'.")
         self.supported_params = set(supported_params)
 
         # Set litellm logger level to WARNING
@@ -145,10 +137,7 @@ class WebAPILLMClassifier(LLMClassifier):
 
         from llm_api_client import APIClient
 
-        self.client = APIClient(
-            max_requests_per_minute=self.max_api_rpm,
-            max_tokens_per_minute=self.max_api_tpm
-        )
+        self.client = APIClient(max_requests_per_minute=self.max_api_rpm, max_tokens_per_minute=self.max_api_tpm)
 
     @staticmethod
     def check_webAPI_deps() -> bool:
@@ -188,7 +177,6 @@ class WebAPILLMClassifier(LLMClassifier):
         responses_batch : list[dict]
             The returned JSON responses for each prompt in the batch.
         """
-        import litellm
 
         # Adapt number of forward passes
         # > Single token answers should require only one forward pass
@@ -234,14 +222,12 @@ class WebAPILLMClassifier(LLMClassifier):
         requests_data = [
             {
                 "model": self.deployment_name,
-                "messages": [{"role": "system", "content": system_prompt},
-                             {"role": "user", "content": prompt}],
-                **api_call_params
+                "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}],
+                **api_call_params,
             }
-
             for prompt in prompts_batch
-            ]
-        responses_batch = self.client.make_requests_with_retries(requests_data, max_retries = 10, sanitize=False)
+        ]
+        responses_batch = self.client.make_requests_with_retries(requests_data, max_retries=10, sanitize=False)
 
         return responses_batch
 
@@ -273,18 +259,13 @@ class WebAPILLMClassifier(LLMClassifier):
 
         # Construct dictionary of token to linear token probability for each forward pass
         token_probs_all_passes = [
-            {
-                token_metadata.token: np.exp(token_metadata.logprob)
-                for token_metadata in top_token_logprobs.top_logprobs
-            }
+            {token_metadata.token: np.exp(token_metadata.logprob) for token_metadata in top_token_logprobs.top_logprobs}
             for top_token_logprobs in token_choices_all_passes
         ]
 
         # Decode model output into risk estimates
         # 1. Construct vocabulary dict for this response
-        vocab_tokens = {
-            tok for forward_pass in token_probs_all_passes for tok in forward_pass
-        }
+        vocab_tokens = {tok for forward_pass in token_probs_all_passes for tok in forward_pass}
 
         token_to_id = {tok: i for i, tok in enumerate(vocab_tokens)}
         id_to_token = {i: tok for i, tok in enumerate(vocab_tokens)}
@@ -307,9 +288,7 @@ class WebAPILLMClassifier(LLMClassifier):
         # Sanity check numeric answers based on global model response:
         if isinstance(question, DirectNumericQA):
             try:
-                numeric_response = re.match(
-                    r"[-+]?\d*\.\d+|\d+", response_message
-                ).group()
+                numeric_response = re.match(r"[-+]?\d*\.\d+|\d+", response_message).group()
                 risk_estimate_full_text = float(numeric_response)
 
                 if not np.isclose(risk_estimate, risk_estimate_full_text, atol=1e-2):
@@ -378,15 +357,15 @@ class WebAPILLMClassifier(LLMClassifier):
             if response:
                 try:
                     message_content = response.choices[0].message.content
-                    logging.debug(f"Response {i+1}: {message_content[:100]}...") # Print first 100 chars
+                    logging.debug(f"Response {i + 1}: {message_content[:100]}...")  # Print first 100 chars
                     risk_estimates_batch.append(self._decode_risk_estimate_from_api_response(response, question))
                 except (AttributeError, IndexError, TypeError) as e:
-                    logging.error(f"Response {i+1}: Could not parse response content. Error: {e}")
+                    logging.error(f"Response {i + 1}: Could not parse response content. Error: {e}")
                     logging.error(f"Raw response: {response}")
                     logging.error("Adding NaN value.")
                     risk_estimates_batch.append(np.nan)
             else:
-                logging.error(f"Response {i+1}: Request failed. Adding NaN value. ")
+                logging.error(f"Response {i + 1}: Request failed. Adding NaN value. ")
                 risk_estimates_batch.append(np.nan)
 
         self.track_stats()

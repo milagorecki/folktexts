@@ -8,13 +8,13 @@ import logging
 from pathlib import Path
 
 import pandas as pd
+from tableshift import get_iid_dataset
 
 from ..dataset import Dataset
 from .tableshift_tasks import (
     TableshiftBRFSSTaskMetadata,
     passthrough_preprocessor_config,
 )
-from tableshift import get_iid_dataset
 
 DEFAULT_DATA_DIR = Path("~/data").expanduser().resolve()
 DEFAULT_TEST_SIZE = 0.1
@@ -74,23 +74,13 @@ class TableshiftBRFSSDataset(Dataset):
             Extra key-word arguments to be passed to the Dataset constructor.
         """
         # Parse task if given a string
-        task_obj = (
-            TableshiftBRFSSTaskMetadata.get_task(task)
-            if isinstance(task, str)
-            else task
-        )
+        task_obj = TableshiftBRFSSTaskMetadata.get_task(task) if isinstance(task, str) else task
         logging.debug(f"task_obj : {task_obj.tableshift_obj.__dict__}")
 
         # Create "folktables" sub-folder under the given cache dir
-        cache_dir = (
-            Path(cache_dir or DEFAULT_DATA_DIR).expanduser().resolve()
-            / "tableshift"
-            / task_obj.name.lower()
-        )
+        cache_dir = Path(cache_dir or DEFAULT_DATA_DIR).expanduser().resolve() / "tableshift" / task_obj.name.lower()
         if not cache_dir.exists():
-            logging.warning(
-                f"Creating cache directory '{cache_dir}' for TableShift data."
-            )
+            logging.warning(f"Creating cache directory '{cache_dir}' for TableShift data.")
             cache_dir.mkdir(exist_ok=True, parents=False)
 
         # if not already available, load data
@@ -102,9 +92,7 @@ class TableshiftBRFSSDataset(Dataset):
             df = pd.read_csv(csv_file.as_posix())
         else:
             if not load_dataset_if_not_cached:
-                raise ValueError(
-                    "Could not load dataset from cache, save dataset locally first."
-                )
+                raise ValueError("Could not load dataset from cache, save dataset locally first.")
             else:
                 # Load Tableshift data source
                 logging.info("Loading TableShift task data (may take a while)...")
@@ -143,10 +131,8 @@ class TableshiftBRFSSDataset(Dataset):
         self._data = self._parse_task_data(self._full_acs_data, new_task)
 
         # Re-make train/test/val split
-        self._train_indices, self._test_indices, self._val_indices = (
-            self._make_train_test_val_split(
-                self._data, self.test_size, self.val_size, self._rng
-            )
+        self._train_indices, self._test_indices, self._val_indices = self._make_train_test_val_split(
+            self._data, self.test_size, self.val_size, self._rng
         )
 
         # Check if sub-sampling is necessary (it's applied only to train/test/val indices)
@@ -156,9 +142,7 @@ class TableshiftBRFSSDataset(Dataset):
         self._task = new_task
 
     @classmethod
-    def _parse_task_data(
-        cls, full_df: pd.DataFrame, task: TableshiftBRFSSTaskMetadata
-    ) -> pd.DataFrame:
+    def _parse_task_data(cls, full_df: pd.DataFrame, task: TableshiftBRFSSTaskMetadata) -> pd.DataFrame:
         """Parse a DataFrame for compatibility with the given task object.
 
         Parameters
@@ -185,13 +169,7 @@ class TableshiftBRFSSDataset(Dataset):
         parsed_df = full_df
 
         # Threshold the target column if necessary
-        if (
-            task.target is not None
-            and task.target_threshold is not None
-            and task.get_target() not in parsed_df.columns
-        ):
-            parsed_df[task.get_target()] = task.target_threshold.apply_to_column_data(
-                parsed_df[task.target]
-            )
+        if task.target is not None and task.target_threshold is not None and task.get_target() not in parsed_df.columns:
+            parsed_df[task.get_target()] = task.target_threshold.apply_to_column_data(parsed_df[task.target])
 
         return parsed_df

@@ -1,5 +1,4 @@
-"""Module for using huggingface transformers models as classifiers.
-"""
+"""Module for using huggingface transformers models as classifiers."""
 
 from __future__ import annotations
 

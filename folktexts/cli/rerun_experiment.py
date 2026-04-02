@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Helper script to re-run a single experiment locally.
-"""
+"""Helper script to re-run a single experiment locally."""
+
 from argparse import ArgumentParser
 from subprocess import call
 
@@ -23,8 +23,7 @@ def setup_arg_parser() -> ArgumentParser:
     return parser
 
 
-if __name__ == '__main__':
-
+if __name__ == "__main__":
     # Parse command-line arguments
     parser = setup_arg_parser()
     args = parser.parse_args()
@@ -34,10 +33,6 @@ if __name__ == '__main__':
     exp = Experiment(**load_json(args.experiment_json))
 
     # Run the experiment
-    cmdline_args = [
-        cmd
-        for key, value in exp.kwargs.items()
-        for cmd in (f"--{key.replace('_', '-')}", str(value))
-    ]
+    cmdline_args = [cmd for key, value in exp.kwargs.items() for cmd in (f"--{key.replace('_', '-')}", str(value))]
 
     call([exp.executable_path] + cmdline_args)

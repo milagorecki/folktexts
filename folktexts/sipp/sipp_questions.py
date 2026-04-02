@@ -10,23 +10,17 @@ from . import sipp_columns
 
 # Map of SIPP column names to ColumnToText objects
 sipp_columns_map: dict[str, object] = {
-    col_mapper.name: col_mapper
-    for col_mapper in sipp_columns.__dict__.values()
-    if isinstance(col_mapper, ColumnToText)
+    col_mapper.name: col_mapper for col_mapper in sipp_columns.__dict__.values() if isinstance(col_mapper, ColumnToText)
 }
 
 # Map of numeric SIPP questions
 sipp_numeric_qa_map: dict[str, object] = {
-    question.column: question
-    for question in sipp_columns.__dict__.values()
-    if isinstance(question, _DirectNumericQA)
+    question.column: question for question in sipp_columns.__dict__.values() if isinstance(question, _DirectNumericQA)
 }
 
 # Map of multiple-choice SIPP questions
 sipp_multiple_choice_qa_map: dict[str, object] = {
-    question.column: question
-    for question in sipp_columns.__dict__.values()
-    if isinstance(question, _MultipleChoiceQA)
+    question.column: question for question in sipp_columns.__dict__.values() if isinstance(question, _MultipleChoiceQA)
 }
 
 # ... include all multiple-choice questions defined in the column descriptions

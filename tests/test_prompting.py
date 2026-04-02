@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import pytest
-
 from folktexts.prompting import (
     DEFAULT_PROMPT_STYLE,
     VaryConnector,

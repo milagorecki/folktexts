@@ -12,16 +12,16 @@ import numpy as np
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from ._io import load_json, save_json
-from ._utils import hash_dict, is_valid_number, get_current_timestamp
+from ._utils import get_current_timestamp, hash_dict, is_valid_number
 from .acs import ACSDataset, ACSTaskMetadata
-from .ts import TableshiftBRFSSDataset, TableshiftBRFSSTaskMetadata
-from .sipp import SIPPDataset, SIPPTaskMetadata
 from .classifier import LLMClassifier, TransformersLLMClassifier, WebAPILLMClassifier
 from .dataset import Dataset
 from .evaluation import evaluate_predictions
 from .plotting import render_evaluation_plots, render_fairness_plots
 from .prompting import encode_row_prompt, encode_row_prompt_few_shot
+from .sipp import SIPPDataset, SIPPTaskMetadata
 from .task import TaskMetadata
+from .ts import TableshiftBRFSSDataset, TableshiftBRFSSTaskMetadata
 
 DEFAULT_SEED = 42
 DEFAULT_FIT_THRESHOLD_N = 100

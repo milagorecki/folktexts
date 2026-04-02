@@ -1,4 +1,5 @@
 """Helper functions for ACS data processing."""
+
 from __future__ import annotations
 
 import logging

@@ -1,9 +1,8 @@
 """Test functions in folktexts.llm_utils
 """
 
-from transformers import PreTrainedModel, PreTrainedTokenizerBase
-
 from folktexts.llm_utils import load_model_tokenizer
+from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 
 def test_load_model_tokenizer(causal_lm_name_or_path: str):

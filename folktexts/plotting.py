@@ -1,5 +1,5 @@
-"""Module to plot evaluation results.
-"""
+"""Module to plot evaluation results."""
+
 from __future__ import annotations
 
 import logging
@@ -17,6 +17,7 @@ from ._utils import safe_division
 try:
     import matplotlib.pyplot as plt
     import seaborn as sns
+
     HAS_PLOTTING_DEPS = True
     sns.set_style("whitegrid", rc={"grid.linestyle": "--"})
 except ImportError:
@@ -81,9 +82,7 @@ def render_evaluation_plots(
     # Plot ROC point
     if "fpr" in eval_results and "tpr" in eval_results and "threshold" in eval_results:
         fpr, tpr = eval_results["fpr"], eval_results["tpr"]
-        plt.plot(
-            fpr, tpr, "ro", markersize=5, lw=0,
-            label=f"threshold={eval_results['threshold']:.2f}")
+        plt.plot(fpr, tpr, "ro", markersize=5, lw=0, label=f"threshold={eval_results['threshold']:.2f}")
         plt.legend()
 
     show_or_save(disp.figure_, "roc_curve")
@@ -108,9 +107,7 @@ def render_evaluation_plots(
     # Plot distribution of scores per label #
     # ### ### ### ### ### ### ### ### ### ###
     sns.kdeplot(
-        data=pd.DataFrame(
-            {"score": y_pred_scores, "label": y_true}
-        ).reset_index(drop=True),
+        data=pd.DataFrame({"score": y_pred_scores, "label": y_true}).reset_index(drop=True),
         x="score",
         hue="label",
         multiple="fill",
@@ -141,8 +138,7 @@ def render_fairness_plots(  # noqa: C901
         return {}
 
     # Plot fairness plots if sensitive attribute is provided
-    assert len(sensitive_attribute) == len(y_true) == len(y_pred_scores), \
-        "All arrays should have the same length."
+    assert len(sensitive_attribute) == len(y_true) == len(y_pred_scores), "All arrays should have the same length."
 
     # Initialize vars
     results = {}
@@ -167,8 +163,8 @@ def render_fairness_plots(  # noqa: C901
     # Plot group-specific ROC curves
     # ###
     for idx, s_value in enumerate(np.unique(sensitive_attribute)):
-        is_first_group = (idx == 0)
-        is_last_group = (idx == n_groups - 1)
+        is_first_group = idx == 0
+        is_last_group = idx == n_groups - 1
 
         # If it's the first group
         if is_first_group:
@@ -177,9 +173,14 @@ def render_fairness_plots(  # noqa: C901
             # Plot global ROC point
             if "fpr" in eval_results and "tpr" in eval_results:
                 ax.plot(
-                    eval_results["fpr"], eval_results["tpr"],
-                    marker="P", markersize=5, lw=0,
-                    color=global_color, label="Global")
+                    eval_results["fpr"],
+                    eval_results["tpr"],
+                    marker="P",
+                    markersize=5,
+                    lw=0,
+                    color=global_color,
+                    label="Global",
+                )
 
         # Get group-specific data
         group_indices = np.argwhere(sensitive_attribute == s_value).flatten()
@@ -193,10 +194,10 @@ def render_fairness_plots(  # noqa: C901
 
         # Plot group-specific ROC curve
         RocCurveDisplay.from_predictions(
-            y_true=group_y_true, y_pred=group_y_pred_scores,
+            y_true=group_y_true,
+            y_pred=group_y_pred_scores,
             plot_chance_level=is_last_group,
             ax=ax,
-
             # Group-specific visuals
             linestyle=group_line_styles[idx],
             color=group_colors[idx],
@@ -207,15 +208,19 @@ def render_fairness_plots(  # noqa: C901
         if "threshold" in eval_results:
             threshold = eval_results["threshold"]
             tn, fp, fn, tp = metrics.confusion_matrix(
-                group_y_true, (group_y_pred_scores >= threshold).astype(int),
+                group_y_true,
+                (group_y_pred_scores >= threshold).astype(int),
                 labels=(0, 1),
             ).ravel()
             group_fpr = safe_division(fp, fp + tn, worst_result=1)
             group_tpr = safe_division(tp, tp + fn, worst_result=0)
 
             ax.plot(
-                group_fpr, group_tpr,
-                marker="X", markersize=5, lw=0,
+                group_fpr,
+                group_tpr,
+                marker="X",
+                markersize=5,
+                lw=0,
                 color=group_colors[idx],
                 # label=group_value_map(s_value),
             )
@@ -231,7 +236,7 @@ def render_fairness_plots(  # noqa: C901
         group_indices = np.argwhere(sensitive_attribute == s_value).flatten()
         group_y_true = y_true[group_indices]
         group_y_pred_scores = y_pred_scores[group_indices]
-        is_first_group = (idx == 0)
+        is_first_group = idx == 0
 
         if is_first_group:
             fig, ax = plt.subplots(figsize=(5, 4))
@@ -243,10 +248,11 @@ def render_fairness_plots(  # noqa: C901
 
         # Plot global calibration curve
         CalibrationDisplay.from_predictions(
-            y_true=group_y_true, y_prob=group_y_pred_scores,
-            n_bins=5, strategy="quantile",
+            y_true=group_y_true,
+            y_prob=group_y_pred_scores,
+            n_bins=5,
+            strategy="quantile",
             ax=ax,
-
             # Group-specific visuals
             linestyle=group_line_styles[idx],
             color=group_colors[idx],

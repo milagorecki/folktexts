@@ -5,18 +5,19 @@ Usage:
     - TableShift: python -m folktexts.cli.launch_experiments_htcondor --executable-path ./folktexts/cli/run_benchmark.py --results-dir './results/test/' --logger-level=INFO --task BRFSS_Diabetes --model openai-community/gpt2 --subsampling=0.01  --variation="format=bullet;connector=is"
     - web-API: python -m folktexts.cli.launch_experiments_htcondor --executable-path ./folktexts/cli/run_benchmark.py --results-dir '/fast/mgorecki/monoculture/results/folktexts/0-bullet-is/' --logger-level=INFO --task=ACSIncome --variation="format=bullet;connector=is" --model=gpt-4.1  --use-web-api-model --environment="AZURE_API_BASE=$AZURE_API_BASE;AZURE_API_KEY=$AZURE_API_KEY"
     - few-shot: python -m folktexts.cli.launch_experiments_htcondor --executable-path ./folktexts/cli/run_benchmark.py --results-dir '/fast/mgorecki/monoculture/results/folktexts/10-variations/' --logger-level=INFO --models-dir /fast/mgorecki/models/ --task=ACSIncome --fit-threshold=2000 --variation="format=comma;connector=:;granularity=original;order=RAC1P,SEX,WKHP,RELP,POBP,OCCP,MAR,SCHL,COW,AGEP" --subsampling=0.01 --model openai-community/gpt2 --reuse-few-shot-examples=True --few-shot=10 --balance-few-shot-examples=True
-"""
+"""  # noqa: E501
+
 import argparse
+import logging
 import math
 from pathlib import Path
 from pprint import pprint
 
 from folktexts._io import load_json, save_json
-from folktexts.llm_utils import get_model_folder_path, get_model_size_B
 from folktexts.cli._utils import get_or_create_results_dir
+from folktexts.llm_utils import get_model_folder_path, get_model_size_B
 
 from .experiments import Experiment, launch_experiment_job
-import logging
 
 # All ACS prediction tasks
 ACS_TASKS = (
@@ -54,7 +55,7 @@ CONTEXT_SIZE = 750
 
 JOB_CPUS = 4
 JOB_MEMORY_GB = 60
-JOB_BID = 500
+JOB_BID = 200
 
 # LLMs to evaluate
 LLM_MODELS = [
@@ -63,30 +64,24 @@ LLM_MODELS = [
     "google/gemma-1.1-2b-it",
     "google/gemma-7b",
     "google/gemma-1.1-7b-it",
-
     "google/gemma-2-9b",
     "google/gemma-2-9b-it",
     "google/gemma-2-27b",
     "google/gemma-2-27b-it",
-
     # Meta Llama3 models
     "meta-llama/Meta-Llama-3-8B",
     "meta-llama/Meta-Llama-3-8B-Instruct",
     "meta-llama/Meta-Llama-3-70B",
     "meta-llama/Meta-Llama-3-70B-Instruct",
-
     "meta-llama/Meta-Llama-3.1-8B",
     "meta-llama/Meta-Llama-3.1-8B-Instruct",
     "meta-llama/Meta-Llama-3.1-70B",
     "meta-llama/Meta-Llama-3.1-70B-Instruct",
-
     "meta-llama/Meta-Llama-3.2-1B",
     "meta-llama/Meta-Llama-3.2-1B-Instruct",
     "meta-llama/Meta-Llama-3.2-3B",
     "meta-llama/Meta-Llama-3.2-3B-Instruct",
-
     "meta-llama/Meta-Llama-3.3-70B-Instruct",
-
     # Mistral AI models
     "mistralai/Mistral-7B-v0.1",
     "mistralai/Mistral-7B-Instruct-v0.2",
@@ -94,16 +89,13 @@ LLM_MODELS = [
     "mistralai/Mixtral-8x7B-Instruct-v0.1",
     "mistralai/Mixtral-8x22B-v0.1",
     "mistralai/Mixtral-8x22B-Instruct-v0.1",
-
     "mistralai/Mistral-Small-24B-Base-2501",
     "mistralai/Mistral-Small-24B-Instruct-2501",
-
     # Yi models
     "01-ai/Yi-6B",
     "01-ai/Yi-6B-Chat",
     "01-ai/Yi-34B",
     "01-ai/Yi-34B-Chat",
-
     # Qwen2 models
     # "Qwen/Qwen2-1.5B",
     # "Qwen/Qwen2-1.5B-Instruct",
@@ -111,12 +103,10 @@ LLM_MODELS = [
     "Qwen/Qwen2-7B-Instruct",
     "Qwen/Qwen2-72B",
     "Qwen/Qwen2-72B-Instruct",
-
     "Qwen/Qwen2.5-7B",
     "Qwen/Qwen2.5-7B-Instruct",
     "Qwen/Qwen2.5-72B",
     "Qwen/Qwen2.5-72B-Instruct",
-
     # OLMo models
     "allenai/OLMo-1B-0724-hf",
     "allenai/OLMo-1B-hf",
@@ -138,8 +128,7 @@ def make_llm_clf_experiment(
     env_vars_str: str = "",
     **kwargs,
 ) -> Experiment:
-    """Create an experiment object to run.
-    """
+    """Create an experiment object to run."""
     # Get model size
     model_size_B = get_model_size_B(model_name, default=8)
 
@@ -154,7 +143,7 @@ def make_llm_clf_experiment(
 
     # Set default job kwargs
     job_kwargs.setdefault("job_cpus", JOB_CPUS)
-    job_kwargs.setdefault("job_gpus", math.ceil(model_size_B / 40))     # One GPU per 40B parameters
+    job_kwargs.setdefault("job_gpus", math.ceil(model_size_B / 40))  # One GPU per 40B parameters
     job_kwargs.setdefault("job_memory_gb", JOB_MEMORY_GB)
     job_kwargs.setdefault("job_gpu_memory_gb", 35 if model_size_B < 5 else 60)
     job_kwargs.setdefault("job_bid", JOB_BID)
@@ -163,7 +152,9 @@ def make_llm_clf_experiment(
     n_shots = int(experiment_kwargs.get("few_shot", 1))
     experiment_kwargs.setdefault("batch_size", math.ceil(BATCH_SIZE / n_shots))
     experiment_kwargs.setdefault("context_size", CONTEXT_SIZE * n_shots)
-    experiment_kwargs.setdefault("data_dir", ACS_DATA_DIR.as_posix() if task in ACS_TASKS else TABLESHIFT_DATA_DIR.as_posix())
+    experiment_kwargs.setdefault(
+        "data_dir", ACS_DATA_DIR.as_posix() if task in ACS_TASKS else TABLESHIFT_DATA_DIR.as_posix()
+    )
     # experiment_kwargs.setdefault("fit_threshold", FIT_THRESHOLD)
 
     if "use_feature_subset" in kwargs:
@@ -277,6 +268,7 @@ def main():
 
     # Parse extra kwargs
     from ._utils import cmd_line_args_to_kwargs
+
     extra_kwargs = cmd_line_args_to_kwargs(extra_kwargs)
 
     # Prepare command-line arguments

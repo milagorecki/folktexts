@@ -1,10 +1,10 @@
 """A collection of utils to accompany folktexts notebooks."""
-import os
-import re
 import json
 import logging
-from pathlib import Path
+import os
+import re
 from datetime import datetime
+from pathlib import Path
 
 
 def get_current_timestamp() -> str:

@@ -24,7 +24,6 @@ from .tableshift_thresholds import (
     brfss_hypertension_threshold,
 )
 
-
 tableshift_physical_health = ColumnToText(
     name="PHYSHLTH",
     short_description="number of days during the past 30 days where physical health was not good",
@@ -33,7 +32,8 @@ tableshift_physical_health = ColumnToText(
 )
 
 logging.debug(
-    "Value map encoding following tableshift encoding. Note, that inconsistent with other features, 1.0 corresponds to 'No' and 2.0 corresponds to 'Yes'."
+    "Value map encoding following tableshift encoding."
+    " Note, that inconsistent with other features, 1.0 corresponds to 'No' and 2.0 corresponds to 'Yes'."
 )
 tableshift_high_blood_pressure = ColumnToText(
     name="HIGH_BLOOD_PRESS",
@@ -58,7 +58,8 @@ brfss_hypertension_qa = MultipleChoiceQA(
 brfss_hypertension_numeric_qa = DirectNumericQA(
     column=brfss_hypertension_threshold.apply_to_column_name("HIGH_BLOOD_PRESS"),
     text=(
-        "What is the probability that this person has ever been told they have high blood pressure by a health professional?"
+        "What is the probability that this person has ever been told"
+        " they have high blood pressure by a health professional?"
     ),
 )
 
@@ -195,7 +196,9 @@ tableshift_drnk_per_week = ColumnToText(
 
 tableshift_rfbing5 = ColumnToText(
     name="RFBING5",
-    short_description="binge drinking behaviour (i.e. >= 5 drinks per occasion for males, >= 4 drinks per occasion for females)",
+    short_description=(
+        "binge drinking behaviour (i.e. >= 5 drinks per occasion for males, >= 4 drinks per occasion for females)"
+    ),
     value_map={
         1.0: "Yes",
         2.0: "No",
@@ -382,16 +385,14 @@ tableshift_medcost = ColumnToText(
     missing_value_fill="N/A (refused or unknown)",
 )
 
-logging.debug(
-    "PRACE1 encoded with mix of integers and floats due to grouping by some tasks, inconsistent to rest."
-)
+logging.debug("PRACE1 encoded with mix of integers and floats due to grouping by some tasks, inconsistent to rest.")
 tableshift_prace1 = ColumnToText(
     name="PRACE1",
     short_description="preferred race category",
     value_map={
         0: "Non-White",  # added for BRFSS Blood Pressure (Grouper turns race into int)
         1: "White",  # added for BRFSS Blood Pressure (Grouper turns race into int)
-        1.0: "White",
+        1.0: "White",  # noqa: F601
         2.0: "Black or African American",
         3.0: "American Indian or Alaskan Native",
         4.0: "Asian",
@@ -416,9 +417,7 @@ tableshift_sex = ColumnToText(
     missing_value_fill="N/A (refused or unknown)",
 )
 
-logging.debug(
-    "DIABETES recoded for BRFSS Diabetes Task to a binary indicator, apdapt if using for another task."
-)
+logging.debug("DIABETES recoded for BRFSS Diabetes Task to a binary indicator, apdapt if using for another task.")
 tableshift_diabetes = ColumnToText(
     name="DIABETES",
     short_description="prior diagnosis of diabetes",
@@ -445,9 +444,7 @@ brfss_diabetes_qa = MultipleChoiceQA(
 
 brfss_diabetes_numeric_qa = DirectNumericQA(
     column=brfss_diabetes_threshold.apply_to_column_name("DIABETES"),
-    text=(
-        "What is the probability that this person has ever been told they have diabetes?"
-    ),
+    text=("What is the probability that this person has ever been told they have diabetes?"),
 )
 
 tableshift_diabetes_target_col = ColumnToText(
@@ -517,11 +514,14 @@ tableshift_chcocncr = ColumnToText(
 
 
 logging.debug(
-    "POVERTY columns gets overwritten in tableshift preprocessing using INCOME and a slightly lower threshold of $25,000."
+    "POVERTY columns gets overwritten in tableshift preprocessing using INCOME "
+    "and a slightly lower threshold of $25,000."
 )
 tableshift_poverty = ColumnToText(
     name="POVERTY",
-    short_description="binary indicator of whether individual's income falls below 2021 poverty guideline for a family of four",
+    short_description=(
+        "binary indicator of whether individual's income falls below 2021 poverty guideline for a family of four"
+    ),
     value_map={
         1: "Yes",
         0: "No",

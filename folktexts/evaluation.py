@@ -5,6 +5,7 @@ Notes
 Code based on the `error_parity.evaluation` module,
 at: https://github.com/socialfoundations/error-parity/blob/main/error_parity/evaluation.py
 """
+
 from __future__ import annotations
 
 import logging
@@ -174,7 +175,8 @@ def evaluate_binary_predictions_fairness(
             # - i.e., min(curr_metric_results) / global_curr_metric_result;
             # - same question for the absolute diff calculations;
             results[ratio_name] = safe_division(
-                min(curr_metric_results), max(curr_metric_results),
+                min(curr_metric_results),
+                max(curr_metric_results),
                 worst_result=0,
             )
 
@@ -206,7 +208,7 @@ def compute_best_threshold(
     *,
     false_pos_cost: float = 1.0,
     false_neg_cost: float = 1.0,
-    maximize: str = 'balanced_accuracy'
+    maximize: str = "balanced_accuracy",
 ) -> float:
     """Computes the binarization threshold that maximizes accuracy.
 
@@ -226,17 +228,17 @@ def compute_best_threshold(
     best_threshold : float
         The threshold value that maximizes accuracy for the given predictions.
     """
-    assert maximize in ['balanced_accuracy', 'accuracy'], "Provide one of ['balanced_accuracy','accuracy']."
+    assert maximize in ["balanced_accuracy", "accuracy"], "Provide one of ['balanced_accuracy','accuracy']."
 
     # Compute TPR and FPR for all possible thresholds
     fpr, tpr, thresholds = roc_curve(y_true, y_pred_scores)
-    if maximize == 'balanced_accuracy':
+    if maximize == "balanced_accuracy":
         # Compute the cost of each threshold
-        costs = false_pos_cost * fpr + false_neg_cost * (1-tpr)
+        costs = false_pos_cost * fpr + false_neg_cost * (1 - tpr)
     else:
-        baserate = y_true.sum()/y_true.shape[0]
+        baserate = y_true.sum() / y_true.shape[0]
         logging.info("baserate: {baserate}")
-        fp = fpr * (1-baserate)
+        fp = fpr * (1 - baserate)
         fn = (1 - tpr) * baserate
         costs = false_pos_cost * fp + false_neg_cost * fn
 
@@ -278,8 +280,7 @@ def evaluate_predictions(
     # Compute threshold if necessary
     if threshold == "best":
         threshold = compute_best_threshold(y_true, y_pred_scores)
-    assert is_valid_number(threshold) and 0 <= threshold <= 1, \
-        f"Invalid threshold: {threshold}"
+    assert is_valid_number(threshold) and 0 <= threshold <= 1, f"Invalid threshold: {threshold}"
 
     # Save initial results' statistics
     results = {
@@ -308,7 +309,8 @@ def evaluate_predictions(
                 y_pred_binary,
                 sensitive_attribute,
                 return_groupwise_metrics=return_groupwise_metrics,
-                ))
+            )
+        )
 
     # Compute additional metrics
     results["roc_auc"] = float(roc_auc_score(y_true, y_pred_scores))
@@ -377,10 +379,9 @@ def bootstrap_estimate(
         # Evaluate predictions on this bootstrap sample
         results.append(
             eval_func(
-                y_true[indices],            # ground-truth labels
-                y_pred_scores[indices],     # predicted risk scores
-                sensitive_attribute[indices]
-                if sensitive_attribute is not None else None,  # sensitive attributes
+                y_true[indices],  # ground-truth labels
+                y_pred_scores[indices],  # predicted risk scores
+                sensitive_attribute[indices] if sensitive_attribute is not None else None,  # sensitive attributes
             )
         )
 

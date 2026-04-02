@@ -1,5 +1,5 @@
-"""Threshold instances for ACS / folktables tasks.
-"""
+"""Threshold instances for ACS / folktables tasks."""
+
 from folktexts.threshold import Threshold
 
 # ACSIncome task

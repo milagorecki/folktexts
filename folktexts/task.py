@@ -1,5 +1,5 @@
-"""Definition of a generic TaskMetadata class.
-"""
+"""Definition of a generic TaskMetadata class."""
+
 from __future__ import annotations
 
 import dataclasses
@@ -76,7 +76,8 @@ class TaskMetadata:
         if self.multiple_choice_qa is None and self.direct_numeric_qa is None and self.target is not None:
             logging.warning(
                 f"No question was explicitly provided for task '{self.name}'. "
-                f"Inferring from target column's default question ({self.get_target()}).")
+                f"Inferring from target column's default question ({self.get_target()})."
+            )
 
             if self.cols_to_text[self.get_target()]._question is not None:
                 question = self.cols_to_text[self.get_target()]._question
@@ -84,8 +85,10 @@ class TaskMetadata:
 
         # Make sure Q&A related attributes are consistent
         if (
-            self._use_numeric_qa is True and self.direct_numeric_qa is None
-            or self._use_numeric_qa is False and self.multiple_choice_qa is None
+            self._use_numeric_qa is True
+            and self.direct_numeric_qa is None
+            or self._use_numeric_qa is False
+            and self.multiple_choice_qa is None
         ):
             raise ValueError("Inconsistent Q&A attributes provided.")
 
@@ -120,11 +123,10 @@ class TaskMetadata:
 
         if raise_ and len(missing_cols) > 0:
             raise ValueError(
-                f"The following required task columns were not found in the dataset: "
-                f"{list(missing_cols)};"
+                f"The following required task columns were not found in the dataset: {list(missing_cols)};"
             )
 
-        return len(missing_cols) == 0   # Return True if all columns are present
+        return len(missing_cols) == 0  # Return True if all columns are present
 
     def get_target(self) -> str:
         """Resolves the name of the target column depending on `self.target_threshold`."""
@@ -159,8 +161,8 @@ class TaskMetadata:
     def use_numeric_qa(self, use_numeric_qa: bool):
         """Setter for whether to use numeric Q&A instead of multiple-choice Q&A prompts."""
         logging.info(
-            f"Changing Q&A mode for task '{self.name}' to "
-            f"{'numeric' if use_numeric_qa else 'multiple-choice'}.")
+            f"Changing Q&A mode for task '{self.name}' to {'numeric' if use_numeric_qa else 'multiple-choice'}."
+        )
         self._use_numeric_qa = use_numeric_qa
 
     @classmethod
@@ -213,12 +215,7 @@ class TaskMetadata:
     def get_row_description(self, row: pd.Series) -> str:
         """Encode a description of a given data row in textual form."""
         row = row[self.features]
-        return (
-            "\n".join(
-                "- " + self.cols_to_text[col].get_text(val)
-                for col, val in row.items()
-            )
-        )
+        return "\n".join("- " + self.cols_to_text[col].get_text(val) for col, val in row.items())
 
     def sensitive_attribute_value_map(self) -> Callable:
         """Returns a mapping between sensitive attribute values and their descriptions."""

@@ -1,4 +1,5 @@
 """Common functions to use with transformer LLMs."""
+
 from __future__ import annotations
 
 import logging
@@ -14,10 +15,7 @@ PROB_WARN_THR = 0.5
 
 
 def query_model_batch(
-    text_inputs: list[str],
-    model: AutoModelForCausalLM,
-    tokenizer: AutoTokenizer,
-    context_size: int
+    text_inputs: list[str], model: AutoModelForCausalLM, tokenizer: AutoTokenizer, context_size: int
 ) -> np.array:
     """Queries the model with a batch of text inputs.
 
@@ -104,10 +102,7 @@ def query_model_batch_multiple_passes(
     allowed_tokens_filter = np.ones(len(tokenizer.vocab), dtype=bool)
     vocab_mismatch = False
     if digits_only:
-        allowed_token_ids = np.array([
-            tok_id
-            for token, tok_id in tokenizer.vocab.items() if token.isdecimal()
-        ])
+        allowed_token_ids = np.array([tok_id for token, tok_id in tokenizer.vocab.items() if token.isdecimal()])
 
         allowed_tokens_filter = np.zeros(len(tokenizer.vocab), dtype=bool)
         allowed_tokens_filter[allowed_token_ids] = True
@@ -133,13 +128,7 @@ def query_model_batch_multiple_passes(
             actual_vocab_size = current_probs.shape[1]
             allowed_tokens_filter = np.ones(actual_vocab_size, dtype=bool)
             if digits_only:
-                allowed_token_ids = np.array(
-                    [
-                        tok_id
-                        for token, tok_id in tokenizer.vocab.items()
-                        if token.isdecimal()
-                    ]
-                )
+                allowed_token_ids = np.array([tok_id for token, tok_id in tokenizer.vocab.items() if token.isdecimal()])
 
                 allowed_tokens_filter = np.zeros(current_probs.shape[1], dtype=bool)
                 allowed_tokens_filter[allowed_token_ids] = True
@@ -162,9 +151,10 @@ def query_model_batch_multiple_passes(
     last_token_probs_array = np.array(last_token_probs)
     last_token_probs_array = np.moveaxis(last_token_probs_array, 0, 1)
     assert last_token_probs_array.shape == (
-        len(text_inputs), 
-        n_passes, 
-        len(tokenizer.vocab) if not vocab_mismatch else actual_vocab_size,)
+        len(text_inputs),
+        n_passes,
+        len(tokenizer.vocab) if not vocab_mismatch else actual_vocab_size,
+    )
     return last_token_probs_array
 
 
@@ -180,7 +170,7 @@ def add_pad_token(tokenizer):
     embeddings.
     """
     if tokenizer.pad_token is None:
-        tokenizer.add_special_tokens({'pad_token': tokenizer.eos_token})
+        tokenizer.add_special_tokens({"pad_token": tokenizer.eos_token})
 
 
 def is_bf16_compatible() -> bool:
@@ -245,12 +235,11 @@ def get_model_folder_path(model_name: str, root_dir="/tmp") -> str:
 
 
 def get_model_size_B(model_name: str, default: int = None) -> int:
-    """Get the model size from the model name, in Billions of parameters.
-    """
+    """Get the model size from the model name, in Billions of parameters."""
     regex = re.search(r"((?P<times>\d+)[xX])?(?P<size>(\d\.)?\d+)[bB]", model_name)
     if regex:
         size = regex.group("size")
-        return  (float(size) if '.' in size else int(size)) * int(regex.group("times") or 1)
+        return (float(size) if "." in size else int(size)) * int(regex.group("times") or 1)
 
     if default is not None:
         return default

@@ -7,39 +7,38 @@ e.g.,
 
 from __future__ import annotations
 
+import inspect
 import logging
+import re
+from copy import deepcopy
+
 # from functools import partial
 from typing import Union
-
-from copy import deepcopy
-import inspect
-import re
 
 import pandas as pd
 from transformers import AutoTokenizer
 
+from folktexts.acs import (
+    ACS_TASK_DESCRIPTION,
+    ACS_TASK_DESCRIPTION_DEFAULTS,
+    ACSTaskMetadata,
+)
+from folktexts.acs._utils import reset_cache
+from folktexts.acs.acs_columns_alt import simplified_value_maps
+from folktexts.sipp import (
+    SIPP_TASK_DESCRIPTION,
+    SIPP_TASK_DESCRIPTION_DEFAULTS,
+    SIPPTaskMetadata,
+)
+from folktexts.ts import (
+    TABLESHIFT_TASK_DESCRIPTION,
+    TABLESHIFT_TASK_DESCRIPTION_DEFAULTS,
+    TableshiftBRFSSTaskMetadata,
+)
+
 from .dataset import Dataset
 from .qa_interface import QAInterface
 from .task import TaskMetadata
-
-from folktexts.acs.acs_columns_alt import simplified_value_maps
-from folktexts.acs._utils import reset_cache
-from folktexts.acs import (
-    ACSTaskMetadata,
-    ACS_TASK_DESCRIPTION,
-    ACS_TASK_DESCRIPTION_DEFAULTS,
-)
-from folktexts.ts import (
-    TableshiftBRFSSTaskMetadata,
-    TABLESHIFT_TASK_DESCRIPTION,
-    TABLESHIFT_TASK_DESCRIPTION_DEFAULTS,
-)
-from folktexts.sipp import(
-    SIPPTaskMetadata,
-    SIPP_TASK_DESCRIPTION,
-    SIPP_TASK_DESCRIPTION_DEFAULTS,
-)
-
 
 SYSTEM_PROMPT = """\
 You are a helpful assistant. You answer multiple-choice questions based on the information provided.
@@ -64,30 +63,31 @@ GEMMA_CHAT_PROMPT = """The provided information suggests that the answer is"""
 
 _valid_keys_cache = {}
 
-DEFAULT_PROMPT_STYLE = {'format': 'bullet',
-                        'connector': 'is',
-                        'granularity': 'original',
-                        'order': None,
-                        'custom_prompt_prefix': None,
-                        'custom_prompt_suffix': None
-                        }
+DEFAULT_PROMPT_STYLE = {
+    "format": "bullet",
+    "connector": "is",
+    "granularity": "original",
+    "order": None,
+    "custom_prompt_prefix": None,
+    "custom_prompt_suffix": None,
+}
 
 
 class PromptVariation:
-    def __init__(
-        self, description: str, task: ACSTaskMetadata | TableshiftBRFSSTaskMetadata
-    ):
-        assert isinstance(task, ACSTaskMetadata) or isinstance(
-            task, TableshiftBRFSSTaskMetadata
-        ) or isinstance(task,SIPPTaskMetadata), "Provide task object."
+    def __init__(self, description: str, task: ACSTaskMetadata | TableshiftBRFSSTaskMetadata):
+        assert (
+            isinstance(task, ACSTaskMetadata)
+            or isinstance(task, TableshiftBRFSSTaskMetadata)
+            or isinstance(task, SIPPTaskMetadata)
+        ), "Provide task object."
         self.description = description
         self.task = deepcopy(task)
         self.cache = {}
 
         # define how to apply the transformation (on each cell of a cell or row-wise)
-        if hasattr(self, 'transform_row'):
+        if hasattr(self, "transform_row"):
             self._apply = self.transform_row
-        elif hasattr(self, 'transform_feature'):
+        elif hasattr(self, "transform_feature"):
             self._apply = self._loop_over_features
         else:
             raise NotImplementedError("Subclass must define 'transform_row' or 'transform_feature'.")
@@ -112,7 +112,7 @@ class PromptVariation:
 
 
 class VaryFormat(PromptVariation):
-    def __init__(self, task, format: str = DEFAULT_PROMPT_STYLE['format']):
+    def __init__(self, task, format: str = DEFAULT_PROMPT_STYLE["format"]):
         description = "Vary prompt format, default is 'bullet'."
         super().__init__(description, task)
         assert format in {
@@ -122,9 +122,7 @@ class VaryFormat(PromptVariation):
             "textbullet",
         }, "Currently only 'bullet', 'comma', 'text', 'textbullet' implemented."
         self.format = format
-        logging.warning(
-            "VaryFormat should be applied after the value mapping and adding the connector."
-        )
+        logging.warning("VaryFormat should be applied after the value mapping and adding the connector.")
 
     def transform_feature(self, col, val, **kwds):
         formats = {
@@ -137,23 +135,21 @@ class VaryFormat(PromptVariation):
 
 
 class VaryConnector(PromptVariation):
-    def __init__(self, task, connector: str = DEFAULT_PROMPT_STYLE['connector']):
+    def __init__(self, task, connector: str = DEFAULT_PROMPT_STYLE["connector"]):
         description = "Vary symbol used between feature name and value, default is 'is'."
         super().__init__(description, task)
         if connector == ":":
             self.connector = f"{connector} "
         else:
             self.connector = f" {connector} "
-        logging.warning(
-            "VaryConnector should be applied after value mapping has already been applied."
-        )
+        logging.warning("VaryConnector should be applied after value mapping has already been applied.")
 
     def transform_feature(self, col, val, **kwds):
         return f"{self.task.cols_to_text[col].short_description}{self.connector}{val}"
 
 
 class VaryValueMap(PromptVariation):
-    def __init__(self, task, granularity=DEFAULT_PROMPT_STYLE['granularity']):
+    def __init__(self, task, granularity=DEFAULT_PROMPT_STYLE["granularity"]):
         description = "Vary the granulariy of the feature map, default is original (higher granularity)."
         super().__init__(description, task)
         assert granularity in ["original", "low"]
@@ -162,7 +158,7 @@ class VaryValueMap(PromptVariation):
 
     def transform_row(self, row: pd.Series, **kwds) -> pd.Series:
         if self.granularity == "low" and not self.reduced_granularity:
-            logging.debug('Set col_to_text to lower granularity.')
+            logging.debug("Set col_to_text to lower granularity.")
             # empty cache of previously parsed pums codes to overwrite with new postprocessing for value map
             reset_cache()
             for col in self.task.features:
@@ -178,19 +174,15 @@ class VaryValueMap(PromptVariation):
 
 
 class VaryFeatureOrder(PromptVariation):
-    def __init__(self, task, order: list | str = DEFAULT_PROMPT_STYLE['order']):
+    def __init__(self, task, order: list | str = DEFAULT_PROMPT_STYLE["order"]):
         description = "Vary the order of the features."
         super().__init__(description, task)
         if order:
             if isinstance(order, str):
                 order = list(order.split(","))
             else:
-                assert isinstance(
-                    order, list
-                ), "Expected order provided as list"  # mutable
-            assert set(order) == set(
-                self.task.features
-            ), "Provide a complete ordering of all features"
+                assert isinstance(order, list), "Expected order provided as list"  # mutable
+            assert set(order) == set(self.task.features), "Provide a complete ordering of all features"
         self.order = order
 
     def transform_row(self, row: pd.Series, **kwds):
@@ -200,19 +192,16 @@ class VaryFeatureOrder(PromptVariation):
         # create iterator
         reordered_iter = iter(self.order)
         # reorder only feature-columns
-        order_all = [
-            next(reordered_iter) if col in feature_set else col for col in row.index
-        ]
+        order_all = [next(reordered_iter) if col in feature_set else col for col in row.index]
         return row[order_all]
 
 
 class VaryPrefix(PromptVariation):
-
     def __init__(
         self,
         task: TaskMetadata,
         add_task_description: bool = True,
-        custom_prompt_prefix: str = DEFAULT_PROMPT_STYLE['custom_prompt_prefix'],
+        custom_prompt_prefix: str = DEFAULT_PROMPT_STYLE["custom_prompt_prefix"],
         task_description: str = None,
     ):
         description = "Vary the prefix printed before the prompt, by default the task description is printed."
@@ -254,7 +243,10 @@ class VaryPrefix(PromptVariation):
 
 class VarySuffix(PromptVariation):
     def __init__(
-        self, task, question: QAInterface = None, custom_prompt_suffix: str = DEFAULT_PROMPT_STYLE['custom_prompt_suffix'],
+        self,
+        task,
+        question: QAInterface = None,
+        custom_prompt_suffix: str = DEFAULT_PROMPT_STYLE["custom_prompt_suffix"],
         skip_question: bool = False,
     ):
         description = "Vary the suffix, in particular the question."
@@ -310,22 +302,28 @@ def build_config_dict(
     }
 
 
-CONFIG_KEYS = ['task_name', 'add_task_description', 'custom_prompt_prefix',
-               'custom_prompt_suffix', 'prompt_variation', 'question']
+CONFIG_KEYS = [
+    "task_name",
+    "add_task_description",
+    "custom_prompt_prefix",
+    "custom_prompt_suffix",
+    "prompt_variation",
+    "question",
+]
 BLOCK_MAPPING = {
-    'task_name': ['prefix'],
-    'add_task_description': ['prefix'],
-    'custom_prompt_prefix': ['prefix'],
-    'custom_prompt_suffix': ['suffix'],
-    'question': ['suffix'],
-    'prompt_variation': ['prefix', 'suffix', 'order', 'granularity', 'connector', 'format'],
+    "task_name": ["prefix"],
+    "add_task_description": ["prefix"],
+    "custom_prompt_prefix": ["prefix"],
+    "custom_prompt_suffix": ["suffix"],
+    "question": ["suffix"],
+    "prompt_variation": ["prefix", "suffix", "order", "granularity", "connector", "format"],
     # map indivdiual prompt variations
-    'task_description': ['prefix'],
-    'granularity': ['granularity'],
-    'connector': ['connector'],
-    'format': ['format'],
-    'order': ['order'],
-    'skip_question': ['suffix'],
+    "task_description": ["prefix"],
+    "granularity": ["granularity"],
+    "connector": ["connector"],
+    "format": ["format"],
+    "order": ["order"],
+    "skip_question": ["suffix"],
 }
 
 
@@ -343,12 +341,12 @@ def update_building_blocks_if_needed(current_config, task):
         changed_keys = []
         last_config = _last_cache_config or {}
         for key, value in current_config.items():
-            if key == 'prompt_variation':  # is itself a dict
+            if key == "prompt_variation":  # is itself a dict
                 all_varkeys = set(value.keys()).union(last_config.get(key, {}).keys())
                 for varkey in all_varkeys:
                     if value.get(varkey) != last_config.get(key, {}).get(varkey):
-                        prev = re.sub('\s+', ' ', str(last_config.get(key, {}).get(varkey))).strip()
-                        curr = re.sub('\s+', ' ', str(value.get(varkey))).strip()
+                        prev = re.sub("\s+", " ", str(last_config.get(key, {}).get(varkey))).strip()
+                        curr = re.sub("\s+", " ", str(value.get(varkey))).strip()
                         logging.debug(f"{varkey}(last -> curr): {prev} -> {curr}")
                         changed_keys.append(varkey)
             else:
@@ -363,42 +361,44 @@ def update_building_blocks_if_needed(current_config, task):
     def _configure_variation(cls, default_kwargs):
         valid_keys = get_valid_keys(cls)
         # merge and overwrite defaults with variations
-        merged = {**default_kwargs, **(current_config.get('prompt_variation', {}) or {})}
+        merged = {**default_kwargs, **(current_config.get("prompt_variation", {}) or {})}
         # filter out keys not in class __init__
         filtered_kwargs = {k: v for k, v in merged.items() if k in valid_keys}
         return cls(task=task, **filtered_kwargs)
-    
-    task_description_dict = {"ACS": ACS_TASK_DESCRIPTION.substitute(ACS_TASK_DESCRIPTION_DEFAULTS), 
-                             "BRFSS": TABLESHIFT_TASK_DESCRIPTION.substitute(TABLESHIFT_TASK_DESCRIPTION_DEFAULTS),
-                             "SIPP": SIPP_TASK_DESCRIPTION.substitute(SIPP_TASK_DESCRIPTION_DEFAULTS)} 
-    task_description =  next(task_description_dict[key] for key in task_description_dict.keys() if key in task.name)
+
+    task_description_dict = {
+        "ACS": ACS_TASK_DESCRIPTION.substitute(ACS_TASK_DESCRIPTION_DEFAULTS),
+        "BRFSS": TABLESHIFT_TASK_DESCRIPTION.substitute(TABLESHIFT_TASK_DESCRIPTION_DEFAULTS),
+        "SIPP": SIPP_TASK_DESCRIPTION.substitute(SIPP_TASK_DESCRIPTION_DEFAULTS),
+    }
+    task_description = next(task_description_dict[key] for key in task_description_dict.keys() if key in task.name)
     if len(affected_blocks) > 0:
-        logging.info(f'Updating config for block: {affected_blocks}')
-        if 'prefix' in affected_blocks:
-            _building_blocks_cache['prefix'] = _configure_variation(
-                    VaryPrefix,
-                    {
-                        "add_task_description": current_config['add_task_description'],
-                        "custom_prompt_prefix": current_config['custom_prompt_prefix'],
-                        "task_description": task_description,
-                    },
-                )
-        if 'suffix' in affected_blocks:
-            _building_blocks_cache['suffix'] = _configure_variation(
-                    VarySuffix,
-                    {
-                        "question": current_config['question'],
-                        "custom_prompt_suffix": current_config['custom_prompt_suffix'],
-                    },
-                )
-        if 'order' in affected_blocks:
-            _building_blocks_cache['order'] = _configure_variation(VaryFeatureOrder, {"order": None})
-        if 'granularity' in affected_blocks:
-            _building_blocks_cache['granularity'] = _configure_variation(VaryValueMap, {"granularity": "original"})
-        if 'connector' in affected_blocks:
-            _building_blocks_cache['connector'] = _configure_variation(VaryConnector, {"connector": "is"})
-        if 'format' in affected_blocks:
-            _building_blocks_cache['format'] = _configure_variation(VaryFormat, {"format": "textbullet"})
+        logging.info(f"Updating config for block: {affected_blocks}")
+        if "prefix" in affected_blocks:
+            _building_blocks_cache["prefix"] = _configure_variation(
+                VaryPrefix,
+                {
+                    "add_task_description": current_config["add_task_description"],
+                    "custom_prompt_prefix": current_config["custom_prompt_prefix"],
+                    "task_description": task_description,
+                },
+            )
+        if "suffix" in affected_blocks:
+            _building_blocks_cache["suffix"] = _configure_variation(
+                VarySuffix,
+                {
+                    "question": current_config["question"],
+                    "custom_prompt_suffix": current_config["custom_prompt_suffix"],
+                },
+            )
+        if "order" in affected_blocks:
+            _building_blocks_cache["order"] = _configure_variation(VaryFeatureOrder, {"order": None})
+        if "granularity" in affected_blocks:
+            _building_blocks_cache["granularity"] = _configure_variation(VaryValueMap, {"granularity": "original"})
+        if "connector" in affected_blocks:
+            _building_blocks_cache["connector"] = _configure_variation(VaryConnector, {"connector": "is"})
+        if "format" in affected_blocks:
+            _building_blocks_cache["format"] = _configure_variation(VaryFormat, {"format": "textbullet"})
 
         _last_cache_config = current_config
 
@@ -428,7 +428,7 @@ def encode_row_prompt(
     update_building_blocks_if_needed(current_config=curr_config, task=task)
 
     # order of value map (granularity), connector and format should not be changed
-    for variation in ['prefix', 'suffix', 'order', 'granularity', 'connector', 'format']:
+    for variation in ["prefix", "suffix", "order", "granularity", "connector", "format"]:
         if variation in _building_blocks_cache.keys():
             row = _building_blocks_cache[variation](row)
     return "".join(row.values)
@@ -441,7 +441,7 @@ def encode_row_prompt_few_shot(
     n_shots: int,
     question: QAInterface = None,
     reuse_examples: bool = False,
-    compose_few_shot_examples: Union[bool,list] = False,
+    compose_few_shot_examples: Union[bool, list] = False,
     custom_prompt_prefix: str = None,
     prompt_variation: dict = {},
 ) -> str:
@@ -488,19 +488,20 @@ def encode_row_prompt_few_shot(
         logging.debug("Varying the order of the examples.")
         print("Varying the order of the examples.")
         order_examples = list(prompt_variation.get("example_order", "").split(","))
-        logging.debug(
-            f"Received order: {order_examples} with length {len(order_examples)}, n_shots={n_shots}."
-        )
+        logging.debug(f"Received order: {order_examples} with length {len(order_examples)}, n_shots={n_shots}.")
         assert len(order_examples) == n_shots
         X_examples = X_examples.iloc[order_examples]
         y_examples = y_examples.iloc[order_examples]
 
-    prompt_var = (prompt_variation.copy() or {})
-    prompt_var.pop('example_order', 0)
+    prompt_var = prompt_variation.copy() or {}
+    prompt_var.pop("example_order", 0)
 
     # Add `n` example rows with respective labels
     for i in range(n_shots):
-        logging.debug(f"shot {i}: label = {question.get_answer_key_from_value(y_examples.iloc[i])}\t index = {y_examples.index[i]}")
+        logging.debug(
+            f"shot {i}: label = {question.get_answer_key_from_value(y_examples.iloc[i])}\t "
+            f"index = {y_examples.index[i]}"
+        )
         prompt += encode_row_prompt(
             X_examples.iloc[i],
             task=task,
@@ -570,9 +571,7 @@ def apply_chat_template(
     **kwargs,
 ) -> str:
     # Add system prompt
-    conversation = (
-        [{"role": "system", "content": system_prompt}] if system_prompt else []
-    )
+    conversation = [{"role": "system", "content": system_prompt}] if system_prompt else []
 
     # Add user prompt
     conversation.append({"role": "user", "content": user_prompt})

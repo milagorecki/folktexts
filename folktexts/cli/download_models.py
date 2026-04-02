@@ -48,9 +48,7 @@ DEFAULT_MODEL_LIST = [
 
 def setup_arg_parser() -> ArgumentParser:
     # Init parser
-    parser = ArgumentParser(
-        description="Download huggingface transformer models and tokenizers to disk"
-    )
+    parser = ArgumentParser(description="Download huggingface transformer models and tokenizers to disk")
 
     parser.add_argument(
         "--model",
@@ -109,9 +107,7 @@ def main():
             logging.warning(f"Model '{model_name}' already exists at '{curr_save_dir}'")
             continue
         if Path(group_save_dir).exists():
-            logging.warning(
-                f"Model '{model_name}' already exists at group directory '{group_save_dir}'"
-            )
+            logging.warning(f"Model '{model_name}' already exists at group directory '{group_save_dir}'")
             continue
 
         # Download model to tmp dir
