@@ -1,5 +1,5 @@
-"""A collection of ACS prediction tasks based on the folktables package.
-"""
+"""A collection of ACS prediction tasks based on the folktables package."""
+
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
@@ -24,21 +24,18 @@ from .acs_thresholds import (
     acs_travel_time_threshold,
 )
 
-
 ACS_TASK_DESCRIPTION = Template("""\
 The following data corresponds to $respondent. \
 The survey was conducted among US residents in $year. \
 Please answer the question based on the information provided. \
 The data provided is enough to reach an approximate answer$suffix.
 """)
-ACS_TASK_DESCRIPTION_DEFAULTS = {'respondent': 'a survey respondent', 'year': 2018, 'suffix': ''}
+ACS_TASK_DESCRIPTION_DEFAULTS = {"respondent": "a survey respondent", "year": 2018, "suffix": ""}
 
 
 # Map of ACS column names to ColumnToText objects
 acs_columns_map: dict[str, object] = {
-    col_mapper.name: col_mapper
-    for col_mapper in acs_columns.__dict__.values()
-    if isinstance(col_mapper, _ColumnToText)
+    col_mapper.name: col_mapper for col_mapper in acs_columns.__dict__.values() if isinstance(col_mapper, _ColumnToText)
 }
 
 
@@ -64,9 +61,7 @@ class ACSTaskMetadata(TaskMetadata):
     ) -> ACSTaskMetadata:
         """Create an ACS task object from the given parameters."""
         # Resolve target column name
-        target_col_name = (
-            target_threshold.apply_to_column_name(target)
-            if target_threshold is not None else target)
+        target_col_name = target_threshold.apply_to_column_name(target) if target_threshold is not None else target
 
         # Get default Q&A interfaces for this task's target column
         if multiple_choice_qa is None:
@@ -170,13 +165,17 @@ acs_health_insurance_task = ACSTaskMetadata.make_folktables_task(
 # Dummy/test ACS task to predict health insurance coverage using all other available features
 acs_full_task = ACSTaskMetadata.make_task(
     name="ACSHealthInsurance-test",
-    features=sorted(list({
-        *acs_income_task.features,
-        *acs_public_coverage_task.features,
-        *acs_mobility_task.features,
-        *acs_employment_task.features,
-        *acs_travel_time_task.features,
-    })),
+    features=sorted(
+        list(
+            {
+                *acs_income_task.features,
+                *acs_public_coverage_task.features,
+                *acs_mobility_task.features,
+                *acs_employment_task.features,
+                *acs_travel_time_task.features,
+            }
+        )
+    ),
     target="HINS2",
     target_threshold=acs_health_insurance_threshold,
     description=(

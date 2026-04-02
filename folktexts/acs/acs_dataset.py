@@ -1,5 +1,5 @@
-"""Module to access ACS data using the folktables package.
-"""
+"""Module to access ACS data using the folktables package."""
+
 from __future__ import annotations
 
 import logging
@@ -90,13 +90,14 @@ class ACSDataset(Dataset):
         # Load ACS data source
         logging.info("Loading ACS data...")
         data_source = ACSDataSource(
-            survey_year=survey_year, horizon=horizon, survey=survey,
+            survey_year=survey_year,
+            horizon=horizon,
+            survey=survey,
             root_dir=cache_dir.as_posix(),
         )
 
         # Get full ACS dataset
-        full_acs_data = data_source.get_data(
-            states=state_list, download=True, random_seed=seed)
+        full_acs_data = data_source.get_data(states=state_list, download=True, random_seed=seed)
 
         # Parse data for this task
         parsed_data = cls._parse_task_data(full_acs_data, task_obj)
@@ -119,9 +120,8 @@ class ACSDataset(Dataset):
         self._data = self._parse_task_data(self._full_acs_data, new_task)
 
         # Re-make train/test/val split
-        self._train_indices, self._test_indices, self._val_indices = (
-            self._make_train_test_val_split(
-                self._data, self.test_size, self.val_size, self._rng)
+        self._train_indices, self._test_indices, self._val_indices = self._make_train_test_val_split(
+            self._data, self.test_size, self.val_size, self._rng
         )
 
         # Check if sub-sampling is necessary (it's applied only to train/test/val indices)

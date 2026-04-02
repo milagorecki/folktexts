@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import logging
 from functools import partial
-from typing import Union
 
 import numpy as np
 import pandas as pd
@@ -60,9 +59,7 @@ class Dataset:
 
         # Validate task
         if not isinstance(self._task, TaskMetadata):
-            raise ValueError(
-                f"Invalid `task` type: {type(self._task)}. " f"Expected `TaskMetadata`."
-            )
+            raise ValueError(f"Invalid `task` type: {type(self._task)}. Expected `TaskMetadata`.")
 
         # Validate data for this task
         task.check_task_columns_are_available(available_cols=data.columns.to_list())
@@ -76,10 +73,8 @@ class Dataset:
         self._rng = np.random.default_rng(self._seed)
 
         # Make train/test/val split
-        self._train_indices, self._test_indices, self._val_indices = (
-            self._make_train_test_val_split(
-                self._data, self.test_size, self.val_size, self._rng
-            )
+        self._train_indices, self._test_indices, self._val_indices = self._make_train_test_val_split(
+            self._data, self.test_size, self.val_size, self._rng
         )
 
         # Subsample the train/test/val data (if requested)
@@ -100,10 +95,8 @@ class Dataset:
         self._data = new_data
 
         # Reset train/test/val indices
-        self._train_indices, self._test_indices, self._val_indices = (
-            self._make_train_test_val_split(
-                self._data, self.test_size, self.val_size, self._rng
-            )
+        self._train_indices, self._test_indices, self._val_indices = self._make_train_test_val_split(
+            self._data, self.test_size, self.val_size, self._rng
         )
 
         # Set subsampling to None
@@ -145,9 +138,7 @@ class Dataset:
     @property
     def name(self) -> str:
         """A unique name for this dataset."""
-        subsampling_str = (
-            f"subsampled-{self.subsampling:.3}" if self.subsampling else "full"
-        )
+        subsampling_str = f"subsampled-{self.subsampling:.3}" if self.subsampling else "full"
         seed_str = f"seed-{self._seed}"
         hash_str = f"hash-{hash(self)}"
         return f"{self.task.name}_{subsampling_str}_{seed_str}_{hash_str}"
@@ -165,9 +156,7 @@ class Dataset:
         # Split train/test
         train_size = 1 - test_size - val_size
         train_indices = indices[: int(len(indices) * train_size)]
-        test_indices = indices[
-            len(train_indices) : int(len(indices) * (train_size + test_size))
-        ]
+        test_indices = indices[len(train_indices) : int(len(indices) * (train_size + test_size))]
 
         # Split val if requested
         if val_size is not None and val_size > 0:
@@ -229,15 +218,10 @@ class Dataset:
         """Subset the dataset in-place: keep only samples with the given feature values."""
         # Check argument is of valid type
         if not isinstance(population_feature_values, dict):
-            raise ValueError(
-                f"Invalid `population_feature_values` type: "
-                f"{type(population_feature_values)}."
-            )
+            raise ValueError(f"Invalid `population_feature_values` type: {type(population_feature_values)}.")
 
         # Check argument keys are valid columns
-        if not all(
-            key in self.data.columns for key in population_feature_values.keys()
-        ):
+        if not all(key in self.data.columns for key in population_feature_values.keys()):
             raise ValueError(
                 f"Invalid `population_feature_values` keys; columns don't exist "
                 f"in the dataset: {list(population_feature_values.keys())}."
@@ -251,17 +235,11 @@ class Dataset:
         # Update train/test/val indices
         train_pop_filter = population_filter.iloc[self._train_indices]
         test_pop_filter = population_filter.iloc[self._test_indices]
-        val_pop_filter = (
-            population_filter.iloc[self._val_indices]
-            if self._val_indices is not None
-            else None
-        )
+        val_pop_filter = population_filter.iloc[self._val_indices] if self._val_indices is not None else None
 
         self._train_indices = self._train_indices[train_pop_filter]
         self._test_indices = self._test_indices[test_pop_filter]
-        self._val_indices = (
-            self._val_indices[val_pop_filter] if self._val_indices is not None else None
-        )
+        self._val_indices = self._val_indices[val_pop_filter] if self._val_indices is not None else None
 
         return self
 
@@ -298,7 +276,7 @@ class Dataset:
         self,
         n: int,
         reuse_examples: bool = False,
-        composition='random',
+        composition="random",
     ) -> tuple[pd.DataFrame, pd.Series]:
         """Return a set of samples from the training set.
 
@@ -315,40 +293,54 @@ class Dataset:
         X, y : tuple[pd.DataFrame, pd.Series]
             The features and target data for the sampled examples.
         """
-        assert composition in ['random', 'balanced'] or isinstance(composition, list), "Provided sample composition has to be one of ['random', 'balanced'] or a list specifying class counts."
+        assert composition in ["random", "balanced"] or isinstance(composition, list), (
+            "Provided sample composition has to be one of ['random', 'balanced'] or a list specifying class counts."
+        )
 
-        if composition == 'random':
+        if composition == "random":
             if reuse_examples:
                 example_indices = self._train_indices[:n]
             else:
-                example_indices = self._rng.choice(
-                    self._train_indices, size=n, replace=False
-                )
-        elif composition == 'balanced' or isinstance(composition, list):
+                example_indices = self._rng.choice(self._train_indices, size=n, replace=False)
+        elif composition == "balanced" or isinstance(composition, list):
             train_labels = self.get_target_data().iloc[self._train_indices]
             unique_labels, counts = np.unique(train_labels, return_counts=True)
 
-            if composition == 'balanced':
+            if composition == "balanced":
                 per_label_counts = [n // len(unique_labels)] * len(unique_labels)
                 remaining = n % len(unique_labels)  # distribute extra samples
                 if remaining != 0:
-                    logging.warning(f"Cannot evenly divide {n} samples among {len(unique_labels)} classes. Distributing {remaining} samples evenly.")
+                    logging.warning(
+                        f"Cannot evenly divide {n} samples among {len(unique_labels)} classes."
+                        f" Distributing {remaining} samples evenly."
+                    )
                     for i in range(remaining):
                         per_label_counts[i] += 1
             elif isinstance(composition, list):
-                assert len(composition) == len(unique_labels), 'Provide a count for every class, they will be assigned in order of the labels.'
-                assert sum(composition) == n, 'Counts have to add up to n.'
+                assert len(composition) == len(unique_labels), (
+                    "Provide a count for every class, they will be assigned in order of the labels."
+                )
+                assert sum(composition) == n, "Counts have to add up to n."
                 per_label_counts = composition
 
             if any(counts < per_label_counts):
-                raise ValueError("Not enough samples to draw from:\n" + "\n".join([f"- class {unique_labels[i]}: {counts[i]} samples available, attempting to draw {per_label_counts[i]}" for i in (unique_labels[counts < per_label_counts])]))
+                raise ValueError(
+                    "Not enough samples to draw from:\n"
+                    + "\n".join(
+                        [
+                            f"- class {unique_labels[i]}: "
+                            f"{counts[i]} samples available, attempting to draw {per_label_counts[i]}"
+                            for i in (unique_labels[counts < per_label_counts])
+                        ]
+                    )
+                )
 
             example_indices = []
             for i, label in enumerate(unique_labels):
                 class_indices = self._train_indices[train_labels == label]
                 per_label_n = per_label_counts[i]
                 if reuse_examples:
-                    selected = class_indices[: per_label_n]
+                    selected = class_indices[:per_label_n]
                 else:
                     selected = self._rng.choice(
                         class_indices,
@@ -412,22 +404,18 @@ class Dataset:
         },
     ) -> pd.DataFrame:
         from tqdm import tqdm
+
         from folktexts.prompting import encode_row_prompt
 
         tqdm.pandas()
         assert split in ["test", "train"]
         X, y = self.get_data_split(split)
 
-        encode_row = partial(
-            encode_row_prompt, task=self._task, prompt_variation=prompt_variation
-        )
-        X_text = X.progress_apply(lambda row: encode_row(row), axis=1).to_frame(
-            name="text"
-        )
+        encode_row = partial(encode_row_prompt, task=self._task, prompt_variation=prompt_variation)
+        X_text = X.progress_apply(lambda row: encode_row(row), axis=1).to_frame(name="text")
         if not self._task._use_numeric_qa:
             map_label_to_choice = {
-                choice.data_value: answer
-                for choice, answer in self._task.multiple_choice_qa.choice_to_key.items()
+                choice.data_value: answer for choice, answer in self._task.multiple_choice_qa.choice_to_key.items()
             }
             y_text = y.replace(map_label_to_choice)
             return X_text, y_text

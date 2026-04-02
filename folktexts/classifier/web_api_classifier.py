@@ -7,16 +7,15 @@ import os
 import re
 from typing import Callable
 
+import dotenv
 import numpy as np
 import pandas as pd
 
-import dotenv
-
+from folktexts.llm_utils import get_model_developer
 from folktexts.qa_interface import DirectNumericQA, MultipleChoiceQA
 from folktexts.task import TaskMetadata
 
 from .base import LLMClassifier
-from folktexts.llm_utils import get_model_developer
 
 
 class WebAPILLMClassifier(LLMClassifier):
@@ -130,9 +129,7 @@ class WebAPILLMClassifier(LLMClassifier):
             seed=seed,
             **inference_kwargs,
         )
-        self.deployment_name = self._model_to_azure_deployment_name.get(
-            model_name, model_name
-        )
+        self.deployment_name = self._model_to_azure_deployment_name.get(model_name, model_name)
 
         # Initialize total cost of API calls
         self._total_cost = 0.0
@@ -146,25 +143,21 @@ class WebAPILLMClassifier(LLMClassifier):
         if "MAX_API_RPM" in os.environ:
             self.max_api_rpm = int(os.getenv("MAX_API_RPM"))
             logging.info(
-                f"MAX_API_RPM environment variable is set. "
-                f"Overriding previous value of {max_api_rpm} with {self.max_api_rpm}."
+                f"MAX_API_RPM environment variable is set."
+                f" Overriding previous value of {max_api_rpm} with {self.max_api_rpm}."
             )
         else:
-            self.max_api_rpm = max(
-                self.max_api_rpm, self._model_to_max_rpm.get(model_name, 0)
-            )
+            self.max_api_rpm = max(self.max_api_rpm, self._model_to_max_rpm.get(model_name, 0))
         # Set maximum tokens per minute
         self.max_api_tpm = max_api_tpm
         if "MAX_API_TPM" in os.environ:
             self.max_api_tpm = int(os.getenv("MAX_API_TPM"))
             logging.warning(
-                f"MAX_API_TPM environment variable is set. "
-                f"Overriding previous value of {max_api_tpm} with {self.max_api_tpm}."
+                "MAX_API_TPM environment variable is set."
+                f" Overriding previous value of {max_api_tpm} with {self.max_api_tpm}."
             )
         else:
-            self.max_api_tpm = max(
-                self.max_api_tpm, self._model_to_max_tpm.get(model_name, 0)
-            )
+            self.max_api_tpm = max(self.max_api_tpm, self._model_to_max_tpm.get(model_name, 0))
 
         # Check extra dependencies
         assert self.check_webAPI_deps(), "Web API dependencies are not installed."
@@ -180,7 +173,7 @@ class WebAPILLMClassifier(LLMClassifier):
                 raise ValueError("AZURE_API_KEY not found in environment variables")
             if "AZURE_API_BASE" not in os.environ:
                 raise ValueError("AZURE_API_BASE not found in environment variables")
-        
+
         # Set API type
         self.api_type = "completion"
 
@@ -192,7 +185,8 @@ class WebAPILLMClassifier(LLMClassifier):
         ):
             # log-probs not available via responses API, but then reasoning can only be a str!
             logging.debug(
-                f"Using responses API for OpenAI reasoning model {self.model_name} with thinking enabled and text-based extraction."
+                f"Using responses API for OpenAI reasoning model {self.model_name} "
+                "with thinking enabled and text-based extraction."
             )
 
             self.api_type = "responses"
@@ -201,16 +195,18 @@ class WebAPILLMClassifier(LLMClassifier):
         from litellm import get_supported_openai_params
 
         supported_params = get_supported_openai_params(model=self.deployment_name)
-        if self.api_type == "responses": 
+        if self.api_type == "responses":
             from litellm import OpenAIResponsesAPIConfig
+
             config = OpenAIResponsesAPIConfig()
-            # merge lists of suppprted parameters (parameters fro the completion API should get mapped internally by the response API)
-            supported_params = list(set(supported_params) | set(config.get_supported_openai_params(model=self.deployment_name)))
+            # merge lists of suppprted parameters (parameters for the completion API should get
+            # mapped internally by the response API)
+            supported_params = list(
+                set(supported_params) | set(config.get_supported_openai_params(model=self.deployment_name))
+            )
 
         if supported_params is None:
-            raise RuntimeError(
-                f"Failed to get supported parameters for model '{self.deployment_name}'."
-            )
+            raise RuntimeError(f"Failed to get supported parameters for model '{self.deployment_name}'.")
         self.supported_params = set(supported_params)
 
         # Set litellm logger level to WARNING
@@ -233,8 +229,7 @@ class WebAPILLMClassifier(LLMClassifier):
             import llm_api_client  # noqa: F401
         except ImportError:
             logging.critical(
-                "Please install extra API dependencies with "
-                "`pip install 'folktexts[apis]'` "
+                "Please install extra API dependencies with `pip install 'folktexts[apis]'` "
                 "to use the WebAPILLMClassifier."
             )
             return False
@@ -285,9 +280,7 @@ class WebAPILLMClassifier(LLMClassifier):
         else:
             api_call_params = dict(
                 temperature=1,
-                max_completion_tokens=max(
-                    num_forward_passes, self.inference_kwargs.get("max_new_tokens", 0)
-                ),
+                max_completion_tokens=max(num_forward_passes, self.inference_kwargs.get("max_new_tokens", 0)),
                 stream=False,
                 seed=self.seed,
                 logprobs=True,
@@ -296,9 +289,7 @@ class WebAPILLMClassifier(LLMClassifier):
 
         if self.model_name.startswith("claude"):
             api_call_params.pop("seed")
-            logging.debug(
-                "Removed 'seed' from API call parameters for Claude model, as it is not supported."
-            )
+            logging.debug("Removed 'seed' from API call parameters for Claude model, as it is not supported.")
 
         # Set extra arguments for reasoning-augmented models if thinking is enabled
         enable_thinking = self.inference_kwargs.get("enable_thinking", False)
@@ -306,22 +297,19 @@ class WebAPILLMClassifier(LLMClassifier):
         if enable_thinking:
             if self.model_name.startswith("claude"):
                 budget_tokens = 4096
-                logging.warning(
-                    f"Thinking enabled for Claude model. Setting budget_tokens to {budget_tokens}."
-                )
+                logging.warning(f"Thinking enabled for Claude model. Setting budget_tokens to {budget_tokens}.")
                 # pass thinking params to Claude models
                 assert budget_tokens >= 1024, "budget_tokens must be at least 1024"
-                assert (
-                    self.inference_kwargs["max_new_tokens"] >= budget_tokens
-                ), "max_new_tokens must be greater than or equal to budget_tokens"
+                assert self.inference_kwargs["max_new_tokens"] >= budget_tokens, (
+                    "max_new_tokens must be greater than or equal to budget_tokens"
+                )
 
                 api_call_params["thinking"] = {"type": "enabled", "budget_tokens": 4096}
             elif get_model_developer(self.model_name) == "OpenAI":
                 reasoning_effort = "medium"
-                # NOTE: reasoning_effort accepts a string value ("none", "minimal", "low", "medium", "high", "xhigh"—"xhigh" (https://docs.litellm.ai/docs/providers/openai)
-                logging.warning(
-                    f"Thinking enabled for OpenAI model. Setting budget_tokens to {reasoning_effort}."
-                )
+                # NOTE: reasoning_effort accepts a string value:
+                # ("none", "minimal", "low", "medium", "high", "xhigh"—"xhigh" (https://docs.litellm.ai/docs/providers/openai)
+                logging.warning(f"Thinking enabled for OpenAI model. Setting budget_tokens to {reasoning_effort}.")
                 if self.api_type == "responses":
                     # summary only available via responses API, but that does not support logprobs
                     # -> only use if extracting answer from generated text
@@ -369,17 +357,15 @@ class WebAPILLMClassifier(LLMClassifier):
         ]
 
         logging.debug(f"API call parameters: {api_call_params}")
-        logging.debug(f"First request data: {requests_data[0]}")    
+        logging.debug(f"First request data: {requests_data[0]}")
 
         if self.api_type == "responses":
             for p in range(len(prompts_batch)):
                 requests_data[p]["input"] = requests_data[p].pop("messages")
-        responses_batch = self.client.make_requests_with_retries(
-            requests_data, max_retries=10, sanitize=False
-        )
+        responses_batch = self.client.make_requests_with_retries(requests_data, max_retries=10, sanitize=False)
 
         return responses_batch
-    
+
     def _decode_risk_estimate_from_api_response(
         self,
         response: dict,
@@ -402,18 +388,18 @@ class WebAPILLMClassifier(LLMClassifier):
 
         if question.use_generated_text:
             reasoning_content = ""
-            
+
             if self.api_type == "completion":
                 choice = response.choices[0]
                 response_message = choice.message.content
                 if "reasoning_content" in choice.message.__dict__.keys():
                     # applicable for DepSeek, Claude, Kimi
-                    reasoning_content = choice.message.reasoning_content  
-                    logging.debug(f"Received reasoning content: {reasoning_content}")              
-                
+                    reasoning_content = choice.message.reasoning_content
+                    logging.debug(f"Received reasoning content: {reasoning_content}")
+
                 if self.inference_kwargs.get("enable_thinking", False) and len(reasoning_content) == 0:
                     logging.debug("Reasoning enabled, but no reasoning content found in response.")
-            else: 
+            else:
                 # response API
                 output_texts = []
                 for item in response.output:
@@ -422,35 +408,32 @@ class WebAPILLMClassifier(LLMClassifier):
                             if content.type == "output_text":
                                 output_texts.append(content.text)
                     if item.type == "reasoning":
-                        if hasattr(item, 'summary') and item.summary:
+                        if hasattr(item, "summary") and item.summary:
                             for summary in item.summary:
                                 reasoning_content += summary.text + "\n"
 
-                response_message = (
-                    "\n".join(output_texts) if len(output_texts) > 0 else ""
-                    )
+                response_message = "\n".join(output_texts) if len(output_texts) > 0 else ""
                 if self.inference_kwargs.get("enable_thinking", False) and len(reasoning_content) == 0:
-                     logging.debug("Reasoning enabled, but no summary returned.")
+                    logging.debug("Reasoning enabled, but no summary returned.")
                 elif len(reasoning_content) > 0:
-                     logging.debug(f"Reasoning not enabled, but received reasoning content: {reasoning_content}")
+                    logging.debug(f"Reasoning not enabled, but received reasoning content: {reasoning_content}")
 
             if response_message is None:
                 logging.warning("No response message API response, setting it to empty string.")
                 response_message = ""
-            else: 
+            else:
                 logging.debug(f"Received response_message: {response_message}")
             risk_estimate = question.get_answer_from_model_output(
-                    text=response_message,
-                )
+                text=response_message,
+            )
             return (
                 risk_estimate,
-                {"reasoning" : reasoning_content, "response" : response_message},
+                {"reasoning": reasoning_content, "response": response_message},
             )
-        
-        else:
 
+        else:
             assert self.api_type != "responses", "Logprobs not available via responses API."
-            # Get response message 
+            # Get response message
             choice = response.choices[0]
             response_message = choice.message.content
             logging.debug(f"Received response_message: {response_message}")
@@ -470,9 +453,7 @@ class WebAPILLMClassifier(LLMClassifier):
 
             # Decode model output into risk estimates
             # 1. Construct vocabulary dict for this response
-            vocab_tokens = {
-                tok for forward_pass in token_probs_all_passes for tok in forward_pass
-            }
+            vocab_tokens = {tok for forward_pass in token_probs_all_passes for tok in forward_pass}
 
             token_to_id = {tok: i for i, tok in enumerate(vocab_tokens)}
             id_to_token = {i: tok for i, tok in enumerate(vocab_tokens)}
@@ -480,10 +461,7 @@ class WebAPILLMClassifier(LLMClassifier):
             # 2. Parse `token_probs_all_passes` into an array of shape (num_passes, vocab_size)
             token_probs_array = np.array(
                 [
-                    [
-                        forward_pass.get(id_to_token[i], 0)
-                        for i in range(len(vocab_tokens))
-                    ]
+                    [forward_pass.get(id_to_token[i], 0) for i in range(len(vocab_tokens))]
                     for forward_pass in token_probs_all_passes
                 ]
             )
@@ -498,14 +476,10 @@ class WebAPILLMClassifier(LLMClassifier):
             # Sanity check numeric answers based on global model response:
             if isinstance(question, DirectNumericQA):
                 try:
-                    numeric_response = re.match(
-                        r"[-+]?\d*\.\d+|\d+", response_message
-                    ).group()
+                    numeric_response = re.match(r"[-+]?\d*\.\d+|\d+", response_message).group()
                     risk_estimate_full_text = float(numeric_response)
 
-                    if not np.isclose(
-                        risk_estimate, risk_estimate_full_text, atol=1e-2
-                    ):
+                    if not np.isclose(risk_estimate, risk_estimate_full_text, atol=1e-2):
                         logging.info(
                             f"Numeric answer mismatch: {risk_estimate} != {risk_estimate_full_text} "
                             f"from response '{response_message}'."
@@ -581,31 +555,21 @@ class WebAPILLMClassifier(LLMClassifier):
                                 for content in item.content:
                                     if content.type == "output_text":
                                         message_content += content.text + "\n"
-                    if message_content is not None: 
-                        logging.debug(
-                            f"Response {i+1}: {message_content[:100]}..."
-                        )  # Print first 100 chars
-                    else: 
-                        logging.debug(
-                            f"Response {i+1} is None."
-                        )
-                    risk_est, out = self._decode_risk_estimate_from_api_response(
-                        response, question
-                    )
+                    if message_content is not None:
+                        logging.debug(f"Response {i + 1}: {message_content[:100]}...")  # Print first 100 chars
+                    else:
+                        logging.debug(f"Response {i + 1} is None.")
+                    risk_est, out = self._decode_risk_estimate_from_api_response(response, question)
                     risk_estimates_batch.append(risk_est)
-                    outputs_batch.append(
-                        out
-                    )  # if not question.use_generated_text else out.replace(";", ""))
+                    outputs_batch.append(out)  # if not question.use_generated_text else out.replace(";", ""))
                 except (AttributeError, IndexError, TypeError) as e:
-                    logging.error(
-                        f"Response {i+1}: Could not parse response content. Error: {e}"
-                    )
+                    logging.error(f"Response {i + 1}: Could not parse response content. Error: {e}")
                     logging.error(f"Raw response: {response}")
                     logging.error("Adding NaN value.")
                     risk_estimates_batch.append(np.nan)
                     outputs_batch.append(None)
             else:
-                logging.error(f"Response {i+1}: Request failed. Adding NaN value. ")
+                logging.error(f"Response {i + 1}: Request failed. Adding NaN value. ")
                 risk_estimates_batch.append(np.nan)
                 outputs_batch.append(None)
 
@@ -631,9 +595,7 @@ class WebAPILLMClassifier(LLMClassifier):
         # get all tracker attributes with defaults
         total_cost = getattr(self.client.tracker, "total_cost", 0)
         total_prompt_tokens = getattr(self.client.tracker, "total_prompt_tokens", 0)
-        total_completion_tokens = getattr(
-            self.client.tracker, "total_completion_tokens", 0
-        )
+        total_completion_tokens = getattr(self.client.tracker, "total_completion_tokens", 0)
         num_api_calls = getattr(self.client.tracker, "num_api_calls", 0)
         mean_response_time = getattr(self.client.tracker, "mean_response_time", None)
 
@@ -642,9 +604,7 @@ class WebAPILLMClassifier(LLMClassifier):
         logging.info(f"Total completion tokens: {total_completion_tokens}")
         logging.info(f"Number of successful API calls: {num_api_calls}")
 
-        if mean_response_time is not None and isinstance(
-            mean_response_time, (int, float)
-        ):
+        if mean_response_time is not None and isinstance(mean_response_time, (int, float)):
             logging.info(f"Mean response time: {mean_response_time:.2f}s")
         else:
             logging.info("Mean response time: Not available")
@@ -666,9 +626,7 @@ class WebAPILLMClassifier(LLMClassifier):
                 response_cost = kwargs["response_cost"]
             elif hasattr(completion_response, "cost"):
                 response_cost = getattr(completion_response, "cost", 0)
-            elif (
-                isinstance(completion_response, dict) and "cost" in completion_response
-            ):
+            elif isinstance(completion_response, dict) and "cost" in completion_response:
                 response_cost = completion_response["cost"]
 
             # Update total cost

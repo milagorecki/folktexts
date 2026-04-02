@@ -4,6 +4,7 @@
 - Encode questions and decode model outputs.
 - Compute risk-estimate from model outputs.
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -11,9 +12,9 @@ import itertools
 import logging
 import re
 from abc import ABC
+from collections import Counter
 from dataclasses import dataclass
 from typing import Iterator
-from collections import Counter
 
 import numpy as np
 
@@ -31,6 +32,7 @@ _ANSWER_PATTERNS = [
     r"[Aa]nswer:?\s*"
 ]
 
+
 @dataclass(frozen=True)
 class QAInterface(ABC):
     """An interface for a question-answering system."""
@@ -47,34 +49,24 @@ class QAInterface(ABC):
     def get_question_prompt(self) -> str:
         """Returns a question and answer key."""
         raise NotImplementedError
-    
+
     def get_answer_from_model_output(
-        self, 
+        self,
         last_token_probs: np.ndarray | None = None,
         tokenizer_vocab: dict[str, int] | None = None,
         text: str | None = None,
     ):
         if not self.use_generated_text:
             if last_token_probs is None:
-                raise ValueError(
-                    "last_token_probs must be provided when use_generated_text is False"
-                )
+                raise ValueError("last_token_probs must be provided when use_generated_text is False")
             if tokenizer_vocab is None:
-                raise ValueError(
-                    "tokenizer_vocab must be provided when use_generated_text is False"
-                )
-            return self.get_answer_from_token_probs(
-                last_token_probs=last_token_probs, 
-                tokenizer_vocab=tokenizer_vocab)
-        else: 
+                raise ValueError("tokenizer_vocab must be provided when use_generated_text is False")
+            return self.get_answer_from_token_probs(last_token_probs=last_token_probs, tokenizer_vocab=tokenizer_vocab)
+        else:
             if text is None:
-                raise ValueError(
-                    "text must be provided when use_generated_text is True"
-                )
+                raise ValueError("text must be provided when use_generated_text is True")
             # check conistency if using multiple text samples: assert(len(text) == self.use_generated_text)
-            return self.get_answer_from_generated_text(
-                text=text
-            )
+            return self.get_answer_from_generated_text(text=text)
 
     def get_answer_from_token_probs(
         self,
@@ -98,7 +90,7 @@ class QAInterface(ABC):
             The answer to the question.
         """
         raise NotImplementedError
-    
+
     def get_answer_from_generated_text(
         self,
         text: str,
@@ -145,7 +137,7 @@ class DirectNumericQA(QAInterface):
     numeric answers.
     """
 
-    num_forward_passes: int = 2     # NOTE: overrides superclass default
+    num_forward_passes: int = 2  # NOTE: overrides superclass default
     answer_probability: bool = True
 
     def get_answer_prefix(self) -> str:
@@ -162,10 +154,7 @@ class DirectNumericQA(QAInterface):
         This can include digits ("0"-"9"), multi-digit tokens (e.g., "100"), and
         the decimal point (".").
         """
-        numeric_tokens = {
-            key: token_id for key, token_id in tokenizer_vocab.items()
-            if key.isdigit()
-        }
+        numeric_tokens = {key: token_id for key, token_id in tokenizer_vocab.items() if key.isdigit()}
 
         if "." in tokenizer_vocab:
             numeric_tokens["."] = tokenizer_vocab["."]
@@ -202,9 +191,7 @@ class DirectNumericQA(QAInterface):
         numeric_tokens_vocab = self._get_numeric_tokens(tokenizer_vocab)
 
         if len(last_token_probs) < self.num_forward_passes:
-            logging.info(
-                f"Expected {self.num_forward_passes} forward passes, got "
-                f"{len(last_token_probs)}.")
+            logging.info(f"Expected {self.num_forward_passes} forward passes, got {len(last_token_probs)}.")
 
         answer_text = ""
         for ltp in last_token_probs:
@@ -247,6 +234,7 @@ class Choice:
         numeric value can be used as a proxy for the positive class. If not
         provided, will try to use the `choice.value`.
     """
+
     text: str
     data_value: object
     numeric_value: float = None
@@ -256,11 +244,11 @@ class Choice:
         return self.numeric_value if self.numeric_value is not None else float(self.data_value)
 
 
-@dataclass(frozen=True, eq=True)    # NOTE: kw_only=True requires Python 3.10
+@dataclass(frozen=True, eq=True)  # NOTE: kw_only=True requires Python 3.10
 class MultipleChoiceQA(QAInterface):
     """Represents a multiple-choice question and its answer keys."""
 
-    num_forward_passes: int = 1     # NOTE: overrides superclass default
+    num_forward_passes: int = 1  # NOTE: overrides superclass default
     choices: tuple[Choice] = dataclasses.field(default_factory=tuple)
     _answer_keys_source: tuple[str] = dataclasses.field(default_factory=lambda: tuple(_ALPHABET))
 
@@ -312,7 +300,7 @@ class MultipleChoiceQA(QAInterface):
 
     @property
     def answer_keys(self) -> tuple[str, ...]:
-        return self._answer_keys_source[:len(self.choices)]
+        return self._answer_keys_source[: len(self.choices)]
 
     @property
     def key_to_choice(self) -> dict[str, Choice]:
@@ -327,8 +315,7 @@ class MultipleChoiceQA(QAInterface):
         return {choice.data_value: choice.text for choice in self.choices}
 
     def get_answer_key_from_value(self, value: object) -> str:
-        """Returns the answer key corresponding to the given data value.
-        """
+        """Returns the answer key corresponding to the given data value."""
         for choice in self.choices:
             if choice.data_value == value:
                 return self.choice_to_key[choice]
@@ -337,7 +324,7 @@ class MultipleChoiceQA(QAInterface):
         return None
 
     def get_choice_from_answer_key(self, text: str) -> Choice:
-        """ Returns the choice object corresponding to the answer key (letter)."""
+        """Returns the choice object corresponding to the answer key (letter)."""
         text = text.strip().upper()
         if text in self.key_to_choice:
             return self.key_to_choice[text]
@@ -349,15 +336,14 @@ class MultipleChoiceQA(QAInterface):
         return "Answer:"
 
     def get_question_prompt(self) -> str:
-        choice_str = "\n".join(
-            f"{key}. {choice.text}."
-            for key, choice in self.key_to_choice.items()
-        )
+        choice_str = "\n".join(f"{key}. {choice.text}." for key, choice in self.key_to_choice.items())
 
-        return (f"""\
+        return f"""\
 Question: {self.text}
 {choice_str}
-{self.get_answer_prefix() if not self.use_generated_text else ''}""") ## TODO: only when thinking is enabled -> store in question? or remove again somewhere else? 
+{self.get_answer_prefix() if not self.use_generated_text else ""}"""
+
+    ## TODO: only when thinking is enabled -> store in question? or remove again somewhere else?
 
     def _decode_model_output_to_choice_distribution(
         self,
@@ -383,6 +369,7 @@ Question: {self.text}
         Answer-key tokens may be prefixed with a space, so we need to check
         both "A" and " A" templates.
         """
+
         def _get_choice_token_id(choice: Choice, prefix: str = " ") -> int:
             choice_answer_text = f"{prefix}{self.choice_to_key[choice]}"
             if choice_answer_text in tokenizer_vocab:
@@ -392,7 +379,7 @@ Question: {self.text}
 
         # Different models may use different prefixes to represent white space
         # or word boundaries; here we try a few common ones
-        prefixes = ["", " ", "_", "\u2581", "\u0120", "\u010A"]
+        prefixes = ["", " ", "_", "\u2581", "\u0120", "\u010a"]
 
         # Map probabilities to choice values
         answers_per_prefix = {
@@ -424,10 +411,7 @@ Question: {self.text}
         else:
             logging.debug(msg)
 
-        return {
-            choice: prob / answers_sum_prob
-            for choice, prob in answers.items()
-        }
+        return {choice: prob / answers_sum_prob for choice, prob in answers.items()}
 
     def get_answer_from_token_probs(
         self,
@@ -453,8 +437,8 @@ Question: {self.text}
         if last_token_probs.ndim > 1:
             if last_token_probs.shape[0] > 1:
                 logging.warning(
-                    f"Multiple ({last_token_probs.shape[0]}) forward passes "
-                    f"detected: using only the first pass.")
+                    f"Multiple ({last_token_probs.shape[0]}) forward passes detected: using only the first pass."
+                )
 
             # Using only 1st forward pass results
             last_token_probs = last_token_probs[0]
@@ -476,24 +460,18 @@ Question: {self.text}
             return answers[positive_choice]
 
         # Compute risk estimate by summing weighted choices
-        risk_estimate = sum(
-            choice.get_numeric_value() * prob
-            for choice, prob in answers.items()
-        )
+        risk_estimate = sum(choice.get_numeric_value() * prob for choice, prob in answers.items())
 
         logging.debug(f"Risk estimate: {risk_estimate:.2f}")
         return risk_estimate
 
-    def get_answer_from_generated_text(
-        self,
-        text: str
-    ) -> float:
+    def get_answer_from_generated_text(self, text: str) -> float:
         """Decodes the model's output into an answer for the given question.
 
         Parameters
         ----------
         text : str
-            The model's generated outputs for the question. 
+            The model's generated outputs for the question.
             TODO The length corresponds to the number of samples used to estimate probabilities.
         tokenizer_vocab: dict[str, int],
             The tokenizer's vocabulary.
@@ -504,10 +482,10 @@ Question: {self.text}
             The answer to the question.
         """
         # extract answers
-        # estimate choice probabilities 
+        # estimate choice probabilities
 
         choices = self._decode_choice_distribution_from_generated_texts(text=text)
-        
+
         sorted_choices_by_value = sorted(
             choices.keys(),
             key=lambda choice: choice.get_numeric_value(),
@@ -520,31 +498,28 @@ Question: {self.text}
             return choices[positive_choice]
 
         # Compute risk estimate by summing weighted choices
-        risk_estimate = sum(
-            choice.get_numeric_value() * prob
-            for choice, prob in choices.items()
-        )
+        risk_estimate = sum(choice.get_numeric_value() * prob for choice, prob in choices.items())
 
         logging.debug(f"Risk estimate: {risk_estimate:.2f}")
         return risk_estimate
-    
+
     def _extract_answer_key_from_generated_text(self, text: str) -> str:
-        """ Extract anser key from a single model output using regex patterns. """
-        matched_answer_index = 0 
+        """Extract anser key from a single model output using regex patterns."""
+        matched_answer_index = 0
         for answer_indicator in _ANSWER_PATTERNS:
-            # match = re.search(answer_indicator, text, re.IGNORECASE) #ignore case to catch also all caps 
+            # match = re.search(answer_indicator, text, re.IGNORECASE) #ignore case to catch also all caps
             # only take last occurence
             matches = list(re.finditer(answer_indicator, text, re.IGNORECASE))
-            if matches: 
+            if matches:
                 last_match = matches[-1]
-                if last_match.end() > matched_answer_index: 
+                if last_match.end() > matched_answer_index:
                     matched_answer_index = last_match.end()
         text = text[matched_answer_index:]
         best_key = None
         best_match_len = -1
 
-        # TODO: use last matched key? 
-        for key in self.answer_keys: 
+        # TODO: use last matched key?
+        for key in self.answer_keys:
             choice_text = re.escape(self.get_choice_from_answer_key(key).text)
 
             # patterns to check sorted by priority (most specific first)
@@ -571,41 +546,48 @@ Question: {self.text}
                         best_match_len = match_len
                         best_key = key
                     break
-        if best_key is not None: 
+        if best_key is not None:
             return best_key
-        
+
         logging.error(f"No answer found in text: {text}")
         return None
-    
+
     def _decode_choice_distribution_from_generated_texts(
-            self, 
-            text: str,
-    ) -> dict[Choice, float]: 
-        logging.debug('Based on single text answer, so answer probabilities are either 0. or 1. when identifiable.')
+        self,
+        text: str,
+    ) -> dict[Choice, float]:
+        logging.debug("Based on single text answer, so answer probabilities are either 0. or 1. when identifiable.")
         answer_key = self._extract_answer_key_from_generated_text(text)
         if answer_key is None:
-            p = 1. / len(self.choices)
-            logging.debug(f"No or multiple answers were found, use uniform prior: {p} for all {len(self.choices)} choices")
+            p = 1.0 / len(self.choices)
+            logging.debug(
+                f"No or multiple answers were found, use uniform prior: {p} for all {len(self.choices)} choices"
+            )
             # uniform prior over answers
             return {c: p for c in self.choices}
-        else: 
+        else:
             choice = self.get_choice_from_answer_key(answer_key)
             logging.debug(f"Successfully extracted answer {choice.text}")
-            return {c: float(c==choice) for c in self.choices}
-    
+            return {c: float(c == choice) for c in self.choices}
+
     # Assumes multiple text samples
     def _estimate_choice_distribution_from_generated_texts(
-            self, 
-            text_samples: list[str],
+        self,
+        text_samples: list[str],
     ) -> dict[Choice, float]:
         num_model_outputs = len(text_samples)
-        counts = Counter(answer_key for output in text_samples if (answer_key := self._extract_answer_key_from_generated_text(output)) is not None) # dict
-
+        counts = Counter(
+            answer_key
+            for output in text_samples
+            if (answer_key := self._extract_answer_key_from_generated_text(output)) is not None
+        )  # dict
 
         # Compute relative frequencies
-        answer_dist = {self.key_to_choice[answer_key]: count / num_model_outputs for answer_key, count in counts.items()}
+        answer_dist = {
+            self.key_to_choice[answer_key]: count / num_model_outputs for answer_key, count in counts.items()
+        }
 
-       # total prob
+        # total prob
         answers_sum_prob = sum(answer_dist.values())
 
         # Log total probability density assigned to answers
@@ -616,8 +598,4 @@ Question: {self.text}
         else:
             logging.debug(msg)
 
-        return {
-            choice: prob / answers_sum_prob
-            for choice, prob in answer_dist.items()
-        }
-
+        return {choice: prob / answers_sum_prob for choice, prob in answer_dist.items()}

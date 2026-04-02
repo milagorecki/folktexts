@@ -65,20 +65,15 @@ documentation = "https://socialfoundations.github.io/folktexts/"
 run_acs_benchmark = "folktexts.cli.run_acs_benchmark:main"
 download_models = "folktexts.cli.download_models:main"
 
-# flake8
-[tool.flake8]
-max-complexity = 10
-max-line-length = 127
+# ruff
+[tool.ruff]
+line-length = 120
+src = ["folktexts", "tests"]
+exclude = ["docs/", ".tox/"]
 
-per-file-ignores = """
-# imported but unused
-__init__.py: F401
-"""
-
-exclude = [
-    "docs/",
-    ".tox/"
-]
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+per-file-ignores = {"__init__.py" = ["F401"]}
 
 [tool.pytest.ini_options]
 minversion = "8.0"
@@ -86,11 +81,8 @@ testpaths = [
     "tests",
 ]
 
-# isort
-[tool.isort]
-profile = "hug"
-force_single_line = false
-src_paths = ["folktexts", "tests"]
+[tool.ruff.lint.isort]
+force-single-line = false
 
 # Coverage
 [tool.coverage.run]
@@ -130,9 +122,8 @@ commands = python -m pytest {posargs:tests}
 description = run linters
 skip_install = true
 deps =
-    flake8>=7.0
-    flake8-pyproject
-commands = flake8 {posargs:folktexts tests}
+    ruff>=0.4
+commands = ruff check {posargs:folktexts tests}
 
 [testenv:type]
 description = run type checks

@@ -10,10 +10,10 @@ from pathlib import Path
 import pandas as pd
 
 from ..dataset import Dataset
+from .load_sipp import download_sipp, load_sipp, preprocess_sipp
 from .sipp_tasks import (
     SIPPTaskMetadata,
 )
-from .load_sipp import load_sipp, download_sipp, preprocess_sipp
 
 DEFAULT_DATA_DIR = Path("~/data").expanduser().resolve()
 DEFAULT_TEST_SIZE = 0.1
@@ -73,21 +73,12 @@ class SIPPDataset(Dataset):
             Extra key-word arguments to be passed to the Dataset constructor.
         """
         # Parse task if given a string
-        task_obj = (
-            SIPPTaskMetadata.get_task(task)
-            if isinstance(task, str)
-            else task
-        )
+        task_obj = SIPPTaskMetadata.get_task(task) if isinstance(task, str) else task
 
         # Create "sipp" sub-folder under the given cache dir
-        cache_dir = (
-            Path(cache_dir or DEFAULT_DATA_DIR).expanduser().resolve()
-            / "sipp"
-        )
+        cache_dir = Path(cache_dir or DEFAULT_DATA_DIR).expanduser().resolve() / "sipp"
         if not cache_dir.exists():
-            logging.warning(
-                f"Creating cache directory '{cache_dir}' for SIPP data."
-            )
+            logging.warning(f"Creating cache directory '{cache_dir}' for SIPP data.")
             cache_dir.mkdir(exist_ok=True, parents=False)
 
         # if not already available, load data
@@ -95,14 +86,14 @@ class SIPPDataset(Dataset):
         if csv_file.exists():
             logging.info("Loading SIPP task data from cache...")
             df = pd.read_csv(csv_file.as_posix())
-        else: 
-            print((cache_dir/'sipp_2014_wave_1.csv').exists(),  (cache_dir/'sipp_2014_wave_2.csv').exists())
-            if not (cache_dir/'sipp_2014_wave_1.csv').exists() and not (cache_dir/'sipp_2014_wave_2.csv').exists():
+        else:
+            print((cache_dir / "sipp_2014_wave_1.csv").exists(), (cache_dir / "sipp_2014_wave_2.csv").exists())
+            if not (cache_dir / "sipp_2014_wave_1.csv").exists() and not (cache_dir / "sipp_2014_wave_2.csv").exists():
                 print("Download SIPP data... (May take a while)")
                 download_sipp(save_path=cache_dir)
                 print("Preprocess SIPP... (May take a while)")
                 preprocess_sipp(data_dir=cache_dir)
-            X,y = load_sipp(data_dir=cache_dir)
+            X, y = load_sipp(data_dir=cache_dir)
             df = pd.concat([X, y], axis=1)
 
         # Parse data for this task
@@ -126,10 +117,8 @@ class SIPPDataset(Dataset):
         self._data = self._parse_task_data(self._full_acs_data, new_task)
 
         # Re-make train/test/val split
-        self._train_indices, self._test_indices, self._val_indices = (
-            self._make_train_test_val_split(
-                self._data, self.test_size, self.val_size, self._rng
-            )
+        self._train_indices, self._test_indices, self._val_indices = self._make_train_test_val_split(
+            self._data, self.test_size, self.val_size, self._rng
         )
 
         # Check if sub-sampling is necessary (it's applied only to train/test/val indices)
@@ -139,9 +128,7 @@ class SIPPDataset(Dataset):
         self._task = new_task
 
     @classmethod
-    def _parse_task_data(
-        cls, full_df: pd.DataFrame, task: SIPPTaskMetadata
-    ) -> pd.DataFrame:
+    def _parse_task_data(cls, full_df: pd.DataFrame, task: SIPPTaskMetadata) -> pd.DataFrame:
         """Parse a DataFrame for compatibility with the given task object.
 
         Parameters
@@ -160,13 +147,7 @@ class SIPPDataset(Dataset):
         parsed_df = full_df
 
         # Threshold the target column if necessary
-        if (
-            task.target is not None
-            and task.target_threshold is not None
-            and task.get_target() not in parsed_df.columns
-        ):
-            parsed_df[task.get_target()] = task.target_threshold.apply_to_column_data(
-                parsed_df[task.target]
-            )
+        if task.target is not None and task.target_threshold is not None and task.get_target() not in parsed_df.columns:
+            parsed_df[task.get_target()] = task.target_threshold.apply_to_column_data(parsed_df[task.target])
 
         return parsed_df

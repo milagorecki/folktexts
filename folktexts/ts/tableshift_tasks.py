@@ -1,27 +1,25 @@
-"""A collection of Tableshift BRFSS prediction tasks based on the tableshift package.
-"""
+"""A collection of Tableshift BRFSS prediction tasks based on the tableshift package."""
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
 import copy
+import logging
+from dataclasses import asdict, dataclass
+from string import Template
+
+from tableshift.configs.benchmark_configs import BENCHMARK_CONFIGS, PreprocessorConfig
+from tableshift.configs.experiment_config import ExperimentConfig
+from tableshift.core.splitter import RandomSplitter
+from tableshift.core.tasks import _TASK_REGISTRY, TaskConfig
 
 from .._utils import hash_dict
 from ..col_to_text import ColumnToText as _ColumnToText
+from ..dataset import DEFAULT_TEST_SIZE, DEFAULT_VAL_SIZE
 from ..qa_interface import DirectNumericQA, MultipleChoiceQA
 from ..task import TaskMetadata
 from ..threshold import Threshold
 from . import brfss_columns, brfss_questions
 from .tableshift_thresholds import brfss_diabetes_threshold, brfss_hypertension_threshold
-from ..dataset import DEFAULT_VAL_SIZE, DEFAULT_TEST_SIZE
-
-from tableshift.configs.benchmark_configs import BENCHMARK_CONFIGS, PreprocessorConfig
-from tableshift.configs.experiment_config import ExperimentConfig
-from tableshift.core.tasks import TaskConfig, _TASK_REGISTRY
-from tableshift.core.splitter import RandomSplitter
-
-import logging
-from string import Template
 
 TABLESHIFT_TASK_DESCRIPTION = Template("""\
 The following data corresponds to $respondent. \
@@ -91,21 +89,13 @@ class TableshiftBRFSSTaskMetadata(TaskMetadata):
     ) -> TableshiftBRFSSTaskMetadata:
         """Create an Tableshift task object from the given parameters."""
         # Resolve target column name
-        target_col_name = (
-            target_threshold.apply_to_column_name(target)
-            if target_threshold is not None
-            else target
-        )
+        target_col_name = target_threshold.apply_to_column_name(target) if target_threshold is not None else target
 
         # Get default Q&A interfaces for this task's target column
         if multiple_choice_qa is None:
-            multiple_choice_qa = brfss_questions.brfss_multiple_choice_qa_map.get(
-                target_col_name
-            )
+            multiple_choice_qa = brfss_questions.brfss_multiple_choice_qa_map.get(target_col_name)
         if direct_numeric_qa is None:
-            direct_numeric_qa = brfss_questions.brfss_numeric_qa_map.get(
-                target_col_name
-            )
+            direct_numeric_qa = brfss_questions.brfss_numeric_qa_map.get(target_col_name)
 
         return cls(
             name=name,
@@ -145,25 +135,17 @@ class TableshiftBRFSSTaskMetadata(TaskMetadata):
                 random_state=default_splitter.random_state,
                 test_size=test_size,
             )
-            task_config = _TASK_REGISTRY[
-                name.lower()
-            ]  # 'data_source_cls', 'feature_list'
-            tableshift_task = TableshiftTask(
-                **task_config.__dict__, **benchmark_configs.__dict__
-            )
+            task_config = _TASK_REGISTRY[name.lower()]  # 'data_source_cls', 'feature_list'
+            tableshift_task = TableshiftTask(**task_config.__dict__, **benchmark_configs.__dict__)
 
         except AttributeError:
-            raise ValueError(
-                f"Could not find task '{name.lower()}' in tableshift package."
-            )
+            raise ValueError(f"Could not find task '{name.lower()}' in tableshift package.")
 
         logging.debug("Using only first sensitive attribute for task.")
         tableshift_task = cls.make_task(
             name=name,
             features=[
-                f
-                for f in tableshift_task.feature_list.names
-                if f != tableshift_task.feature_list.target
+                f for f in tableshift_task.feature_list.names if f != tableshift_task.feature_list.target
             ],  # also includes feature used for domain shift
             target=tableshift_task.feature_list.target,
             sensitive_attribute=tableshift_task.grouper.features[0],

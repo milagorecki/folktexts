@@ -1,5 +1,4 @@
-"""Module to hold ACS column mappings from values to natural text.
-"""
+"""Module to hold ACS column mappings from values to natural text."""
 
 from functools import partial
 from pathlib import Path
@@ -141,7 +140,10 @@ acs_relationship = ColumnToText(
         16: "Institutionalized group quarters population",
         17: "Non-institutionalized group quarters population",
     },
-    verbalize=lambda x: f"Relative to the reference person in the survey, the person is {'the ' if not (x.startswith('The') or x.endswith('population')) else 'part of a ' if x.endswith('population') else ''}{x.lower()}.",
+    verbalize=lambda x: (
+        f"Relative to the reference person in the survey, the person is "
+        f"{'part of a ' if x.endswith('population') else ('' if x.startswith('The') else 'the ')}{x.lower()}."
+    ),
 )
 
 # WKHP: Usual Hours Worked per Week
@@ -187,77 +189,86 @@ acs_race = ColumnToText(
         # 8: "Some other race alone",
         9: "Two or more races",
     },
-    verbalize=lambda x: f"The person identifies {'as ' if not(x.startswith('Some') or  x.startswith('Two')) else 'with '}{x}.",
+    verbalize=lambda x: (
+        f"The person identifies {'as ' if not (x.startswith('Some') or x.startswith('Two')) else 'with '}{x}."
+    ),
 )
 
-acs_race_native_hawaiian= ColumnToText(
-    "RACNH", 
+acs_race_native_hawaiian = ColumnToText(
+    "RACNH",
     short_description="Native Hawaiian",
     value_map={
         0: "No",
         1: "Yes",
     },
-    verbalize=lambda x: f"The person {'identifies' if x=='Yes' else 'does not indetify'} as Native Hawaiian.",
+    verbalize=lambda x: f"The person {'identifies' if x == 'Yes' else 'does not indetify'} as Native Hawaiian.",
 )
 
-acs_race_black= ColumnToText(
-    "RACBLK", 
+acs_race_black = ColumnToText(
+    "RACBLK",
     short_description="Black or African American",
     value_map={
         0: "No",
         1: "Yes",
     },
-    verbalize=lambda x: f"The person {'identifies' if x=='Yes' else 'does not indetify'} as Black or African American.",
+    verbalize=lambda x: (
+        f"The person {'identifies' if x == 'Yes' else 'does not indetify'} as Black or African American."
+    ),
 )
 
-acs_race_asian= ColumnToText(
-    "RACASN", 
+acs_race_asian = ColumnToText(
+    "RACASN",
     short_description="Asian",
     value_map={
         0: "No",
         1: "Yes",
     },
-    verbalize=lambda x: f"The person {'identifies' if x=='Yes' else 'does not indetify'} as Asian.",
+    verbalize=lambda x: f"The person {'identifies' if x == 'Yes' else 'does not indetify'} as Asian.",
 )
 
-acs_race_white= ColumnToText(
-    "RACWHT", 
+acs_race_white = ColumnToText(
+    "RACWHT",
     short_description="White",
     value_map={
         0: "No",
         1: "Yes",
     },
-    verbalize=lambda x: f"The person {'identifies' if x=='Yes' else 'does not indetify'} as White.",
+    verbalize=lambda x: f"The person {'identifies' if x == 'Yes' else 'does not indetify'} as White.",
 )
 
-acs_race_pi= ColumnToText(
-    "RACPI", 
+acs_race_pi = ColumnToText(
+    "RACPI",
     short_description="Pacific Islander other than Native Hawaiian",
     value_map={
         0: "No",
         1: "Yes",
     },
-    verbalize=lambda x: f"The person {'identifies' if x=='Yes' else 'does not indetify'} as Pacific Islander other than Native Hawaiian.",
+    verbalize=lambda x: (
+        f"The person {'identifies' if x == 'Yes' else 'does not indetify'} "
+        f"as Pacific Islander other than Native Hawaiian."
+    ),
 )
 
-acs_race_other= ColumnToText(
-    "RACSOR", 
+acs_race_other = ColumnToText(
+    "RACSOR",
     short_description="Some other race",
     value_map={
         0: "No",
         1: "Yes",
     },
-    verbalize=lambda x: f"The person {'identifies' if x=='Yes' else 'does not indetify'} with some other race.",
+    verbalize=lambda x: f"The person {'identifies' if x == 'Yes' else 'does not indetify'} with some other race.",
 )
 
-acs_race_aian= ColumnToText(
-    "RACAIAN", 
+acs_race_aian = ColumnToText(
+    "RACAIAN",
     short_description="American Indian and Alaska Native",
     value_map={
         0: "No",
         1: "Yes",
     },
-    verbalize=lambda x: f"The person {'identifies' if x=='Yes' else 'does not indetify'} as American Indian and Alaska Native.",
+    verbalize=lambda x: (
+        f"The person {'identifies' if x == 'Yes' else 'does not indetify'} as American Indian and Alaska Native."
+    ),
 )
 
 # PINCP: Yearly Income
@@ -285,10 +296,7 @@ acs_income_qa = MultipleChoiceQA(
 
 acs_income_numeric_qa = DirectNumericQA(
     column=acs_income_threshold.apply_to_column_name("PINCP"),
-    text=(
-        "What is the probability that this person's estimated yearly income is "
-        "above $50,000 ?"
-    ),
+    text=("What is the probability that this person's estimated yearly income is above $50,000 ?"),
 )
 
 acs_income_target_col = ColumnToText(
@@ -309,9 +317,7 @@ acs_pubcov_og_qa = MultipleChoiceQA(
     text="Does this person have public health insurance coverage?",
     choices=(
         Choice("Yes, person is covered by public health insurance", 1),
-        Choice(
-            "No, person is not covered by public health insurance", 2
-        ),  # NOTE: value=2 for no public coverage!
+        Choice("No, person is not covered by public health insurance", 2),  # NOTE: value=2 for no public coverage!
     ),
 )
 
@@ -332,9 +338,7 @@ acs_pubcov_qa = MultipleChoiceQA(
     text="Does this person have public health insurance coverage?",
     choices=(
         Choice("Yes, person is covered by public health insurance", 1),
-        Choice(
-            "No, person is not covered by public health insurance", 0
-        ),  # NOTE: value=0 for no public coverage!
+        Choice("No, person is not covered by public health insurance", 0),  # NOTE: value=0 for no public coverage!
     ),
 )
 
@@ -414,9 +418,7 @@ acs_mobility = ColumnToText(
 
 # MIG: Mobility Status (Thresholded)
 acs_mobility_qa = MultipleChoiceQA(
-    column=acs_mobility_threshold.apply_to_column_name(
-        "MIG"
-    ),  # NOTE: Thresholded by MIG!=1
+    column=acs_mobility_threshold.apply_to_column_name("MIG"),  # NOTE: Thresholded by MIG!=1
     text="Has this person moved in the last year?",
     choices=(
         Choice("No, person has lived in the same house for the last year", 0),
@@ -425,9 +427,7 @@ acs_mobility_qa = MultipleChoiceQA(
 )
 
 acs_mobility_numeric_qa = DirectNumericQA(
-    column=acs_mobility_threshold.apply_to_column_name(
-        "MIG"
-    ),  # NOTE: Thresholded by MIG!=1
+    column=acs_mobility_threshold.apply_to_column_name("MIG"),  # NOTE: Thresholded by MIG!=1
     text=(
         "What is the probability that this person has moved in the last year?"
     ),  # NOTE: Question should relate to probability of MIG!=1
@@ -453,7 +453,8 @@ acs_military = ColumnToText(
     },
     missing_value_fill="N/A (less than 17 years old)",
     verbalize=lambda x: (
-        f"The person {'is' if x.startswith('Now') else 'has'}{' been' if x.startswith('On') else ''}{x[0].lower()+x[1:]}."
+        f"The person {'is' if x.startswith('Now') else 'has'}"
+        f"{' been' if x.startswith('On') else ''}{x[0].lower() + x[1:]}."
         if not x.startswith("N/A")
         else "The person has not served the military, because the person is less than 17 years old."
     ),
@@ -554,7 +555,9 @@ acs_nop = ColumnToText(
         "N/A (not own child of householder and not child in subfamily)"
         # OR greater than 17 years old
     ),
-    verbalize=lambda x: f"The person is {x.lower() if not x.startswith('N/A') else 'not own child of householder and not child in subfamily or greater tahn 17 years old.'}.",
+    verbalize=lambda x: (
+        f"The person is {x.lower() if not x.startswith('N/A') else 'not own child of householder and not child in subfamily or greater than 17 years old.'}."  # noqa: E501
+    ),
 )
 
 # DEAR: Hearing Status
@@ -682,7 +685,10 @@ acs_parenthood = ColumnToText(
     verbalize=lambda x: (
         f"The person {x[7:]}"
         if not x.startswith("N/A")
-        else "No parenthood status provided, because the person is less than 15 years old, greater than 50 years old or male."
+        else (
+            "No parenthood status provided, because the person is less than 15 years old, "
+            "greater than 50 years old or male."
+        )
     ),
 )
 
@@ -748,9 +754,7 @@ acs_commute_method = ColumnToText(
     },
     verbalize=lambda x: (
         f"The person's means of transportation to work is a {x.lower()}."
-        if not (
-            x.startswith("Other") or x.startswith("Walked") or x.startswith("Worked")
-        )
+        if not (x.startswith("Other") or x.startswith("Walked") or x.startswith("Worked"))
         else (
             "The person uses other means of transportation to work."
             if x.startswith("Other")
@@ -854,7 +858,7 @@ acs_health_ins_2_col = ColumnToText(
             "company (is either uninsured or insured through another source)",
         ),
     },
-    verbalize=lambda x: f"The {x[0].lower()+x[1:]}.",
+    verbalize=lambda x: f"The {x[0].lower() + x[1:]}.",
 )
 
 # HINS2: Health Insurance Coverage through Private Company (Thresholded)
@@ -873,8 +877,7 @@ acs_health_ins_2_qa = MultipleChoiceQA(
 acs_health_ins_2_numeric_qa = DirectNumericQA(
     column=acs_health_insurance_threshold.apply_to_column_name("HINS2"),
     text=(
-        "What is the probability that this person has purchased health "
-        "insurance directly through a private company?"
+        "What is the probability that this person has purchased health insurance directly through a private company?"
     ),  # NOTE: Question should relate to probability of HINS2==1
 )
 
@@ -883,5 +886,5 @@ acs_health_ins_2_target_col = ColumnToText(
     short_description="acquired health insurance directly from an insurance company",
     question=acs_health_ins_2_qa,
     use_value_map_only=True,
-    verbalize=lambda x: f"The {x[0].lower()+x[1:]}.",
+    verbalize=lambda x: f"The {x[0].lower() + x[1:]}.",
 )

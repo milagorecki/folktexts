@@ -6,11 +6,12 @@ import hashlib
 import json
 import logging
 import operator
+from argparse import Action
 from contextlib import contextmanager
 from datetime import datetime
 from functools import partial, reduce
 from pathlib import Path
-from argparse import Action
+
 import numpy as np
 
 
@@ -22,10 +23,7 @@ def is_valid_number(num) -> bool:
 def safe_division(a: float, b: float, *, worst_result: float):
     """Try to divide the given arguments and return `worst_result` if unsuccessful."""
     if b == 0 or not is_valid_number(a) or not is_valid_number(b):
-        logging.debug(
-            f"Using `worst_result={worst_result}` in place of the following "
-            f"division: {a} / {b}"
-        )
+        logging.debug(f"Using `worst_result={worst_result}` in place of the following division: {a} / {b}")
         return worst_result
     else:
         return a / b
@@ -154,7 +152,7 @@ class ParseDict(Action):
         value_list = values[0].split(";")
         for pair in value_list:
             key, _, value = pair.partition("=")
-            assert value != '', f"Some value could not be parsed, received {pair}."
+            assert value != "", f"Some value could not be parsed, received {pair}."
             if is_int(value):
                 value = int(value)
             elif is_float(value):

@@ -17,16 +17,12 @@ brfss_columns_map: dict[str, object] = {
 
 # Map of numeric ACS questions
 brfss_numeric_qa_map: dict[str, object] = {
-    question.column: question
-    for question in brfss_columns.__dict__.values()
-    if isinstance(question, _DirectNumericQA)
+    question.column: question for question in brfss_columns.__dict__.values() if isinstance(question, _DirectNumericQA)
 }
 
 # Map of multiple-choice ACS questions
 brfss_multiple_choice_qa_map: dict[str, object] = {
-    question.column: question
-    for question in brfss_columns.__dict__.values()
-    if isinstance(question, _MultipleChoiceQA)
+    question.column: question for question in brfss_columns.__dict__.values() if isinstance(question, _MultipleChoiceQA)
 }
 
 # ... include all multiple-choice questions defined in the column descriptions

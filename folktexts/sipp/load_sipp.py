@@ -1,14 +1,15 @@
 """Load preprocessed SIPP data."""
 
+import gzip
+import io
+import logging
+import zipfile
+from itertools import chain
+from pathlib import Path
+
+import numpy as np
 import pandas as pd
 import requests
-from pathlib import Path
-import logging
-from itertools import chain
-import numpy as np
-import zipfile
-import io
-import gzip
 
 # the variables we're interested in
 opm_variables = {
@@ -247,9 +248,7 @@ variables_dicts_list = [
 sipp_variables_names = [list(vars_dict.values()) for vars_dict in variables_dicts_list]
 sipp_variables_names = list(chain.from_iterable(sipp_variables_names))
 
-my_variables_names = [
-    chain.from_iterable(list(vars_dict.keys())) for vars_dict in variables_dicts_list
-]
+my_variables_names = [chain.from_iterable(list(vars_dict.keys())) for vars_dict in variables_dicts_list]
 my_variables_names = list(chain.from_iterable(my_variables_names))
 
 
@@ -271,7 +270,7 @@ def download_sipp(
     for source in data_source:
         out_file = Path(source).name[:-3]  # remove '.gz'
         if (save_path / out_file).exists() and not overwrite_download:
-            print(f"File already exists at {save_path/out_file}.")
+            print(f"File already exists at {save_path / out_file}.")
         else:
             print("Downloading gz file.")
             response = requests.get(url=source, stream=True)
@@ -311,16 +310,16 @@ def load_sipp(
     data_dir="data/sipp/",
     wave_1_file="sipp_2014_wave_1.csv",
     wave_2_file="sipp_2014_wave_2.csv",
-    file_name ="sipp_2014.csv"
+    file_name="sipp_2014.csv",
 ):
     """Load sipp data from preprocessed csv files."""
-    w1 = pd.read_csv(Path(data_dir)/wave_1_file)
-    w2 = pd.read_csv(Path(data_dir)/wave_2_file)
+    w1 = pd.read_csv(Path(data_dir) / wave_1_file)
+    w2 = pd.read_csv(Path(data_dir) / wave_2_file)
     X = w1[w1.columns[5:]]
     y = 1.0 * (w2["OPM_RATIO"] >= 3)
 
-    data = pd.concat([X,y], axis=1)
-    data.to_csv(Path(data_dir)/file_name)
+    data = pd.concat([X, y], axis=1)
+    data.to_csv(Path(data_dir) / file_name)
     return X, y
 
 
@@ -342,12 +341,8 @@ def preprocess_sipp(data_dir="./data/sipp/"):
     preprocessed_data = dict()
     preprocessed_data["wave_1"] = create_unique_id(raw_data["wave_1"])
     preprocessed_data["wave_2"] = create_unique_id(raw_data["wave_2"])
-    print(
-        f"There are {len(preprocessed_data['wave_1']['UNIQUE_ID'].unique())} unique individuals in wave 1."
-    )
-    print(
-        f"There are {len(preprocessed_data['wave_2']['UNIQUE_ID'].unique())} unique individuals in wave 2."
-    )
+    print(f"There are {len(preprocessed_data['wave_1']['UNIQUE_ID'].unique())} unique individuals in wave 1.")
+    print(f"There are {len(preprocessed_data['wave_2']['UNIQUE_ID'].unique())} unique individuals in wave 2.")
 
     preprocessed_data["wave_1"] = reshape_df(preprocessed_data["wave_1"])
     preprocessed_data["wave_2"] = reshape_df(preprocessed_data["wave_2"])
@@ -370,9 +365,10 @@ def preprocess_sipp(data_dir="./data/sipp/"):
     preprocessed_data["wave_1"] = preprocessed_data["wave_1"].reset_index(drop=True)
     preprocessed_data["wave_2"] = preprocessed_data["wave_2"].reset_index(drop=True)
 
-    # A lot of the variables in the SIPP dataset are taken each month within each wave. To keep the dataframe relatively small
-    # (i.e., get rid of 12 * |columns| and turn into |columns|) we are going to be aggregating those variables that have to do
-    # with amount of aid recieved, money paid, or coverage received each month. We don't expect to lose that much information doing so.
+    # A lot of the variables in the SIPP dataset are taken each month within each wave. To keep the dataframe
+    # relatively small (i.e., get rid of 12 * |columns| and turn into |columns|) we are going to be aggregating
+    # those variables that have to do with amount of aid recieved, money paid, or coverage received each month.
+    # We don't expect to lose that much information doing so.
     variating_vars_by_type = {
         "start_stop_percentage": [
             ("efs_bmonth", "efs_emonth", "efs"),
@@ -426,17 +422,12 @@ def preprocess_sipp(data_dir="./data/sipp/"):
             "rhpov",
         ],
     }
-    # Given that the number of people in the family can change throughout the year, we'll be taking the rounded average of `rfpersons`.
-    preprocessed_data["wave_1"]["rfpersons"] = round(
-        preprocessed_data["wave_1"]["rfpersons"].mean(axis=1)
-    )
-    preprocessed_data["wave_2"]["rfpersons"] = round(
-        preprocessed_data["wave_2"]["rfpersons"].mean(axis=1)
-    )
+    # Given that the number of people in the family can change throughout the year,
+    # we'll be taking the rounded average of `rfpersons`.
+    preprocessed_data["wave_1"]["rfpersons"] = round(preprocessed_data["wave_1"]["rfpersons"].mean(axis=1))
+    preprocessed_data["wave_2"]["rfpersons"] = round(preprocessed_data["wave_2"]["rfpersons"].mean(axis=1))
 
-    for bmonth_var_name, emonth_var_name, new_var_name in variating_vars_by_type[
-        "start_stop_percentage"
-    ]:
+    for bmonth_var_name, emonth_var_name, new_var_name in variating_vars_by_type["start_stop_percentage"]:
         preprocessed_data["wave_1"] = create_yearly_percentage(
             preprocessed_data["wave_1"], bmonth_var_name, emonth_var_name, new_var_name
         )
@@ -444,17 +435,11 @@ def preprocess_sipp(data_dir="./data/sipp/"):
             preprocessed_data["wave_2"], bmonth_var_name, emonth_var_name, new_var_name
         )
 
-        print(
-            f"{new_var_name}: {len(preprocessed_data['wave_1'][new_var_name].unique())} unique values"
-        )
+        print(f"{new_var_name}: {len(preprocessed_data['wave_1'][new_var_name].unique())} unique values")
 
     for var in variating_vars_by_type["sum_across_year"]:
-        preprocessed_data["wave_1"] = create_yearly_sum_column(
-            preprocessed_data["wave_1"], var
-        )
-        preprocessed_data["wave_2"] = create_yearly_sum_column(
-            preprocessed_data["wave_2"], var
-        )
+        preprocessed_data["wave_1"] = create_yearly_sum_column(preprocessed_data["wave_1"], var)
+        preprocessed_data["wave_2"] = create_yearly_sum_column(preprocessed_data["wave_2"], var)
 
     # the variables we're combining
     variables_to_combine = {
@@ -612,9 +597,7 @@ def preprocess_sipp(data_dir="./data/sipp/"):
         ),
     }
 
-    for new_variable_name, vars_to_combine in variables_to_combine[
-        "combine_via_sum"
-    ].items():
+    for new_variable_name, vars_to_combine in variables_to_combine["combine_via_sum"].items():
         final_dataframes["wave_1"][new_variable_name] = combine_variables_by_adding(
             preprocessed_data["wave_1"], vars_to_combine
         )
@@ -622,9 +605,7 @@ def preprocess_sipp(data_dir="./data/sipp/"):
             preprocessed_data["wave_2"], vars_to_combine
         )
 
-    for new_variable_name, vars_to_combine in variables_to_combine[
-        "combine_via_one_hot_encoding"
-    ].items():
+    for new_variable_name, vars_to_combine in variables_to_combine["combine_via_one_hot_encoding"].items():
         final_dataframes["wave_1"][new_variable_name] = combine_via_one_hot_encoding(
             preprocessed_data["wave_1"], vars_to_combine
         )
@@ -633,13 +614,13 @@ def preprocess_sipp(data_dir="./data/sipp/"):
         )
 
     # plot the distribution of NaN values
-    cols_with_nan_w1 = (
-        final_dataframes["wave_1"].isna().sum() / len(final_dataframes["wave_1"])
-    ).sort_values(ascending=False)
+    cols_with_nan_w1 = (final_dataframes["wave_1"].isna().sum() / len(final_dataframes["wave_1"])).sort_values(
+        ascending=False
+    )
 
-    cols_with_nan_w2 = (
-        final_dataframes["wave_2"].isna().sum() / len(final_dataframes["wave_2"])
-    ).sort_values(ascending=False)
+    cols_with_nan_w2 = (final_dataframes["wave_2"].isna().sum() / len(final_dataframes["wave_2"])).sort_values(  # noqa: F841
+        ascending=False
+    )
 
     # x_ticks_w1 = np.arange(len(cols_with_nan_w1))
     # x_ticks_w2 = np.arange(len(cols_with_nan_w2))
@@ -651,45 +632,27 @@ def preprocess_sipp(data_dir="./data/sipp/"):
     # drop the columsn whose NaN values make up > 10% of that column
     more_than_10_w1 = cols_with_nan_w1[cols_with_nan_w1 > 0.1].copy()
     # the columns we'll be dropping
-    print(
-        f"We are dropping {len(more_than_10_w1)} columns, because they contain >10% NaN values.\n{more_than_10_w1}"
-    )
+    print(f"We are dropping {len(more_than_10_w1)} columns, because they contain >10% NaN values.\n{more_than_10_w1}")
     # we'll be dropping the same columns for both dataframes
-    final_dataframes["wave_1"] = final_dataframes["wave_1"].drop(
-        columns=more_than_10_w1.index
-    )
-    final_dataframes["wave_2"] = final_dataframes["wave_2"].drop(
-        columns=more_than_10_w1.index
-    )
+    final_dataframes["wave_1"] = final_dataframes["wave_1"].drop(columns=more_than_10_w1.index)
+    final_dataframes["wave_2"] = final_dataframes["wave_2"].drop(columns=more_than_10_w1.index)
 
     print(f"Number of respondents left in wave 1: {len(final_dataframes['wave_1'])}")
     print(f"Number of respondents left in wave 2: {len(final_dataframes['wave_2'])}")
 
-    print(
-        f"Number of missing values in wave 1: {final_dataframes['wave_1'].isna().sum().sum()}"
-    )
-    print(
-        f"Number of missing values in wave 2: {final_dataframes['wave_2'].isna().sum().sum()}"
-    )
+    print(f"Number of missing values in wave 1: {final_dataframes['wave_1'].isna().sum().sum()}")
+    print(f"Number of missing values in wave 2: {final_dataframes['wave_2'].isna().sum().sum()}")
 
-    print(
-        f"Number of respondents with missing target variable: {final_dataframes['wave_2']['OPM_RATIO'].isna().sum()}"
-    )
+    print(f"Number of respondents with missing target variable: {final_dataframes['wave_2']['OPM_RATIO'].isna().sum()}")
 
     # the columns that we'll be using
     print(f"remaining columns: {final_dataframes['wave_1'].columns.tolist()}")
 
     # sort the dataframes based on their `UNIQUE_ID`
-    final_dataframes["wave_1"] = (
-        final_dataframes["wave_1"].sort_values(by="UNIQUE_ID").reset_index(drop=True)
-    )
-    final_dataframes["wave_2"] = (
-        final_dataframes["wave_2"].sort_values(by="UNIQUE_ID").reset_index(drop=True)
-    )
+    final_dataframes["wave_1"] = final_dataframes["wave_1"].sort_values(by="UNIQUE_ID").reset_index(drop=True)
+    final_dataframes["wave_2"] = final_dataframes["wave_2"].sort_values(by="UNIQUE_ID").reset_index(drop=True)
 
-    respondents_to_keep = final_dataframes["wave_2"][
-        ~final_dataframes["wave_2"]["OPM_RATIO"].isna()
-    ]["UNIQUE_ID"]
+    respondents_to_keep = final_dataframes["wave_2"][~final_dataframes["wave_2"]["OPM_RATIO"].isna()]["UNIQUE_ID"]
 
     # drop the individual with missing target variables (i.e., `OPM_RATIO` in wave 2) usig their `UNIQUE_ID`
     final_dataframes["wave_1"] = final_dataframes["wave_1"][
@@ -713,16 +676,10 @@ def preprocess_sipp(data_dir="./data/sipp/"):
     print(f"Number of respondents left in wave 2: {len(final_dataframes['wave_2'])}")
 
     # sort the dataframes by their `UNIQUE_ID` and reset their indices one last time
-    final_dataframes["wave_1"] = (
-        final_dataframes["wave_1"].sort_values(by="UNIQUE_ID").reset_index(drop=True)
-    )
-    final_dataframes["wave_2"] = (
-        final_dataframes["wave_2"].sort_values(by="UNIQUE_ID").reset_index(drop=True)
-    )
+    final_dataframes["wave_1"] = final_dataframes["wave_1"].sort_values(by="UNIQUE_ID").reset_index(drop=True)
+    final_dataframes["wave_2"] = final_dataframes["wave_2"].sort_values(by="UNIQUE_ID").reset_index(drop=True)
 
-    assert final_dataframes["wave_1"]["UNIQUE_ID"].equals(
-        final_dataframes["wave_2"]["UNIQUE_ID"]
-    )
+    assert final_dataframes["wave_1"]["UNIQUE_ID"].equals(final_dataframes["wave_2"]["UNIQUE_ID"])
     # save data
     final_dataframes["wave_1"].to_csv(data_dir / "sipp_2014_wave_1.csv", index=False)
     final_dataframes["wave_2"].to_csv(data_dir / "sipp_2014_wave_2.csv", index=False)
@@ -792,9 +749,7 @@ def drop_underage_individuals(df):
     return df_copy.drop(index=underage_individuals_indices)
 
 
-def create_yearly_percentage(
-    df, bmonth_variable_name, emonth_variable_name, new_variable_name
-):
+def create_yearly_percentage(df, bmonth_variable_name, emonth_variable_name, new_variable_name):
     num_months = 12
 
     df_copy = df.copy()
@@ -836,9 +791,7 @@ def create_yearly_percentage(
                 coverage_sum += (end_val - begin_val) + 1
             yearly_percentage_results.append(round(coverage_sum / num_months, 2))
 
-    df_copy[new_variable_name] = pd.Series(
-        yearly_percentage_results, index=df_copy.index
-    )
+    df_copy[new_variable_name] = pd.Series(yearly_percentage_results, index=df_copy.index)
     return df_copy
 
 
@@ -861,7 +814,7 @@ def create_df_from_selected_columns(df, selected_columns, new_columns_names):
         try:
             # we'll first check whether we're dealing with a dataframe or just a series. We are going to be doing this
             # by trying to access the value at index 1 of the .shape field
-            num_cols = df[original_col_name].shape[1]
+            num_cols = df[original_col_name].shape[1]  # noqa: F841
 
             # if we get here, then we're dealing with a multi-col DataFrame. Hence, we'll go ahead an just retrieve
             # the value of the first column

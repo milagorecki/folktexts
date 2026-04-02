@@ -12,16 +12,16 @@ import numpy as np
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from ._io import load_json, save_json
-from ._utils import hash_dict, is_valid_number, get_current_timestamp
+from ._utils import get_current_timestamp, hash_dict, is_valid_number
 from .acs import ACSDataset, ACSTaskMetadata
-from .ts import TableshiftBRFSSDataset, TableshiftBRFSSTaskMetadata
-from .sipp import SIPPDataset, SIPPTaskMetadata
 from .classifier import LLMClassifier, TransformersLLMClassifier, WebAPILLMClassifier
 from .dataset import Dataset
 from .evaluation import evaluate_predictions
 from .plotting import render_evaluation_plots, render_fairness_plots
 from .prompting import encode_row_prompt, encode_row_prompt_few_shot
+from .sipp import SIPPDataset, SIPPTaskMetadata
 from .task import TaskMetadata
+from .ts import TableshiftBRFSSDataset, TableshiftBRFSSTaskMetadata
 
 DEFAULT_SEED = 42
 DEFAULT_FIT_THRESHOLD_N = 100
@@ -41,8 +41,8 @@ class BenchmarkConfig:
         Whether to  extract answer from generated text.  Default is False.
     enable_thinking : bool, optional
         Whether to enable thinking mode for models that support it (e.g., Qwen3).
-        Only applies when  `use_generated_text` is set. When enabled, uses the 
-        tokenizer's  `apply_chat_template` with `enable_thinking=True`. Default 
+        Only applies when  `use_generated_text` is set. When enabled, uses the
+        tokenizer's  `apply_chat_template` with `enable_thinking=True`. Default
         is False.
     few_shot : int | None, optional
         Whether to use few-shot prompting with a given number of examples, by
@@ -121,17 +121,11 @@ class BenchmarkConfig:
     def __hash__(self) -> int:
         """Generates a unique hash for the configuration."""
         cfg = dataclasses.asdict(self)
-        if isinstance(cfg["compose_few_shot_examples"],list):
-            cfg["compose_few_shot_examples"] = tuple(cfg["compose_few_shot_examples"]) 
-        cfg["feature_subset"] = (
-            tuple(cfg["feature_subset"]) if cfg["feature_subset"] else None
-        )
-        cfg["population_filter_hash"] = (
-            hash_dict(cfg["population_filter"]) if cfg["population_filter"] else None
-        )
-        cfg["prompt_variation"] = (
-            hash_dict(cfg["prompt_variation"]) if cfg["prompt_variation"] else None
-        )
+        if isinstance(cfg["compose_few_shot_examples"], list):
+            cfg["compose_few_shot_examples"] = tuple(cfg["compose_few_shot_examples"])
+        cfg["feature_subset"] = tuple(cfg["feature_subset"]) if cfg["feature_subset"] else None
+        cfg["population_filter_hash"] = hash_dict(cfg["population_filter"]) if cfg["population_filter"] else None
+        cfg["prompt_variation"] = hash_dict(cfg["prompt_variation"]) if cfg["prompt_variation"] else None
         return int(hash_dict(cfg), 16)
 
 
@@ -196,10 +190,8 @@ class Benchmark:
 
         # Log initialization
         msg = (
-            f"\n** Benchmark initialization **\n"
-            f"Model: {self.model_name};\n"
-            f"Task: {self.task.name};\n"
-            f"Hash: {hash(self)};\n"
+            f"\n** Benchmark initialization **\nModel: {self.model_name};\n"
+            f"Task: {self.task.name};\nHash: {hash(self)};\n"
         )
         logging.info(msg)
 
@@ -270,10 +262,9 @@ class Benchmark:
         assert data_split in ("train", "val", "test")
         return self.results_dir / f"{self.dataset.name}.{data_split}_predictions.csv"
 
-    def run(self, results_root_dir: str | Path,
-            fit_threshold: int | bool = 0,
-            threshold_obj: str = 'balanced_accuracy'
-            ) -> float:
+    def run(
+        self, results_root_dir: str | Path, fit_threshold: int | bool = 0, threshold_obj: str = "balanced_accuracy"
+    ) -> float:
         """Run the calibration benchmark experiment.
 
         Parameters
@@ -301,9 +292,7 @@ class Benchmark:
 
         # Get sensitive attribute data if available
         s_test = None
-        logging.info(
-            f"Sensitive attribute defined by task: {self.task.sensitive_attribute}"
-        )
+        logging.info(f"Sensitive attribute defined by task: {self.task.sensitive_attribute}")
         if self.task.sensitive_attribute is not None:
             s_test = self.dataset.get_sensitive_attribute_data().loc[y_test.index]
 
@@ -314,9 +303,7 @@ class Benchmark:
             predictions_save_path=test_predictions_save_path,
             labels=y_test,  # used only to save alongside predictions in disk
         )
-        self._y_test_scores = self.llm_clf._get_positive_class_scores(
-            self._y_test_scores
-        )
+        self._y_test_scores = self.llm_clf._get_positive_class_scores(self._y_test_scores)
 
         # If requested, fit the threshold on a small portion of the train set
         if fit_threshold:
@@ -329,25 +316,28 @@ class Benchmark:
             self.llm_clf._threshold_obj = threshold_obj
             logging.info(f"Fitting threshold on {fit_threshold} train samples")
             X_train, y_train = self.dataset.sample_n_train_examples(fit_threshold)
-            self.llm_clf.fit(X_train,
-                             y_train,
-                             predictions_save_path=self._get_predictions_save_path("train"),
-                             labels=y_train,
-                             threshold_obj=threshold_obj)
+            self.llm_clf.fit(
+                X_train,
+                y_train,
+                predictions_save_path=self._get_predictions_save_path("train"),
+                labels=y_train,
+                threshold_obj=threshold_obj,
+            )
 
         # Evaluate test risk scores
         count_nan = np.isnan(self._y_test_scores).sum()
         if count_nan > 0:
-            logging.warning(f'Predicted scores contain NaN values, dropping {count_nan} indices.')
+            logging.warning(f"Predicted scores contain NaN values, dropping {count_nan} indices.")
             # Get indices of NaNs
             nan_indices = np.where(np.isnan(self._y_test_scores))[0]
             nan_mask = ~np.isnan(self._y_test_scores)
-            logging.info(f'Indices with NaN values: {nan_indices}')
-            logging.info("New shapes:"
-                         f"y_test: {y_test.to_numpy().shape} -> {y_test.to_numpy()[nan_mask].shape},"
-                         f"y_test_scores: {self._y_test_scores.shape} -> {self._y_test_scores[nan_mask].shape},"
-                         f"s_test: {s_test.to_numpy().shape} -> {s_test.to_numpy()[nan_mask].shape}"
-                         )
+            logging.info(f"Indices with NaN values: {nan_indices}")
+            logging.info(
+                "New shapes:"
+                f"y_test: {y_test.to_numpy().shape} -> {y_test.to_numpy()[nan_mask].shape},"
+                f"y_test_scores: {self._y_test_scores.shape} -> {self._y_test_scores[nan_mask].shape},"
+                f"s_test: {s_test.to_numpy().shape} -> {s_test.to_numpy()[nan_mask].shape}"
+            )
             self._results = evaluate_predictions(
                 y_true=y_test.to_numpy()[nan_mask],
                 y_pred_scores=self._y_test_scores[nan_mask],
@@ -367,7 +357,7 @@ class Benchmark:
 
         self._results["threshold_fitted_on"] = self.llm_clf._threshold_fitted_on
         self._results["threshold_obj"] = self.llm_clf._threshold_obj if self.llm_clf._threshold_fitted_on > 0 else None
-        ## TODO: set to None by default, only change when fitting, then this check is no longer needed 
+        ## TODO: set to None by default, only change when fitting, then this check is no longer needed
 
         if self.task.sensitive_attribute is not None:
             self._results["sensitive_attribute"] = self.task.sensitive_attribute
@@ -527,14 +517,12 @@ class Benchmark:
 
         # Fetch ACS task and dataset
         acs_task = ACSTaskMetadata.get_task(
-            name=task_name, 
+            name=task_name,
             use_numeric_qa=config.numeric_risk_prompting,
-            use_text_output_for_qa=config.use_generated_text
+            use_text_output_for_qa=config.use_generated_text,
         )
 
-        acs_dataset = ACSDataset.make_from_task(
-            task=acs_task, cache_dir=data_dir, **acs_dataset_configs
-        )
+        acs_dataset = ACSDataset.make_from_task(task=acs_task, cache_dir=data_dir, **acs_dataset_configs)
 
         return cls.make_benchmark(
             task=acs_task,
@@ -602,9 +590,9 @@ class Benchmark:
 
         # Fetch Tableshift task and dataset
         tableshift_task = TableshiftBRFSSTaskMetadata.get_task(
-            name=task_name, 
+            name=task_name,
             use_numeric_qa=config.numeric_risk_prompting,
-            use_text_output_for_qa=config.use_generated_text
+            use_text_output_for_qa=config.use_generated_text,
         )
 
         tableshift_dataset = TableshiftBRFSSDataset.make_from_task(
@@ -619,7 +607,7 @@ class Benchmark:
             max_api_rpm=max_api_rpm,
             config=config,
         )
-    
+
     @classmethod
     def make_sipp_benchmark(
         cls,
@@ -677,14 +665,12 @@ class Benchmark:
 
         # Fetch SIPP task and dataset
         sipp_task = SIPPTaskMetadata.get_task(
-            name=task_name, 
+            name=task_name,
             use_numeric_qa=config.numeric_risk_prompting,
-            use_text_output_for_qa=config.use_generated_text
+            use_text_output_for_qa=config.use_generated_text,
         )
 
-        sipp_dataset = SIPPDataset.make_from_task(
-            task=sipp_task, cache_dir=data_dir, **sipp_dataset_configs
-        )
+        sipp_dataset = SIPPDataset.make_from_task(task=sipp_task, cache_dir=data_dir, **sipp_dataset_configs)
 
         return cls.make_benchmark(
             task=sipp_task,
@@ -740,11 +726,11 @@ class Benchmark:
 
         # Handle TaskMetadata object
         task = TaskMetadata.get_task(task) if isinstance(task, str) else task
-        
+
         if config.use_generated_text and config.use_generated_text != task.use_text_output_for_qa:
             task.use_text_output_for_qa = config.use_generated_text
             if config.numeric_risk_prompting:
-                raise NotImplementedError #TODO
+                raise NotImplementedError  # TODO
 
         if config.numeric_risk_prompting:
             task.use_numeric_qa = True
@@ -755,10 +741,7 @@ class Benchmark:
 
         # Check dataset is compatible with task
         if dataset.task is not task and dataset.task.name != task.name:
-            raise ValueError(
-                f"Dataset task '{dataset.task.name}' does not match the "
-                f"provided task '{task.name}'."
-            )
+            raise ValueError(f"Dataset task '{dataset.task.name}' does not match the provided task '{task.name}'.")
 
         if config.population_filter is not None:
             dataset = dataset.filter(config.population_filter)
@@ -784,10 +767,11 @@ class Benchmark:
             )
 
         # Parse LLMClassifier parameters
-        llm_inference_kwargs = {"correct_order_bias": config.correct_order_bias,
-                                "prompt_variation": config.prompt_variation or {},
-                                "enable_thinking": config.enable_thinking,
-                                }
+        llm_inference_kwargs = {
+            "correct_order_bias": config.correct_order_bias,
+            "prompt_variation": config.prompt_variation or {},
+            "enable_thinking": config.enable_thinking,
+        }
         if config.batch_size is not None:
             llm_inference_kwargs["batch_size"] = config.batch_size
         if config.context_size is not None:

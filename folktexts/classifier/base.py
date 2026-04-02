@@ -1,5 +1,4 @@
-"""Module containing the base class for all LLM risk classifiers.
-"""
+"""Module containing the base class for all LLM risk classifiers."""
 
 from __future__ import annotations
 
@@ -7,9 +6,9 @@ import logging
 import math
 from abc import ABC, abstractmethod
 from functools import partial
+from os import remove
 from pathlib import Path
 from typing import Callable
-from os import remove
 
 import numpy as np
 import pandas as pd
@@ -38,9 +37,9 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
     DEFAULT_INFERENCE_KWARGS = {
         "context_size": DEFAULT_CONTEXT_SIZE,
         "batch_size": DEFAULT_BATCH_SIZE,
-        "enable_thinking": False,                   ## TODO: wrong place? 
-        "max_new_tokens": DEFAULT_MAX_NEW_TOKENS    ## TODO: wrong place? 
-    } 
+        "enable_thinking": False,  ## TODO: wrong place?
+        "max_new_tokens": DEFAULT_MAX_NEW_TOKENS,  ## TODO: wrong place?
+    }
 
     def __init__(
         self,
@@ -85,7 +84,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         # Set classifier metadata
         self._model_name = model_name
         # self.enable_thinking = False
-        # self.max_new_tokens # what is the models native max  
+        # self.max_new_tokens # what is the models native max
 
         self._task = TaskMetadata.get_task(task) if isinstance(task, str) else task
         self._custom_prompt_prefix = custom_prompt_prefix
@@ -95,12 +94,12 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
             default_encode_row_prompt,
             task=self.task,
             custom_prompt_prefix=self.custom_prompt_prefix,
-            prompt_variation=self.prompt_variation
+            prompt_variation=self.prompt_variation,
         )
 
         self._threshold = threshold
         self._threshold_fitted_on = 0
-        self._threshold_obj = 'balanced_accuracy' ##TODO: remove (but will change benchmark hash)
+        self._threshold_obj = "balanced_accuracy"  ##TODO: remove (but will change benchmark hash)
         self._correct_order_bias = correct_order_bias
         self._seed = seed
 
@@ -199,22 +198,17 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         """Converts positive class scores to multiclass scores."""
         return np.column_stack([1 - pos_class_scores, pos_class_scores])
 
-    def fit(self, X, y, *, false_pos_cost=1.0, false_neg_cost=1.0, threshold_obj='balanced_accuracy', **kwargs):
+    def fit(self, X, y, *, false_pos_cost=1.0, false_neg_cost=1.0, threshold_obj="balanced_accuracy", **kwargs):
         """Uses the provided data sample to fit the prediction threshold."""
 
         # Compute risk estimates for the data
-        y_pred_scores = self._get_positive_class_scores(
-            self.predict_proba(X, **kwargs)
-        )
+        y_pred_scores = self._get_positive_class_scores(self.predict_proba(X, **kwargs))
 
         # Compute the best threshold for the given data
         self.threshold = compute_best_threshold(
-            y, y_pred_scores,
-            false_pos_cost=false_pos_cost,
-            false_neg_cost=false_neg_cost,
-            maximize=threshold_obj
+            y, y_pred_scores, false_pos_cost=false_pos_cost, false_neg_cost=false_neg_cost, maximize=threshold_obj
         )
-        self._threshold_obj = threshold_obj ## TODO: save in llm_clf._threshold_obj before calling fun
+        self._threshold_obj = threshold_obj  ## TODO: save in llm_clf._threshold_obj before calling fun
 
         # Update sklearn is_fitted status
         self._is_fitted = True
@@ -283,10 +277,13 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
             logging.error(
                 "** Ignoring `labels` argument as `predictions_save_path` was not provided. **"
                 "The `labels` argument is only used in conjunction with "
-                "`predictions_save_path` to save alongside predictions to disk. ")
+                "`predictions_save_path` to save alongside predictions to disk. "
+            )
 
         # Check if `predictions_save_path` exists and load predictions if possible
-        logging.info(f"Check if predictions_save_path '{predictions_save_path}' exists:{Path(predictions_save_path).exists()}")
+        logging.info(
+            f"Check if predictions_save_path '{predictions_save_path}' exists:{Path(predictions_save_path).exists()}"
+        )
         if predictions_save_path is not None and Path(predictions_save_path).exists():
             result = self._load_predictions_from_disk(predictions_save_path, data=data)
             if result is not None:
@@ -299,18 +296,17 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
                 )
 
         if not isinstance(data, pd.DataFrame):
-            raise ValueError(
-                f"`data` must be a pd.DataFrame, received {type(data)} instead.")
+            raise ValueError(f"`data` must be a pd.DataFrame, received {type(data)} instead.")
 
         # Compute risk estimates
-        risk_scores = self.compute_risk_estimates_for_dataframe(df=data,
-                                                                save_intermed={'path': predictions_save_path,
-                                                                               'labels': labels})
+        risk_scores = self.compute_risk_estimates_for_dataframe(
+            df=data, save_intermed={"path": predictions_save_path, "labels": labels}
+        )
 
         # Save to disk if `predictions_save_path` is provided
         if predictions_save_path is not None:
             predictions_save_path = Path(predictions_save_path).with_suffix(".csv")
-            logging.info(f'Saving predictions to {predictions_save_path}')
+            logging.info(f"Saving predictions to {predictions_save_path}")
 
             predictions_df = pd.DataFrame(risk_scores, index=data.index, columns=[SCORE_COL_NAME])
             predictions_df[LABEL_COL_NAME] = labels
@@ -330,9 +326,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         raise NotImplementedError("Calling an abstract method :: Use one of the subclasses of LLMClassifier.")
 
     def compute_risk_estimates_for_dataframe(
-        self,
-        df: pd.DataFrame,
-        save_intermed: dict = {'path': None, 'labels': None}
+        self, df: pd.DataFrame, save_intermed: dict = {"path": None, "labels": None}
     ) -> np.ndarray:
         """Compute risk estimates for a specific dataframe (internal helper function).
 
@@ -353,7 +347,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         # Initialize risk scores and other constants
         fill_value = -1
         risk_scores = np.empty(len(df))
-        risk_scores.fill(fill_value)    # fill with -1's
+        risk_scores.fill(fill_value)  # fill with -1's
 
         batch_size = self._inference_kwargs["batch_size"]
         context_size = self._inference_kwargs["context_size"]
@@ -371,7 +365,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
                 logging.error(f"Unknown question type '{type(q)}'; cannot correct ordering bias.")
 
         # Prepare storage for model responses
-        model_outputs = [] # either text or tlp
+        model_outputs = []  # either text or tlp
 
         # initialize path to save intermediate batch results
         batch_path = None
@@ -385,9 +379,8 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
 
             batch_risk_scores = np.empty((len(batch_data), len(questions)))
             for q_idx, q in enumerate(questions):
-
                 # Encode batch data into natural text prompts
-                # TODO: potential improvement: encode outside of loop with question placeholder, only replace placeholder
+                # TODO: potential improvement: encode outside loop with question placeholder, only replace placeholder
                 data_texts_batch = [
                     self.encode_row(
                         row,
@@ -409,27 +402,35 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
                 if q.get_answer_from_generated_text and isinstance(q, MultipleChoiceQA):
                     for i, resp in enumerate(responses_batch):
                         if resp is not None:
-                            extracted_answer = q.get_answer_key_from_value(q.get_answer_from_generated_text(resp.get("response"))) if resp.get("response") is not None else ""
-                            model_outputs.append({
-                                "row_idx" : batch_row_ids[i],
-                                "question_idx" : q_idx,
-                                "prompt" : data_texts_batch[i],  # includes row information and question
-                                "reasoning": resp.get("reasoning", ""),
-                                "response": resp.get("response", ""),
-                                "extracted_answer": extracted_answer or "",
-                            })
+                            extracted_answer = (
+                                q.get_answer_key_from_value(q.get_answer_from_generated_text(resp.get("response")))
+                                if resp.get("response") is not None
+                                else ""
+                            )
+                            model_outputs.append(
+                                {
+                                    "row_idx": batch_row_ids[i],
+                                    "question_idx": q_idx,
+                                    "prompt": data_texts_batch[i],  # includes row information and question
+                                    "reasoning": resp.get("reasoning", ""),
+                                    "response": resp.get("response", ""),
+                                    "extracted_answer": extracted_answer or "",
+                                }
+                            )
                         else:
-                            model_outputs.append({
-                                "row_idx" : batch_row_ids[i],
-                                "question_idx" : q_idx,
-                                "prompt" : data_texts_batch[i],  # includes row information and question
-                                "reasoning": "",
-                                "response": "",
-                                "extracted_answer": "",
-                            })
-                        
+                            model_outputs.append(
+                                {
+                                    "row_idx": batch_row_ids[i],
+                                    "question_idx": q_idx,
+                                    "prompt": data_texts_batch[i],  # includes row information and question
+                                    "reasoning": "",
+                                    "response": "",
+                                    "extracted_answer": "",
+                                }
+                            )
+
             # Calculate final risk score (mean across questions)
-            risk_scores[start_idx: end_idx] = batch_risk_scores.mean(axis=1)
+            risk_scores[start_idx:end_idx] = batch_risk_scores.mean(axis=1)
 
             # if questions[0].get_answer_from_generated_text:
             #     batch_responses_all_questions = zip(*question_responses) if len(questions) > 1 else question_responses
@@ -438,63 +439,70 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
             # else:
             #     logging.debug("Skip storing last token probabilities, update if needed.")
 
-            # log items where one answer could not be extracted or permutation of the questions lead to different outcomes
+            # log ambiguous items: multiple answers, not extractable or permutation of Q lead to different outcomes
             tol = 1e-8
             arr = batch_risk_scores.reshape(-1, 1) if batch_risk_scores.ndim == 1 else batch_risk_scores
             undecided_or_disagree = ~(np.isclose(arr, 0, atol=tol) | np.isclose(arr, 1, atol=tol))
             if np.any(undecided_or_disagree):
-                idx_unclear = np.nonzero(undecided_or_disagree)[0] #only row indices (1D)
-                msg = (f"Risk scores: {batch_risk_scores[idx_unclear]}"
-                       f"\nRisk scores mean: {risk_scores[start_idx: end_idx][idx_unclear]}")
+                idx_unclear = np.nonzero(undecided_or_disagree)[0]  # only row indices (1D)
+                msg = (
+                    f"Risk scores: {batch_risk_scores[idx_unclear]}"
+                    f"\nRisk scores mean: {risk_scores[start_idx:end_idx][idx_unclear]}"
+                )
                 if questions[0].get_answer_from_generated_text:
-                    tmp_texts = [f"response {i}\n{item}\n\n" for i, item in enumerate(model_outputs[-len(batch_data)*len(questions):]) if i in idx_unclear]
-                logging.debug(msg +  f"\nCorresponding responses: {tmp_texts}")
+                    tmp_texts = [
+                        f"response {i}\n{item}\n\n"
+                        for i, item in enumerate(model_outputs[-len(batch_data) * len(questions) :])
+                        if i in idx_unclear
+                    ]
+                logging.debug(msg + f"\nCorresponding responses: {tmp_texts}")
 
             # Save intermediate results
-            path = save_intermed.get('path')
-            
+            path = save_intermed.get("path")
+
             if batch_idx % 10 == 0 and path is not None:
                 # add _batch + suffix to path
                 batch_path = path.with_stem(path.stem + "_batch")
                 self._save_intermediate_results(
-                    path=batch_path, 
-                    risk_scores = risk_scores[:end_idx],
-                    labels = save_intermed['labels'][:end_idx],
-                    responses = model_outputs if questions[0].get_answer_from_generated_text else None,
-                    )
+                    path=batch_path,
+                    risk_scores=risk_scores[:end_idx],
+                    labels=save_intermed["labels"][:end_idx],
+                    responses=model_outputs if questions[0].get_answer_from_generated_text else None,
+                )
 
         # Check that all risk scores were computed
         assert not np.isclose(risk_scores, fill_value).any()
         # remove intermediate saves after all are computed
-        if batch_path is not None and Path(batch_path).exists() and str(batch_path).endswith('_batch.csv'):
+        if batch_path is not None and Path(batch_path).exists() and str(batch_path).endswith("_batch.csv"):
             logging.info(f"Removing file '{batch_path}'.")
             remove(batch_path)
 
         return risk_scores
-    
-    def _save_intermediate_results(self, path: str | Path, 
-                                   risk_scores: np.ndarray, 
-                                   labels: pd.Series | np.ndarray, 
-                                   responses:list = None, ):
+
+    def _save_intermediate_results(
+        self,
+        path: str | Path,
+        risk_scores: np.ndarray,
+        labels: pd.Series | np.ndarray,
+        responses: list = None,
+    ):
         # save risk_scores as pd.DataFrame
-        predictions_df = pd.DataFrame(risk_scores,
-                                      index=labels.index,
-                                      columns=[SCORE_COL_NAME])
+        predictions_df = pd.DataFrame(risk_scores, index=labels.index, columns=[SCORE_COL_NAME])
         predictions_df[LABEL_COL_NAME] = labels
-        logging.info(f'Saving intermediate results to {path}')
+        logging.info(f"Saving intermediate results to {path}")
         predictions_df.to_csv(path, index=True, mode="w")
 
         if responses is not None:
             response_df = pd.DataFrame(responses)
-                                    #    index=labels.index,
-                                    #    columns=[f'response_{i}' for i in range(num_questions)])
+            #    index=labels.index,
+            #    columns=[f'response_{i}' for i in range(num_questions)])
             logging.debug(f"response_df shape: {response_df.shape}, columns: {response_df.columns}")
-            # TODO: match by row index 
-            response_df[SCORE_COL_NAME] = response_df['row_idx'].map(predictions_df[SCORE_COL_NAME])
-            response_df[LABEL_COL_NAME] = response_df['row_idx'].map(predictions_df[LABEL_COL_NAME])
+            # TODO: match by row index
+            response_df[SCORE_COL_NAME] = response_df["row_idx"].map(predictions_df[SCORE_COL_NAME])
+            response_df[LABEL_COL_NAME] = response_df["row_idx"].map(predictions_df[LABEL_COL_NAME])
             responses_file_name = path.with_stem(path.stem.replace("_predictions_batch", "_responses"))
-            logging.info(f'Saving responses to {responses_file_name}')
-            response_df.to_csv(responses_file_name, index=False, encoding='utf-8', mode="w")
+            logging.info(f"Saving responses to {responses_file_name}")
+            response_df.to_csv(responses_file_name, index=False, encoding="utf-8", mode="w")
 
     def compute_risk_estimates_for_dataset(
         self,

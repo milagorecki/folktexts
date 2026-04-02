@@ -1,11 +1,10 @@
-"""Module for using huggingface transformers models as classifiers.
-"""
+"""Module for using huggingface transformers models as classifiers."""
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Callable
-import logging
 
 import numpy as np
 import pandas as pd
@@ -125,33 +124,37 @@ class TransformersLLMClassifier(LLMClassifier):
             The risk estimates for each prompt in the batch.
         """
         if question.get_answer_from_generated_text:
-            try: 
-                # try to apply chat 
+            try:
+                # try to apply chat
                 # Query model
                 generated_text_batch = query_model_text_batch(
-                    text_inputs = prompts_batch, 
-                    model = self.model,  
+                    text_inputs=prompts_batch,
+                    model=self.model,
                     tokenizer=self.tokenizer,
                     context_size=context_size or self.inference_kwargs["context_size"],
-                    max_new_tokens = self.inference_kwargs["max_new_tokens"], # TODO: get max nex tokens from task or question or model? 
-                    enable_thinking = self.inference_kwargs.get("enable_thinking", None), # TODO self.model.enable_thinking, not yet an attribute
-                    thinking_end_token_id=None
+                    max_new_tokens=self.inference_kwargs[
+                        "max_new_tokens"
+                    ],  # TODO: get max nex tokens from task or question or model?
+                    enable_thinking=self.inference_kwargs.get(
+                        "enable_thinking", None
+                    ),  # TODO self.model.enable_thinking, not yet an attribute
+                    thinking_end_token_id=None,
                 )
 
                 risk_estimates_batch = [
                     question.get_answer_from_model_output(
-                        text = text.get("response", ""),
+                        text=text.get("response", ""),
                     )
                     for text in generated_text_batch
                 ]
 
-                #sanitized_texts = [text.replace(";", "") for text in generated_text_batch]
+                # sanitized_texts = [text.replace(";", "") for text in generated_text_batch]
                 return risk_estimates_batch, generated_text_batch
             except Exception as error:
                 logging.error(f"Error occurred while querying model: {error}")
                 raise NotImplementedError
 
-        else: 
+        else:
             # TODO: Add support for any unicode character used as a prefix to " A".
 
             # Query model
@@ -173,4 +176,4 @@ class TransformersLLMClassifier(LLMClassifier):
                 for ltp in last_token_probs_batch
             ]
 
-            return risk_estimates_batch, last_token_probs_batch #ltp not used
+            return risk_estimates_batch, last_token_probs_batch  # ltp not used

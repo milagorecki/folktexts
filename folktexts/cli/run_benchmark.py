@@ -2,16 +2,19 @@
 """Runs the LLM calibration benchmark from the command line.
 Exemplary Usage:
     run_benchmark --model gpt2 --results-dir './results/test/' --data-dir '../llm_fairness/folktexts/data' --task ACSIncome --subsampling 0.01 --variation "format=bullet,connector=is" --logger-level ERROR
-"""
+"""  # noqa: E501
+
 import json
 import logging
 import sys
 from argparse import ArgumentParser
+from pathlib import Path
+
+import dotenv
+
 from folktexts._utils import ParseDict
 from folktexts.llm_utils import get_model_folder_path
-from pathlib import Path
 from folktexts.prompting import DEFAULT_PROMPT_STYLE
-import dotenv
 
 DEFAULT_ACS_TASK = "ACSIncome"
 ACS_TASKS = (
@@ -21,7 +24,7 @@ ACS_TASKS = (
     "ACSTravelTime",
     "ACSPublicCoverage",
     "ACSHealthInsurance",
-    "ACSIncomePovertyRatio"
+    "ACSIncomePovertyRatio",
 )
 TABLESHIFT_TASKS = (
     "BRFSS_Diabetes",
@@ -41,20 +44,20 @@ def setup_arg_parser() -> ArgumentParser:
 
     # Define a custom argument type for a list of strings
     def list_of_strings(arg):
-        return arg.split(',')
+        return arg.split(",")
 
     # List of command-line arguments, with type and helper string
     cli_args = [
-        ("--model",         str, "[str] Model name or path to model saved on disk"),
-        ("--results-dir",   str, "[str] Directory under which this experiment's results will be saved"),
-        ("--data-dir",      str, "[str] Root folder to find datasets on"),
-        ("--task",          str, "[str] Name of the task to run the experiment on", False, DEFAULT_ACS_TASK),
-        ("--few-shot",      int, "[int] Use few-shot prompting with the given number of shots", False),
-        ("--batch-size",    int, "[int] The batch size to use for inference", False, DEFAULT_BATCH_SIZE),
-        ("--context-size",  int, "[int] The maximum context size when prompting the LLM", False, DEFAULT_CONTEXT_SIZE),
+        ("--model", str, "[str] Model name or path to model saved on disk"),
+        ("--results-dir", str, "[str] Directory under which this experiment's results will be saved"),
+        ("--data-dir", str, "[str] Root folder to find datasets on"),
+        ("--task", str, "[str] Name of the task to run the experiment on", False, DEFAULT_ACS_TASK),
+        ("--few-shot", int, "[int] Use few-shot prompting with the given number of shots", False),
+        ("--batch-size", int, "[int] The batch size to use for inference", False, DEFAULT_BATCH_SIZE),
+        ("--context-size", int, "[int] The maximum context size when prompting the LLM", False, DEFAULT_CONTEXT_SIZE),
         ("--fit-threshold", int, "[int] Whether to fit the prediction threshold, and on how many samples", False),
-        ("--subsampling",   float, "[float] Which fraction of the dataset to use (if omitted will use all data)", False),
-        ("--seed",          int, "[int] Random seed -- to set for reproducibility", False, DEFAULT_SEED),
+        ("--subsampling", float, "[float] Which fraction of the dataset to use (if omitted will use all data)", False),
+        ("--seed", int, "[int] Random seed -- to set for reproducibility", False, DEFAULT_SEED),
     ]
 
     for arg in cli_args:
@@ -62,8 +65,8 @@ def setup_arg_parser() -> ArgumentParser:
             arg[0],
             type=arg[1],
             help=arg[2],
-            required=(arg[3] if len(arg) > 3 else True),    # NOTE: required by default
-            default=(arg[4] if len(arg) > 4 else None),     # default value if provided
+            required=(arg[3] if len(arg) > 3 else True),  # NOTE: required by default
+            default=(arg[4] if len(arg) > 4 else None),  # default value if provided
         )
 
     # Add special arguments (e.g., boolean flags or multiple-choice args)
@@ -106,7 +109,10 @@ def setup_arg_parser() -> ArgumentParser:
 
     parser.add_argument(
         "--enable-thinking",
-        help="[bool] Whether to enable thinking mode for models that support it (e.g., Qwen3). Only applies with --reasoning-prompting",
+        help=(
+            "[bool] Whether to enable thinking mode for models that support it (e.g., Qwen3). "
+            "Only applies with --reasoning-prompting"
+        ),
         action="store_true",
         default=False,
     )
@@ -120,7 +126,10 @@ def setup_arg_parser() -> ArgumentParser:
 
     parser.add_argument(
         "--compose-few-shot-examples",
-        help="[str|list] How to select samples in few-shot prompting: random, balanced or list of speicified class counts. Defaults to random.",
+        help=(
+            "[str|list] How to select samples in few-shot prompting: random, balanced or list of speicified "
+            "class counts. Defaults to random."
+        ),
         default="random",
         required=False,
     )
@@ -199,6 +208,7 @@ def main():
     population_filter_dict = None
     if args.use_population_filter:
         from folktexts.cli._utils import cmd_line_args_to_kwargs
+
         population_filter_dict = cmd_line_args_to_kwargs(args.use_population_filter)
 
     prompt_variation_dict = DEFAULT_PROMPT_STYLE
@@ -214,27 +224,28 @@ def main():
     # > Local LLM
     else:
         from folktexts.llm_utils import load_model_tokenizer
+
         model_path = args.model
         if args.models_dir:
             model_path = get_model_folder_path(args.model, root_dir=args.models_dir)
             if not Path(model_path).exists():
                 raise FileNotFoundError(f"Model folder not found at '{model_path}'.")
-        if args.use_generated_text: 
+        if args.use_generated_text:
             logging.info("Tokenizer padding_side set to 'left'.")
-            model, tokenizer = load_model_tokenizer(args.model, padding_side='left')
-        else: 
+            model, tokenizer = load_model_tokenizer(args.model, padding_side="left")
+        else:
             model, tokenizer = load_model_tokenizer(args.model)
-
 
     example_composition = args.compose_few_shot_examples
     if "," in example_composition:
-        example_composition = [int(count) for count in example_composition.split(',')]
+        example_composition = [int(count) for count in example_composition.split(",")]
 
     # Fill Benchmark config
     from folktexts.benchmark import BenchmarkConfig
+
     config = BenchmarkConfig(
         few_shot=args.few_shot,
-        use_generated_text = args.use_generated_text, # when thinking is enabled, also set text-based extraction, TODO: check - default number? 
+        use_generated_text=args.use_generated_text,  # when thinking is enabled, also set text-based extraction, TODO: check - default number?
         numeric_risk_prompting=args.numeric_risk_prompting,
         enable_thinking=args.enable_thinking,
         reuse_few_shot_examples=args.reuse_few_shot_examples,
@@ -250,10 +261,13 @@ def main():
 
     # Create Benchmark object
     from folktexts.benchmark import Benchmark
+
     task = args.task
-    benchmark_fun_dict = {"acs" : Benchmark.make_acs_benchmark, 
-                          "tableshift": Benchmark.make_tableshift_benchmark, 
-                          "sipp": Benchmark.make_sipp_benchmark}
+    benchmark_fun_dict = {
+        "acs": Benchmark.make_acs_benchmark,
+        "tableshift": Benchmark.make_tableshift_benchmark,
+        "sipp": Benchmark.make_sipp_benchmark,
+    }
     if task in ACS_TASKS:
         benchmark_fun = benchmark_fun_dict["acs"]
     elif task in TABLESHIFT_TASKS:
@@ -263,17 +277,18 @@ def main():
     else:
         raise ValueError(f"Unknown task name: {args.task}")
     bench = benchmark_fun(
-            task_name=args.task,
-            model=model,
-            tokenizer=tokenizer,
-            data_dir=args.data_dir,
-            config=config,
-            subsampling=args.subsampling,
-            max_api_rpm=args.max_api_rpm,
-        )
-    
+        task_name=args.task,
+        model=model,
+        tokenizer=tokenizer,
+        data_dir=args.data_dir,
+        config=config,
+        subsampling=args.subsampling,
+        max_api_rpm=args.max_api_rpm,
+    )
+
     # Set-up results directory
     from folktexts.cli._utils import get_or_create_results_dir
+
     results_dir = get_or_create_results_dir(
         model_name=Path(args.model).name,
         task_name=bench.task.name,
@@ -282,18 +297,21 @@ def main():
     logging.info(f"Saving results to {results_dir.as_posix()}")
 
     # Run benchmark
-    bench.run(results_root_dir=results_dir,
-              fit_threshold=args.fit_threshold,
-              threshold_obj=args.threshold_obj,
-              )
+    bench.run(
+        results_root_dir=results_dir,
+        fit_threshold=args.fit_threshold,
+        threshold_obj=args.threshold_obj,
+    )
     bench.save_results()
 
     # Save results
     import pprint
+
     pprint.pprint(bench.results, indent=4, sort_dicts=True)
 
     # Finish
     from folktexts._utils import get_current_timestamp
+
     print(f"\nFinished experiment successfully at {get_current_timestamp()}\n")
 
 

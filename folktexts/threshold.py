@@ -1,5 +1,5 @@
-"""Helper function for defining binarization thresholds.
-"""
+"""Helper function for defining binarization thresholds."""
+
 from __future__ import annotations
 
 import dataclasses
@@ -20,6 +20,7 @@ class Threshold:
     op : str
         The comparison operator to use. One of '>', '<', '>=', '<=', '==', '!='.
     """
+
     value: float | int
     op: str
 
