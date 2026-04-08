@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from functools import partial, reduce
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -104,7 +105,7 @@ def suppress_logging(new_level):
         logger.setLevel(previous_level)
 
 
-def is_float(element: any) -> bool:
+def is_float(element: Any) -> bool:
     # If you expect None to be passed:
     if element is None:
         return False
@@ -115,7 +116,7 @@ def is_float(element: any) -> bool:
         return False
 
 
-def is_int(element: any) -> bool:
+def is_int(element: Any) -> bool:
     # If you expect None to be passed:
     if element is None:
         return False
@@ -126,7 +127,7 @@ def is_int(element: any) -> bool:
         return False
 
 
-def is_str(element: any) -> bool:
+def is_str(element: Any) -> bool:
     try:
         str(element)
         return str(element) not in ["True", "False"]
@@ -134,7 +135,7 @@ def is_str(element: any) -> bool:
         return False
 
 
-def is_bool(element: any) -> bool:
+def is_bool(element: Any) -> bool:
     try:
         bool(element)
         return True

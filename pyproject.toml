@@ -99,6 +99,11 @@ ignore_missing_imports = true
 no_implicit_optional = false
 exclude = ["build", "doc"]
 
+[[tool.mypy.overrides]]
+module = ["transformers.*"]
+ignore_errors = true
+follow_imports = "skip"
+
 # Tox
 [tool.tox]
 legacy_tox_ini = """
@@ -129,6 +134,7 @@ commands = ruff check {posargs:folktexts tests}
 description = run type checks
 deps =
     mypy>=1.9
+    types-requests
 commands =
     mypy {posargs:folktexts tests}
 """

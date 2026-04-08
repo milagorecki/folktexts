@@ -13,7 +13,7 @@ import logging
 import re
 from abc import ABC
 from dataclasses import dataclass
-from typing import Iterator
+from typing import Iterator, Optional
 
 import numpy as np
 
@@ -121,7 +121,7 @@ class DirectNumericQA(QAInterface):
         self,
         last_token_probs: np.ndarray,
         tokenizer_vocab: dict[str, int],
-    ) -> float | int:
+    ) -> float:
         """Outputs a numeric answer inferred from the model's output.
 
         Parameters
@@ -135,7 +135,7 @@ class DirectNumericQA(QAInterface):
 
         Returns
         -------
-        answer : float | int
+        answer : float
             The numeric answer to the question.
 
         Notes
@@ -158,7 +158,7 @@ class DirectNumericQA(QAInterface):
             }
 
             # Get the most likely numeric token
-            most_likely_numeric_token = max(num_tokens_probs, key=num_tokens_probs.get)
+            most_likely_numeric_token = max(num_tokens_probs, key=lambda k: num_tokens_probs[k])
             answer_text += str(most_likely_numeric_token)
 
             logging.debug(f"Total prob. assigned to numeric tokens: {sum(num_tokens_probs.values()):.2%}")
@@ -193,11 +193,11 @@ class Choice:
 
     text: str
     data_value: object
-    numeric_value: float = None
+    numeric_value: Optional[float] = None
 
     def get_numeric_value(self) -> float:
         """Returns the numeric value of the choice."""
-        return self.numeric_value if self.numeric_value is not None else float(self.data_value)
+        return self.numeric_value if self.numeric_value is not None else float(self.data_value)  # type: ignore
 
 
 @dataclass(frozen=True, eq=True)  # NOTE: kw_only=True requires Python 3.10
@@ -205,8 +205,8 @@ class MultipleChoiceQA(QAInterface):
     """Represents a multiple-choice question and its answer keys."""
 
     num_forward_passes: int = 1  # NOTE: overrides superclass default
-    choices: tuple[Choice] = dataclasses.field(default_factory=tuple)
-    _answer_keys_source: tuple[str] = dataclasses.field(default_factory=lambda: tuple(_ALPHABET))
+    choices: tuple[Choice, ...] = dataclasses.field(default_factory=tuple)
+    _answer_keys_source: tuple[str, ...] = dataclasses.field(default_factory=lambda: tuple(_ALPHABET))
 
     def __post_init__(self):
         if not self.choices:
@@ -221,7 +221,7 @@ class MultipleChoiceQA(QAInterface):
     def create_question_from_value_map(
         cls,
         column: str,
-        value_map: dict[str, str],
+        value_map: dict[object, str],
         attribute: str,
         **kwargs,
     ) -> "MultipleChoiceQA":
@@ -270,7 +270,7 @@ class MultipleChoiceQA(QAInterface):
         """Returns the map from choice data value to choice textual representation."""
         return {choice.data_value: choice.text for choice in self.choices}
 
-    def get_answer_key_from_value(self, value: object) -> str:
+    def get_answer_key_from_value(self, value: object) -> str | None:
         """Returns the answer key corresponding to the given data value."""
         for choice in self.choices:
             if choice.data_value == value:
@@ -279,7 +279,7 @@ class MultipleChoiceQA(QAInterface):
         logging.error(f"Could not find choice for value: {value}")
         return None
 
-    def get_answer_from_text(self, text: str) -> Choice:
+    def get_answer_from_text(self, text: str) -> Choice | None:
         text = text.strip().upper()
         if text in self.key_to_choice:
             return self.key_to_choice[text]
@@ -302,7 +302,7 @@ Question: {self.text}
         self,
         last_token_probs: np.ndarray,
         tokenizer_vocab: dict[str, int],
-    ) -> float:
+    ) -> dict[Choice, float]:
         """Decodes the model's output into an answer distribution.
 
         Parameters
@@ -323,7 +323,7 @@ Question: {self.text}
         both "A" and " A" templates.
         """
 
-        def _get_choice_token_id(choice: Choice, prefix: str = " ") -> int:
+        def _get_choice_token_id(choice: Choice, prefix: str = " ") -> int | None:
             choice_answer_text = f"{prefix}{self.choice_to_key[choice]}"
             if choice_answer_text in tokenizer_vocab:
                 return tokenizer_vocab[choice_answer_text]
@@ -359,7 +359,7 @@ Question: {self.text}
         msg = f"Answers have {answers_sum_prob:.2%} probability assigned."
         if answers_sum_prob < ANSWER_PROB_THRESHOLD:
             id_to_tok = {v: k for k, v in tokenizer_vocab.items()}
-            argmax_token = id_to_tok[np.argmax(last_token_probs)]
+            argmax_token = id_to_tok[int(np.argmax(last_token_probs))]
             logging.warning(msg + f" Argmax token: '{argmax_token}'.")
         else:
             logging.debug(msg)

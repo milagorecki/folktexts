@@ -791,7 +791,7 @@ acs_poverty_ratio_qa = MultipleChoiceQA(
     column=acs_poverty_ratio_threshold.apply_to_column_name("POVPIP"),
     text=(
         "Is this person's income-to-poverty ratio below 2.5 ? "
-        "That is, is this person's annual income below 2.5 times the poverty line income?",
+        "That is, is this person's annual income below 2.5 times the poverty line income?"
     ),
     choices=(
         Choice("Yes, this person earns below 2.5 times the poverty line income", 1),
@@ -855,7 +855,7 @@ acs_health_ins_2_col = ColumnToText(
         1: "Person has purchased insurance directly from an insurance company",
         2: (
             "Person has not purchased insurance directly from an insurance "
-            "company (is either uninsured or insured through another source)",
+            "company (is either uninsured or insured through another source)"
         ),
     },
     verbalize=lambda x: f"The {x[0].lower() + x[1:]}.",

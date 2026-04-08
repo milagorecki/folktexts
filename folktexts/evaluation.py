@@ -124,7 +124,7 @@ def evaluate_binary_predictions_fairness(
 
     results = {}
     groupwise_metrics = {}
-    unique_metrics = set()
+    unique_metrics: set[str] = set()
 
     # Helper to compute key/name of a group-wise metric
     def group_metric_name(metric_name, group_name):
@@ -251,7 +251,7 @@ def evaluate_predictions(
     y_true: np.ndarray,
     y_pred_scores: np.ndarray,
     *,
-    sensitive_attribute: np.ndarray = None,
+    sensitive_attribute: np.ndarray | None = None,
     threshold: float | str = "best",
     model_name: str = None,
     return_groupwise_metrics: bool = True,  # change default of binary eval, set True
@@ -280,7 +280,12 @@ def evaluate_predictions(
     # Compute threshold if necessary
     if threshold == "best":
         threshold = compute_best_threshold(y_true, y_pred_scores)
-    assert is_valid_number(threshold) and 0 <= threshold <= 1, f"Invalid threshold: {threshold}"
+    elif not is_valid_number(threshold):
+        raise ValueError(f"Invalid threshold: {threshold}")
+
+    threshold = float(threshold)
+    if not 0 <= threshold <= 1:
+        raise ValueError(f"Invalid threshold: {threshold}")
 
     # Save initial results' statistics
     results = {
@@ -332,11 +337,11 @@ def evaluate_predictions(
 
 
 def bootstrap_estimate(
-    eval_func: Callable[[np.ndarray, np.ndarray, np.ndarray], dict[str, float]],
+    eval_func: Callable[[np.ndarray, np.ndarray, np.ndarray | None], dict[str, float]],
     *,
     y_true: np.ndarray,
     y_pred_scores: np.ndarray,
-    sensitive_attribute: np.ndarray = None,
+    sensitive_attribute: np.ndarray | None = None,
     k: int = 200,
     confidence_pct: float = 95,
     seed: int = 42,
@@ -420,7 +425,7 @@ def evaluate_predictions_bootstrap(
     y_true: np.ndarray,
     y_pred_scores: np.ndarray,
     *,
-    sensitive_attribute: np.ndarray = None,
+    sensitive_attribute: np.ndarray | None = None,
     threshold: float | str = "best",
     k: int = 200,
     confidence_pct: float = 95,
@@ -452,13 +457,21 @@ def evaluate_predictions_bootstrap(
     results : dict[str, float]
         A dictionary containing bootstrap estimates for a variety of metrics.
     """
-    return bootstrap_estimate(
-        eval_func=lambda labels, scores, sens_attr=None: evaluate_predictions(
+
+    def _eval_predictions_for_bootstrap(
+        labels: np.ndarray,
+        scores: np.ndarray,
+        sens_attr: np.ndarray | None = None,
+    ) -> dict:
+        return evaluate_predictions(
             y_true=labels,
             y_pred_scores=scores,
             sensitive_attribute=sens_attr,
             threshold=threshold,
-        ),
+        )
+
+    return bootstrap_estimate(
+        eval_func=_eval_predictions_for_bootstrap,
         y_true=y_true,
         y_pred_scores=y_pred_scores,
         sensitive_attribute=sensitive_attribute,

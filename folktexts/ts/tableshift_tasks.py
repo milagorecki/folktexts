@@ -50,7 +50,7 @@ passthrough_preprocessor_config = PreprocessorConfig(
 )
 
 # Map of BRFSS column names to ColumnToText objects
-brfss_columns_map: dict[str, object] = {
+brfss_columns_map: dict[str, _ColumnToText] = {
     col_mapper.name: col_mapper
     for col_mapper in brfss_columns.__dict__.values()
     if isinstance(col_mapper, _ColumnToText)
@@ -72,20 +72,24 @@ class TableshiftBRFSSTaskMetadata(TaskMetadata):
     """A class to hold information on an Tableshift BRFSS prediction task."""
 
     # The tableshift task object from the folktables package
-    tableshift_obj: TableshiftTask = None
+    tableshift_obj: TableshiftTask | None = None
+
+    @classmethod
+    def get_task(cls, name: str, use_numeric_qa: bool = False) -> TableshiftBRFSSTaskMetadata:
+        return super().get_task(name, use_numeric_qa)  # type: ignore[return-value]
 
     @classmethod
     def make_task(
         cls,
         name: str,
         features: list[str],
-        target: str = None,
+        target: str,
         sensitive_attribute: str = None,
         target_threshold: Threshold = None,
         multiple_choice_qa: MultipleChoiceQA = None,
         direct_numeric_qa: DirectNumericQA = None,
         description: str = None,
-        tableshift_obj: TableshiftTask = None,
+        tableshift_obj: TableshiftTask | None = None,
     ) -> TableshiftBRFSSTaskMetadata:
         """Create an Tableshift task object from the given parameters."""
         # Resolve target column name
@@ -142,7 +146,7 @@ class TableshiftBRFSSTaskMetadata(TaskMetadata):
             raise ValueError(f"Could not find task '{name.lower()}' in tableshift package.")
 
         logging.debug("Using only first sensitive attribute for task.")
-        tableshift_task = cls.make_task(
+        tableshift_brfss_task = cls.make_task(
             name=name,
             features=[
                 f for f in tableshift_task.feature_list.names if f != tableshift_task.feature_list.target
@@ -154,7 +158,7 @@ class TableshiftBRFSSTaskMetadata(TaskMetadata):
             tableshift_obj=tableshift_task,
         )
 
-        return tableshift_task
+        return tableshift_brfss_task
 
     def __hash__(self) -> int:
         hashable_params = asdict(self)

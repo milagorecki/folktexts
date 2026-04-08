@@ -31,19 +31,19 @@ class TaskMetadata:
     cols_to_text: dict[str, ColumnToText]
     """A mapping between column names and their textual descriptions."""
 
-    sensitive_attribute: str = None
+    sensitive_attribute: str | None = None
     """The name of the column used as the sensitive attribute data (if provided)."""
 
-    target_threshold: Threshold = None
+    target_threshold: Threshold | None = None
     """The threshold used to binarize the target column (if provided)."""
 
-    multiple_choice_qa: MultipleChoiceQA = None
+    multiple_choice_qa: MultipleChoiceQA | None = None
     """The multiple-choice question and answer interface for this task."""
 
-    direct_numeric_qa: DirectNumericQA = None
+    direct_numeric_qa: DirectNumericQA | None = None
     """The direct numeric question and answer interface for this task."""
 
-    description: str = None
+    description: str | None = None
     """A description of the task, including the population to which the task pertains to."""
 
     _use_numeric_qa: bool = False
@@ -199,17 +199,18 @@ class TaskMetadata:
         return task
 
     @property
-    def question(self) -> QAInterface:
+    def question(self) -> MultipleChoiceQA | DirectNumericQA:
         """Getter for the Q&A interface for this task."""
 
         # Resolve direct numeric Q&A vs multiple-choice Q&A
+        q: QAInterface | None
         if self._use_numeric_qa:
             q = self.direct_numeric_qa
         else:
             q = self.multiple_choice_qa
 
         if q is None:
-            logging.critical(f"No Q&A interface provided for task {self.name}.")
+            raise ValueError(f"No Q&A interface provided for task {self.name}.")
         return q
 
     def get_row_description(self, row: pd.Series) -> str:
@@ -221,10 +222,10 @@ class TaskMetadata:
         """Returns a mapping between sensitive attribute values and their descriptions."""
         if self.sensitive_attribute is None:
             logging.warning("No sensitive attribute provided for this task.")
-            return {}
+            return lambda value: str(value)
         return self.cols_to_text[self.sensitive_attribute].value_map
 
-    def create_task_with_feature_subset(self, feature_subset: Iterable[str]):
+    def create_task_with_feature_subset(self, feature_subset: Iterable[str]) -> TaskMetadata:
         """Creates a new task with a subset of the original features."""
         # Convert iterable to list
         feature_subset = list(feature_subset)

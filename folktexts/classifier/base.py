@@ -8,7 +8,7 @@ from abc import ABC, abstractmethod
 from functools import partial
 from os import remove
 from pathlib import Path
-from typing import Callable
+from typing import Protocol
 
 import numpy as np
 import pandas as pd
@@ -22,6 +22,11 @@ from folktexts.qa_interface import DirectNumericQA, MultipleChoiceQA
 from folktexts.task import TaskMetadata
 
 from .._utils import hash_dict, hash_function
+
+
+class EncodeRowCallable(Protocol):
+    def __call__(self, row: pd.Series, **kwargs) -> str: ...
+
 
 DEFAULT_CONTEXT_SIZE = 600
 DEFAULT_BATCH_SIZE = 16
@@ -43,7 +48,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         model_name: str,
         task: TaskMetadata | str,
         custom_prompt_prefix: str = None,
-        encode_row: Callable[[pd.Series], str] = None,
+        encode_row: EncodeRowCallable = None,
         threshold: float = 0.5,
         correct_order_bias: bool = True,
         seed: int = 42,
@@ -131,7 +136,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         return self._task
 
     @property
-    def custom_prompt_prefix(self) -> str:
+    def custom_prompt_prefix(self) -> str | None:
         return self._custom_prompt_prefix
 
     @property
@@ -139,7 +144,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         return self._prompt_variation
 
     @property
-    def encode_row(self) -> Callable[[pd.Series], str]:
+    def encode_row(self) -> EncodeRowCallable:
         return self._encode_row
 
     @property
@@ -230,7 +235,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
     def predict(
         self,
         data: pd.DataFrame,
-        predictions_save_path: str | Path = None,
+        predictions_save_path: str | Path | None = None,
         labels: pd.Series | np.ndarray = None,
     ) -> np.ndarray | dict[str, np.ndarray]:
         """Returns binary predictions for the given data."""
@@ -244,7 +249,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
     def predict_proba(
         self,
         data: pd.DataFrame,
-        predictions_save_path: str | Path = None,
+        predictions_save_path: str | Path | None = None,
         labels: pd.Series | np.ndarray = None,
     ) -> np.ndarray:
         """Returns probability estimates for the given data.
@@ -276,9 +281,11 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
             )
 
         # Check if `predictions_save_path` exists and load predictions if possible
-        logging.info(
-            f"Check if predictions_save_path '{predictions_save_path}' exists:{Path(predictions_save_path).exists()}"
-        )
+        if predictions_save_path is not None:
+            logging.info(
+                f"Check if predictions_save_path '{predictions_save_path}' "
+                f"exists:{Path(predictions_save_path).exists()}"
+            )
         if predictions_save_path is not None and Path(predictions_save_path).exists():
             result = self._load_predictions_from_disk(predictions_save_path, data=data)
             if result is not None:
@@ -365,14 +372,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
             batch_risk_scores = np.empty((len(batch_data), len(questions)))
             for q_idx, q in enumerate(questions):
                 # Encode batch data into natural text prompts
-                data_texts_batch = [
-                    self.encode_row(
-                        row,
-                        question=q,
-                        custom_prompt_prefix=self.custom_prompt_prefix,
-                    )
-                    for _, row in batch_data.iterrows()
-                ]
+                data_texts_batch = [self.encode_row(row, question=q) for _, row in batch_data.iterrows()]
 
                 # Query the model with the batch of data
                 risk_estimates_batch = self._query_prompt_risk_estimates_batch(

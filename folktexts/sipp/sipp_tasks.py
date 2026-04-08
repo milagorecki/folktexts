@@ -32,11 +32,15 @@ class SIPPTaskMetadata(TaskMetadata):
     """A class to hold information on an Tableshift BRFSS prediction task."""
 
     @classmethod
+    def get_task(cls, name: str, use_numeric_qa: bool = False) -> SIPPTaskMetadata:
+        return super().get_task(name, use_numeric_qa)  # type: ignore[return-value]
+
+    @classmethod
     def make_task(
         cls,
         name: str,
         features: list[str],
-        target: str = None,
+        target: str,
         sensitive_attribute: str = None,
         target_threshold: Threshold = None,
         multiple_choice_qa: MultipleChoiceQA = None,

@@ -22,7 +22,7 @@ DEFAULT_VAL_SIZE = 0.1
 DEFAULT_SEED = 42
 
 
-class TableshiftBRFSSDataset(Dataset):
+class TableshiftBRFSSDataset(Dataset[TableshiftBRFSSTaskMetadata]):
     """Wrapper for tableshift BRFSS datasets."""
 
     def __init__(
@@ -49,7 +49,7 @@ class TableshiftBRFSSDataset(Dataset):
     def make_from_task(
         cls,
         task: str | TableshiftBRFSSTaskMetadata,
-        cache_dir: str | Path = None,
+        cache_dir: str | Path | None = None,
         survey_year: str = None,
         seed: int = DEFAULT_SEED,
         load_dataset_if_not_cached=True,  # add 'extra control' before downloading dataset
@@ -128,7 +128,7 @@ class TableshiftBRFSSDataset(Dataset):
     @task.setter
     def task(self, new_task: TableshiftBRFSSTaskMetadata):
         # Parse data rows for new Tableshift BRFSS task
-        self._data = self._parse_task_data(self._full_acs_data, new_task)
+        self._data = self._parse_task_data(self.full_brfss_data, new_task)
 
         # Re-make train/test/val split
         self._train_indices, self._test_indices, self._val_indices = self._make_train_test_val_split(

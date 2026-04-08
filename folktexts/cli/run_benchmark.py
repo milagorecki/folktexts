@@ -9,6 +9,7 @@ import logging
 import sys
 from argparse import ArgumentParser
 from pathlib import Path
+from typing import Any
 
 from folktexts._utils import ParseDict
 from folktexts.llm_utils import get_model_folder_path
@@ -45,7 +46,7 @@ def setup_arg_parser() -> ArgumentParser:
         return arg.split(",")
 
     # List of command-line arguments, with type and helper string
-    cli_args = [
+    cli_args: list[tuple[Any, ...]] = [
         ("--model", str, "[str] Model name or path to model saved on disk"),
         ("--results-dir", str, "[str] Directory under which this experiment's results will be saved"),
         ("--data-dir", str, "[str] Root folder to find datasets on"),

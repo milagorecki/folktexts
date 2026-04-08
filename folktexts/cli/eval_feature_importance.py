@@ -3,6 +3,7 @@ import logging
 from argparse import ArgumentParser
 from collections import defaultdict
 from pathlib import Path
+from typing import Any
 
 from sklearn.inspection import permutation_importance
 
@@ -34,7 +35,7 @@ def setup_arg_parser() -> ArgumentParser:
     parser = ArgumentParser(description="Evaluate LLM feature importance on a given ACS task.")
 
     # List of command-line arguments, with type and helper string
-    cli_args = [
+    cli_args: list[tuple[Any, ...]] = [
         ("--model", str, "[str] Model name or path to model saved on disk"),
         (
             "--task",
@@ -118,9 +119,9 @@ def setup_arg_parser() -> ArgumentParser:
     return parser
 
 
-def parse_feature_importance(results: dict, columns: list[str]) -> dict:
+def parse_feature_importance(results: Any, columns: list[str]) -> dict:
     """Parse the results dictionary of sklearn's permutation_importance."""
-    parsed_r = defaultdict(dict)
+    parsed_r: defaultdict[str, dict[str, Any]] = defaultdict(dict)
     for idx, col in enumerate(columns):
         parsed_r[col]["imp_mean"] = results.importances_mean[idx]
         parsed_r[col]["imp_std"] = results.importances_std[idx]
@@ -165,6 +166,8 @@ def compute_feature_importance(
         print(f"{X_test.columns[i]:<8}{r.importances_mean[i]:.3f} +/- {r.importances_std[i]:.3f}")
 
     print(X_test.columns.tolist())
+
+    return parse_feature_importance(results=r, columns=X_test.columns)
 
 
 def main():

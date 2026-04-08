@@ -123,14 +123,14 @@ def make_llm_clf_experiment(
     executable_path: str,
     model_name: str,
     task: str,
-    results_dir: str,
+    results_dir: str | Path,
     models_dir: str,
     env_vars_str: str = "",
     **kwargs,
 ) -> Experiment:
     """Create an experiment object to run."""
     # Get model size
-    model_size_B = get_model_size_B(model_name, default=8)
+    model_size_B = get_model_size_B(model_name, default=8) or 8
 
     # Get model path
     model_path = get_model_folder_path(model_name, root_dir=models_dir)

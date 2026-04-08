@@ -6,7 +6,7 @@ import dataclasses
 import logging
 from functools import partial
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -23,9 +23,9 @@ from .sipp import SIPPDataset, SIPPTaskMetadata
 from .task import TaskMetadata
 from .ts import TableshiftBRFSSDataset, TableshiftBRFSSTaskMetadata
 
-DEFAULT_SEED = 42
-DEFAULT_FIT_THRESHOLD_N = 100
-DEFAULT_ROOT_RESULTS_DIR = Path(".")
+DEFAULT_SEED: int = 42
+DEFAULT_FIT_THRESHOLD_N: int = 100
+DEFAULT_ROOT_RESULTS_DIR: Path = Path(".")
 
 
 @dataclasses.dataclass(frozen=True, eq=True)
@@ -112,17 +112,11 @@ class BenchmarkConfig:
     def __hash__(self) -> int:
         """Generates a unique hash for the configuration."""
         cfg = dataclasses.asdict(self)
-        if isinstance(cfg["compose_few_shot_examples"],list):
-            cfg["compose_few_shot_examples"] = tuple(cfg["compose_few_shot_examples"]) 
-        cfg["feature_subset"] = (
-            tuple(cfg["feature_subset"]) if cfg["feature_subset"] else None
-        )
-        cfg["population_filter_hash"] = (
-            hash_dict(cfg["population_filter"]) if cfg["population_filter"] else None
-        )
-        cfg["prompt_variation"] = (
-            hash_dict(cfg["prompt_variation"]) if cfg["prompt_variation"] else None
-        )
+        if isinstance(cfg["compose_few_shot_examples"], list):
+            cfg["compose_few_shot_examples"] = tuple(cfg["compose_few_shot_examples"])
+        cfg["feature_subset"] = tuple(cfg["feature_subset"]) if cfg["feature_subset"] else None
+        cfg["population_filter_hash"] = hash_dict(cfg["population_filter"]) if cfg["population_filter"] else None
+        cfg["prompt_variation"] = hash_dict(cfg["prompt_variation"]) if cfg["prompt_variation"] else None
         return int(hash_dict(cfg), 16)
 
 
@@ -132,7 +126,7 @@ class Benchmark:
     """
     Standardized configurations for the ACS data to use for benchmarking.
     """
-    ACS_DATASET_CONFIGS = {
+    ACS_DATASET_CONFIGS: dict[str, Any] = {
         # ACS survey configs
         "survey_year": "2018",
         "horizon": "1-Year",
@@ -145,7 +139,7 @@ class Benchmark:
         "seed": 42,
     }
 
-    DATASET_CONFIGS = {
+    DATASET_CONFIGS: dict[str, Any] = {
         # survey configs should be defined in task
         # Data split configs
         "test_size": 0.1,
@@ -181,7 +175,7 @@ class Benchmark:
         self.config = config
 
         self._y_test_scores: Optional[np.ndarray] = None
-        self._results_root_dir: Optional[Path] = DEFAULT_ROOT_RESULTS_DIR
+        self._results_root_dir: Path = DEFAULT_ROOT_RESULTS_DIR
         self._results: Optional[dict] = None
         self._plots: Optional[dict] = None
 
@@ -261,10 +255,9 @@ class Benchmark:
         assert data_split in ("train", "val", "test")
         return self.results_dir / f"{self.dataset.name}.{data_split}_predictions.csv"
 
-    def run(self, results_root_dir: str | Path,
-            fit_threshold: int | bool = 0,
-            threshold_obj: str = 'balanced_accuracy'
-            ) -> float:
+    def run(
+        self, results_root_dir: str | Path, fit_threshold: int | bool = 0, threshold_obj: str = "balanced_accuracy"
+    ) -> dict:
         """Run the calibration benchmark experiment.
 
         Parameters
@@ -292,9 +285,7 @@ class Benchmark:
 
         # Get sensitive attribute data if available
         s_test = None
-        logging.info(
-            f"Sensitive attribute defined by task: {self.task.sensitive_attribute}"
-        )
+        logging.info(f"Sensitive attribute defined by task: {self.task.sensitive_attribute}")
         if self.task.sensitive_attribute is not None:
             s_test = self.dataset.get_sensitive_attribute_data().loc[y_test.index]
 
@@ -305,9 +296,7 @@ class Benchmark:
             predictions_save_path=test_predictions_save_path,
             labels=y_test,  # used only to save alongside predictions in disk
         )
-        self._y_test_scores = self.llm_clf._get_positive_class_scores(
-            self._y_test_scores
-        )
+        self._y_test_scores = self.llm_clf._get_positive_class_scores(self._y_test_scores)
 
         # If requested, fit the threshold on a small portion of the train set
         if fit_threshold:
@@ -320,29 +309,38 @@ class Benchmark:
             self.llm_clf._threshold_obj = threshold_obj
             logging.info(f"Fitting threshold on {fit_threshold} train samples")
             X_train, y_train = self.dataset.sample_n_train_examples(fit_threshold)
-            self.llm_clf.fit(X_train,
-                             y_train,
-                             predictions_save_path=self._get_predictions_save_path("train"),
-                             labels=y_train,
-                             threshold_obj=threshold_obj)
+            self.llm_clf.fit(
+                X_train,
+                y_train,
+                predictions_save_path=self._get_predictions_save_path("train"),
+                labels=y_train,
+                threshold_obj=threshold_obj,
+            )
 
         # Evaluate test risk scores
         count_nan = np.isnan(self._y_test_scores).sum()
         if count_nan > 0:
-            logging.warning(f'Predicted scores contain NaN values, dropping {count_nan} indices.')
+            logging.warning(f"Predicted scores contain NaN values, dropping {count_nan} indices.")
             # Get indices of NaNs
             nan_indices = np.where(np.isnan(self._y_test_scores))[0]
             nan_mask = ~np.isnan(self._y_test_scores)
-            logging.info(f'Indices with NaN values: {nan_indices}')
-            logging.info("New shapes:"
-                         f"y_test: {y_test.to_numpy().shape} -> {y_test.to_numpy()[nan_mask].shape},"
-                         f"y_test_scores: {self._y_test_scores.shape} -> {self._y_test_scores[nan_mask].shape},"
-                         f"s_test: {s_test.to_numpy().shape} -> {s_test.to_numpy()[nan_mask].shape}"
-                         )
+            logging.info(f"Indices with NaN values: {nan_indices}")
+            logging.info(
+                "New shapes:"
+                f"y_test: {y_test.to_numpy().shape} -> {y_test.to_numpy()[nan_mask].shape},"
+                f"y_test_scores: {self._y_test_scores.shape} -> {self._y_test_scores[nan_mask].shape},"
+                + (
+                    f"s_test: {s_test.to_numpy().shape} -> {s_test.to_numpy()[nan_mask].shape}"
+                    if s_test is not None
+                    else ""
+                )
+            )
             self._results = evaluate_predictions(
                 y_true=y_test.to_numpy()[nan_mask],
                 y_pred_scores=self._y_test_scores[nan_mask],
-                sensitive_attribute=s_test.to_numpy()[nan_mask],  # .drop(index=nan_indices, axis=0),
+                sensitive_attribute=(
+                    s_test.to_numpy()[nan_mask] if s_test is not None else None
+                ),  # .drop(index=nan_indices, axis=0),
                 threshold=self.llm_clf.threshold,
                 model_name=self.llm_clf.model_name,
             )
@@ -358,7 +356,7 @@ class Benchmark:
 
         self._results["threshold_fitted_on"] = self.llm_clf._threshold_fitted_on
         self._results["threshold_obj"] = self.llm_clf._threshold_obj if self.llm_clf._threshold_fitted_on > 0 else None
-        ## TODO: set to None by default, only change when fitting, then this check is no longer needed 
+        ## TODO: set to None by default, only change when fitting, then this check is no longer needed
 
         if self.task.sensitive_attribute is not None:
             self._results["sensitive_attribute"] = self.task.sensitive_attribute
@@ -401,7 +399,7 @@ class Benchmark:
         plots_paths : dict[str, str]
             The paths to the saved plots.
         """
-        if self._results is None:
+        if self._results is None or self._y_test_scores is None:
             raise ValueError("No results to plot. Run the benchmark first.")
 
         imgs_dir = Path(self.results_dir) / "imgs"
@@ -438,7 +436,7 @@ class Benchmark:
 
         return plots_paths
 
-    def save_results(self, results_root_dir: str | Path = None):
+    def save_results(self, results_root_dir: str | Path | None = None):
         """Save the benchmark results to disk.
 
         Parameters
@@ -452,7 +450,7 @@ class Benchmark:
 
         # Update results directory if provided
         if results_root_dir is not None:
-            self.results_root_dir = results_root_dir
+            self.results_root_dir = results_root_dir if isinstance(results_root_dir, Path) else Path(results_root_dir)
 
         # Save results to disk
         results_file_name = f"results.bench-{hash(self)}.json"
@@ -468,7 +466,7 @@ class Benchmark:
         *,
         model: AutoModelForCausalLM | str,
         tokenizer: AutoTokenizer = None,
-        data_dir: str | Path = None,
+        data_dir: str | Path | None = None,
         max_api_rpm: int = None,
         config: BenchmarkConfig = BenchmarkConfig.default_config(),
         **kwargs,
@@ -517,13 +515,9 @@ class Benchmark:
         config = config.update(**kwargs)
 
         # Fetch ACS task and dataset
-        acs_task = ACSTaskMetadata.get_task(
-            name=task_name, use_numeric_qa=config.numeric_risk_prompting
-        )
+        acs_task = ACSTaskMetadata.get_task(name=task_name, use_numeric_qa=config.numeric_risk_prompting)
 
-        acs_dataset = ACSDataset.make_from_task(
-            task=acs_task, cache_dir=data_dir, **acs_dataset_configs
-        )
+        acs_dataset = ACSDataset.make_from_task(task=acs_task, cache_dir=data_dir, **acs_dataset_configs)
 
         return cls.make_benchmark(
             task=acs_task,
@@ -541,7 +535,7 @@ class Benchmark:
         *,
         model: AutoModelForCausalLM | str,
         tokenizer: AutoTokenizer = None,
-        data_dir: str | Path = None,
+        data_dir: str | Path | None = None,
         max_api_rpm: int = None,
         config: BenchmarkConfig = BenchmarkConfig.default_config(),
         **kwargs,
@@ -595,7 +589,9 @@ class Benchmark:
         )
 
         tableshift_dataset = TableshiftBRFSSDataset.make_from_task(
-            task=tableshift_task, cache_dir=data_dir, **tableshift_dataset_configs
+            task=tableshift_task,
+            cache_dir=data_dir,
+            **tableshift_dataset_configs,
         )
 
         return cls.make_benchmark(
@@ -606,7 +602,7 @@ class Benchmark:
             max_api_rpm=max_api_rpm,
             config=config,
         )
-    
+
     @classmethod
     def make_sipp_benchmark(
         cls,
@@ -614,7 +610,7 @@ class Benchmark:
         *,
         model: AutoModelForCausalLM | str,
         tokenizer: AutoTokenizer = None,
-        data_dir: str | Path = None,
+        data_dir: str | Path | None = None,
         max_api_rpm: int = None,
         config: BenchmarkConfig = BenchmarkConfig.default_config(),
         **kwargs,
@@ -663,13 +659,9 @@ class Benchmark:
         config = config.update(**kwargs)
 
         # Fetch SIPP task and dataset
-        sipp_task = SIPPTaskMetadata.get_task(
-            name=task_name, use_numeric_qa=config.numeric_risk_prompting
-        )
+        sipp_task = SIPPTaskMetadata.get_task(name=task_name, use_numeric_qa=config.numeric_risk_prompting)
 
-        sipp_dataset = SIPPDataset.make_from_task(
-            task=sipp_task, cache_dir=data_dir, **sipp_dataset_configs
-        )
+        sipp_dataset = SIPPDataset.make_from_task(task=sipp_task, cache_dir=data_dir, **sipp_dataset_configs)
 
         return cls.make_benchmark(
             task=sipp_task,
@@ -724,7 +716,10 @@ class Benchmark:
         config = config.update(**kwargs)
 
         # Handle TaskMetadata object
-        task = TaskMetadata.get_task(task) if isinstance(task, str) else task
+        if isinstance(task, str):
+            task = TaskMetadata.get_task(task)
+        assert isinstance(task, TaskMetadata)  # for mypy
+
         if config.numeric_risk_prompting:
             task.use_numeric_qa = True
 
@@ -734,13 +729,10 @@ class Benchmark:
 
         # Check dataset is compatible with task
         if dataset.task is not task and dataset.task.name != task.name:
-            raise ValueError(
-                f"Dataset task '{dataset.task.name}' does not match the "
-                f"provided task '{task.name}'."
-            )
+            raise ValueError(f"Dataset task '{dataset.task.name}' does not match the provided task '{task.name}'.")
 
         if config.population_filter is not None:
-            dataset = dataset.filter(config.population_filter)
+            dataset.filter(config.population_filter)
 
         # Get prompting function
         if config.few_shot:
@@ -763,8 +755,10 @@ class Benchmark:
             )
 
         # Parse LLMClassifier parameters
-        llm_inference_kwargs = {"correct_order_bias": config.correct_order_bias,
-                                "prompt_variation": config.prompt_variation or {}}
+        llm_inference_kwargs: dict[str, Any] = {
+            "correct_order_bias": config.correct_order_bias,
+            "prompt_variation": config.prompt_variation or {},
+        }
         if config.batch_size is not None:
             llm_inference_kwargs["batch_size"] = config.batch_size
         if config.context_size is not None:
@@ -783,6 +777,7 @@ class Benchmark:
             logging.info(f"Using webAPI model: {model}")
 
         else:
+            assert tokenizer is not None, "A tokenizer must be provided for local transformers models."
             llm_clf = TransformersLLMClassifier(
                 model=model,
                 tokenizer=tokenizer,

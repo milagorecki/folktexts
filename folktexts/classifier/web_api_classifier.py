@@ -5,15 +5,17 @@ from __future__ import annotations
 import logging
 import os
 import re
-from typing import Callable
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from openai.types.chat import ChatCompletion
 
 import numpy as np
-import pandas as pd
 
 from folktexts.qa_interface import DirectNumericQA, MultipleChoiceQA
 from folktexts.task import TaskMetadata
 
-from .base import LLMClassifier
+from .base import EncodeRowCallable, LLMClassifier
 
 
 class WebAPILLMClassifier(LLMClassifier):
@@ -38,7 +40,7 @@ class WebAPILLMClassifier(LLMClassifier):
         model_name: str,
         task: TaskMetadata | str,
         custom_prompt_prefix: str = None,
-        encode_row: Callable[[pd.Series], str] = None,
+        encode_row: EncodeRowCallable = None,
         threshold: float = 0.5,
         correct_order_bias: bool = True,
         max_api_rpm: int = 5000,  # NOTE: OpenAI Tier 1 limit is only 500 RPM !
@@ -93,7 +95,7 @@ class WebAPILLMClassifier(LLMClassifier):
         # Set maximum requests per minute
         self.max_api_rpm = max_api_rpm
         if "MAX_API_RPM" in os.environ:
-            self.max_api_rpm = int(os.getenv("MAX_API_RPM"))
+            self.max_api_rpm = int(os.environ["MAX_API_RPM"])
             logging.info(
                 f"MAX_API_RPM environment variable is set. "
                 f"Overriding previous value of {max_api_rpm} with {self.max_api_rpm}."
@@ -101,7 +103,7 @@ class WebAPILLMClassifier(LLMClassifier):
         # Set maximum tokens per minute
         self.max_api_tpm = max_api_tpm
         if "MAX_API_TPM" in os.environ:
-            self.max_api_tpm = int(os.getenv("MAX_API_RPM"))
+            self.max_api_tpm = int(os.environ["MAX_API_TPM"])
             logging.warning(
                 f"MAX_API_TPM environment variable is set. "
                 f"Overriding previous value of {max_api_tpm} with {self.max_api_tpm}."
@@ -160,7 +162,7 @@ class WebAPILLMClassifier(LLMClassifier):
         *,
         question: MultipleChoiceQA | DirectNumericQA,
         context_size: int = None,
-    ) -> list[dict]:
+    ) -> list[ChatCompletion]:
         """Query the web API with a batch of prompts and returns the json response.
 
         Parameters
@@ -174,7 +176,7 @@ class WebAPILLMClassifier(LLMClassifier):
 
         Returns
         -------
-        responses_batch : list[dict]
+        responses_batch : list[ChatCompletion]
             The returned JSON responses for each prompt in the batch.
         """
 
@@ -233,7 +235,7 @@ class WebAPILLMClassifier(LLMClassifier):
 
     def _decode_risk_estimate_from_api_response(
         self,
-        response: dict,
+        response: ChatCompletion,
         question: MultipleChoiceQA | DirectNumericQA,
     ) -> float:
         """Decode model output from API response to get risk estimate.
@@ -251,10 +253,12 @@ class WebAPILLMClassifier(LLMClassifier):
             The risk estimate for the API query.
         """
         # Get response message
-        response_message: str = response.choices[0].message.content
+        response_message: str = response.choices[0].message.content or ""
 
         # Get top token choices for each forward pass
+        assert response.choices[0].logprobs is not None
         token_choices_all_passes = response.choices[0].logprobs.content
+        assert token_choices_all_passes is not None
         # print(token_choices_all_passes)
 
         # Construct dictionary of token to linear token probability for each forward pass
@@ -288,7 +292,10 @@ class WebAPILLMClassifier(LLMClassifier):
         # Sanity check numeric answers based on global model response:
         if isinstance(question, DirectNumericQA):
             try:
-                numeric_response = re.match(r"[-+]?\d*\.\d+|\d+", response_message).group()
+                m = re.match(r"[-+]?\d*\.\d+|\d+", response_message)
+                if m is None:
+                    raise ValueError(f"No numeric value found in response: {response_message}")
+                numeric_response = m.group()
                 risk_estimate_full_text = float(numeric_response)
 
                 if not np.isclose(risk_estimate, risk_estimate_full_text, atol=1e-2):
@@ -356,7 +363,7 @@ class WebAPILLMClassifier(LLMClassifier):
         for i, response in enumerate(api_responses_batch):
             if response:
                 try:
-                    message_content = response.choices[0].message.content
+                    message_content = response.choices[0].message.content or ""
                     logging.debug(f"Response {i + 1}: {message_content[:100]}...")  # Print first 100 chars
                     risk_estimates_batch.append(self._decode_risk_estimate_from_api_response(response, question))
                 except (AttributeError, IndexError, TypeError) as e:
@@ -369,7 +376,7 @@ class WebAPILLMClassifier(LLMClassifier):
                 risk_estimates_batch.append(np.nan)
 
         self.track_stats()
-        return risk_estimates_batch
+        return np.array(risk_estimates_batch)
 
     def track_stats(self):
         logging.info(f"Total cost: ${self.client.tracker.total_cost:.4f}")

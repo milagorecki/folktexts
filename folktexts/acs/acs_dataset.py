@@ -22,7 +22,7 @@ DEFAULT_SURVEY_HORIZON = "1-Year"
 DEFAULT_SURVEY_UNIT = "person"
 
 
-class ACSDataset(Dataset):
+class ACSDataset(Dataset[ACSTaskMetadata]):
     """Wrapper for ACS folktables datasets."""
 
     def __init__(
@@ -49,7 +49,7 @@ class ACSDataset(Dataset):
     def make_from_task(
         cls,
         task: str | ACSTaskMetadata,
-        cache_dir: str | Path = None,
+        cache_dir: str | Path | None = None,
         survey_year: str = DEFAULT_SURVEY_YEAR,
         horizon: str = DEFAULT_SURVEY_HORIZON,
         survey: str = DEFAULT_SURVEY_UNIT,

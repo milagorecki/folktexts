@@ -3,6 +3,7 @@
 import logging
 from functools import partial
 from pathlib import Path
+from typing import Any, Callable
 
 import numpy as np
 import pandas as pd
@@ -418,7 +419,7 @@ def transform_rac1p(x):
     return simplified_rac1p_map.get(map_to_lower_res.get(x))
 
 
-simplified_value_maps = {
+simplified_value_maps: dict[str, Callable[..., Any]] = {
     "AGEP": transform_age,
     "COW": transform_cow,
     "SCHL": transform_schooling,

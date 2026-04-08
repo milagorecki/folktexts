@@ -16,7 +16,7 @@ PROB_WARN_THR = 0.5
 
 def query_model_batch(
     text_inputs: list[str], model: AutoModelForCausalLM, tokenizer: AutoTokenizer, context_size: int
-) -> np.array:
+) -> np.ndarray:
     """Queries the model with a batch of text inputs.
 
     Parameters
@@ -32,7 +32,7 @@ def query_model_batch(
 
     Returns
     -------
-    last_token_probs : np.array
+    last_token_probs : np.ndarray
         Model's last token *linear* probabilities for each input as an
         np.array of shape (batch_size, vocab_size).
     """
@@ -69,7 +69,7 @@ def query_model_batch_multiple_passes(
     context_size: int,
     n_passes: int,
     digits_only: bool = False,
-) -> np.array:
+) -> np.ndarray:
     """Queries an LM for multiple forward passes.
 
     Greedy token search over multiple forward passes: Each forward pass takes
@@ -94,7 +94,7 @@ def query_model_batch_multiple_passes(
 
     Returns
     -------
-    last_token_probs : np.array
+    last_token_probs : np.ndarray
         Last token *linear* probabilities for each forward pass, for each text
         in the input batch. The output has shape (batch_size, n_passes, vocab_size).
     """
@@ -234,7 +234,7 @@ def get_model_folder_path(model_name: str, root_dir="/tmp") -> str:
     return (Path(root_dir) / folder_name).resolve().as_posix()
 
 
-def get_model_size_B(model_name: str, default: int = None) -> int:
+def get_model_size_B(model_name: str, default: int = None) -> int | float | None:
     """Get the model size from the model name, in Billions of parameters."""
     regex = re.search(r"((?P<times>\d+)[xX])?(?P<size>(\d\.)?\d+)[bB]", model_name)
     if regex:

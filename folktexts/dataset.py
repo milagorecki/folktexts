@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 from functools import partial
+from typing import Generic, TypeVar
 
 import numpy as np
 import pandas as pd
@@ -19,16 +20,18 @@ import pandas as pd
 from ._utils import hash_dict, is_valid_number
 from .task import TaskMetadata
 
+T_Task = TypeVar("T_Task", bound=TaskMetadata)
+
 DEFAULT_TEST_SIZE = 0.1
 DEFAULT_VAL_SIZE = 0.1
 DEFAULT_SEED = 42
 
 
-class Dataset:
+class Dataset(Generic[T_Task]):
     def __init__(
         self,
         data: pd.DataFrame,
-        task: TaskMetadata,
+        task: T_Task,
         test_size: float = DEFAULT_TEST_SIZE,
         val_size: float = DEFAULT_VAL_SIZE,
         subsampling: float = None,
@@ -55,7 +58,7 @@ class Dataset:
             The random state seed, by default 42.
         """
         self._data = data
-        self._task = task
+        self._task: T_Task = task
 
         # Validate task
         if not isinstance(self._task, TaskMetadata):
@@ -78,7 +81,7 @@ class Dataset:
         )
 
         # Subsample the train/test/val data (if requested)
-        self._subsampling = None
+        self._subsampling: float | None = None
         if subsampling is not None:
             self.subsample(subsampling)
 
@@ -106,11 +109,11 @@ class Dataset:
         return self._data
 
     @property
-    def task(self) -> TaskMetadata:
+    def task(self) -> T_Task:
         return self._task
 
     @task.setter
-    def task(self, new_task: TaskMetadata):
+    def task(self, new_task: T_Task):
         # Check if task columns are in the data
         new_task.check_task_columns_are_available(self.data.columns.to_list())
         self._task = new_task
@@ -128,7 +131,7 @@ class Dataset:
         return self._val_size
 
     @property
-    def subsampling(self) -> float:
+    def subsampling(self) -> float | None:
         return getattr(self, "_subsampling", None)
 
     @property
@@ -149,7 +152,7 @@ class Dataset:
         test_size: float,
         val_size: float,
         rng: np.random.Generator,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
         # Permute indices
         indices = rng.permutation(len(data))
 
@@ -297,6 +300,7 @@ class Dataset:
             "Provided sample composition has to be one of ['random', 'balanced'] or a list specifying class counts."
         )
 
+        example_indices: list | np.ndarray
         if composition == "random":
             if reuse_examples:
                 example_indices = self._train_indices[:n]
@@ -414,6 +418,7 @@ class Dataset:
         encode_row = partial(encode_row_prompt, task=self._task, prompt_variation=prompt_variation)
         X_text = X.progress_apply(lambda row: encode_row(row), axis=1).to_frame(name="text")
         if not self._task._use_numeric_qa:
+            assert self._task.multiple_choice_qa is not None
             map_label_to_choice = {
                 choice.data_value: answer for choice, answer in self._task.multiple_choice_qa.choice_to_key.items()
             }

@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable
 
 import numpy as np
-import pandas as pd
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from folktexts.llm_utils import query_model_batch_multiple_passes
@@ -14,7 +12,7 @@ from folktexts.qa_interface import DirectNumericQA, MultipleChoiceQA
 from folktexts.task import TaskMetadata
 
 from .._utils import hash_dict
-from .base import LLMClassifier
+from .base import EncodeRowCallable, LLMClassifier
 
 
 class TransformersLLMClassifier(LLMClassifier):
@@ -26,7 +24,7 @@ class TransformersLLMClassifier(LLMClassifier):
         tokenizer: AutoTokenizer,
         task: TaskMetadata | str,
         custom_prompt_prefix: str = None,
-        encode_row: Callable[[pd.Series], str] = None,
+        encode_row: EncodeRowCallable = None,
         threshold: float = 0.5,
         correct_order_bias: bool = True,
         seed: int = 42,
@@ -143,4 +141,4 @@ class TransformersLLMClassifier(LLMClassifier):
             for ltp in last_token_probs_batch
         ]
 
-        return risk_estimates_batch
+        return np.array(risk_estimates_batch)

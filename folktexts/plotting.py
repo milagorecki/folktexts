@@ -54,7 +54,7 @@ def render_evaluation_plots(
     *,
     eval_results: dict = {},
     model_name: str = None,
-    imgs_dir: str | Path = None,
+    imgs_dir: str | Path | None = None,
     show_plots: bool = False,
 ) -> dict:
     """Renders evaluation plots for the given predictions."""
@@ -129,7 +129,7 @@ def render_fairness_plots(  # noqa: C901
     model_name: str = None,
     group_value_map: Callable[[int], str],
     group_size_threshold: float = GROUP_SIZE_THRESHOLD,
-    imgs_dir: str | Path = None,
+    imgs_dir: str | Path | None = None,
     show_plots: bool = False,
 ) -> dict:
     """Renders fairness plots for the given predictions."""

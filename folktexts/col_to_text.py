@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Callable
+from typing import Any, Callable
 
 import pandas as pd
 
@@ -15,10 +15,10 @@ class ColumnToText:
         self,
         name: str,
         short_description: str,
-        value_map: dict[object, str] | Callable = None,
-        question: QAInterface = None,
+        value_map: dict[object, str] | Callable | None = None,
+        question: QAInterface | None = None,
         connector_verb: str = "is",
-        verbalize: Callable = None,  # template sentence, function of value
+        verbalize: Callable | None = None,  # template sentence, function of value
         missing_value_fill: str = "N/A",
         use_value_map_only: bool = False,
     ):
@@ -54,14 +54,14 @@ class ColumnToText:
             of the form:
             `"The [short_description] [connector_verb] [value_map.get(val)]".`
         """
-        self._name = name
-        self._short_description = short_description
-        self._value_map = value_map
-        self._question = question
-        self._connector_verb = connector_verb
-        self._missing_value_fill = missing_value_fill
-        self._use_value_map_only = use_value_map_only
-        self._verbalize = verbalize
+        self._name: str = name
+        self._short_description: str = short_description
+        self._value_map: dict[object, str] | Callable[..., Any] | None = value_map
+        self._question: QAInterface | None = question
+        self._connector_verb: str = connector_verb
+        self._missing_value_fill: str = missing_value_fill
+        self._use_value_map_only: bool = use_value_map_only
+        self._verbalize: Callable | None = verbalize
 
         # If a `question` was provided and `value_map` was not
         # > infer `value_map` from question (`value_map` is required for `__getitem__`)
@@ -85,7 +85,7 @@ class ColumnToText:
                 f"Got both `value_map` and `question` for column '{self.name}'. "
                 f"Please make sure value mappings are consistent:"
                 f"\n- `value_map`: {self._value_map}"
-                f"\n- `question`: {self._question.choices}"
+                f"\n- `question`: {self._question}"
             )
 
         # Else, log critical error -- ColumnToText object is incomplete
@@ -105,7 +105,7 @@ class ColumnToText:
     @property
     def question(self) -> QAInterface:
         if self._question is None:
-            logging.error(f"No question provided for column '{self.name}'.")
+            raise ValueError(f"No question provided for column '{self.name}'.")
         return self._question
 
     @property
@@ -114,11 +114,12 @@ class ColumnToText:
         if callable(self._value_map):
             return self._value_map
         elif isinstance(self._value_map, dict):
+            value_map = self._value_map
 
             def _helper_func(value: object) -> str:
-                if value not in self._value_map:
+                if value not in value_map:
                     logging.error(f"Could not find value '{value}' in value map for column '{self.name}'.")
-                return self._value_map.get(value, self._missing_value_fill)
+                return value_map.get(value, self._missing_value_fill)
 
             return _helper_func
         else:

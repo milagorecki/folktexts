@@ -9,19 +9,19 @@ from folktexts.qa_interface import MultipleChoiceQA as _MultipleChoiceQA
 from . import brfss_columns
 
 # Map of ACS column names to ColumnToText objects
-brfss_columns_map: dict[str, object] = {
+brfss_columns_map: dict[str, ColumnToText] = {
     col_mapper.name: col_mapper
     for col_mapper in brfss_columns.__dict__.values()
     if isinstance(col_mapper, ColumnToText)
 }
 
 # Map of numeric ACS questions
-brfss_numeric_qa_map: dict[str, object] = {
+brfss_numeric_qa_map: dict[str, _DirectNumericQA] = {
     question.column: question for question in brfss_columns.__dict__.values() if isinstance(question, _DirectNumericQA)
 }
 
 # Map of multiple-choice ACS questions
-brfss_multiple_choice_qa_map: dict[str, object] = {
+brfss_multiple_choice_qa_map: dict[str, _MultipleChoiceQA] = {
     question.column: question for question in brfss_columns.__dict__.values() if isinstance(question, _MultipleChoiceQA)
 }
 
@@ -30,6 +30,10 @@ brfss_multiple_choice_qa_map.update(
     {
         col_to_text.name: col_to_text.question
         for col_to_text in brfss_columns_map.values()
-        if (isinstance(col_to_text, ColumnToText) and col_to_text._question is not None)
+        if (
+            isinstance(col_to_text, ColumnToText)
+            and col_to_text._question is not None
+            and isinstance(col_to_text.question, _MultipleChoiceQA)
+        )
     }
 )

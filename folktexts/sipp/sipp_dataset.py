@@ -21,7 +21,7 @@ DEFAULT_VAL_SIZE = 0.1
 DEFAULT_SEED = 42
 
 
-class SIPPDataset(Dataset):
+class SIPPDataset(Dataset[SIPPTaskMetadata]):
     """Wrapper for tableshift BRFSS datasets."""
 
     def __init__(
@@ -48,7 +48,7 @@ class SIPPDataset(Dataset):
     def make_from_task(
         cls,
         task: str | SIPPTaskMetadata,
-        cache_dir: str | Path = None,
+        cache_dir: str | Path | None = None,
         survey_year: str = None,
         seed: int = DEFAULT_SEED,
         load_dataset_if_not_cached=True,  # add 'extra control' before downloading dataset
@@ -90,7 +90,7 @@ class SIPPDataset(Dataset):
             print((cache_dir / "sipp_2014_wave_1.csv").exists(), (cache_dir / "sipp_2014_wave_2.csv").exists())
             if not (cache_dir / "sipp_2014_wave_1.csv").exists() and not (cache_dir / "sipp_2014_wave_2.csv").exists():
                 print("Download SIPP data... (May take a while)")
-                download_sipp(save_path=cache_dir)
+                download_sipp(save_path=cache_dir.as_posix())
                 print("Preprocess SIPP... (May take a while)")
                 preprocess_sipp(data_dir=cache_dir)
             X, y = load_sipp(data_dir=cache_dir)
@@ -114,7 +114,7 @@ class SIPPDataset(Dataset):
     @task.setter
     def task(self, new_task: SIPPTaskMetadata):
         # Parse data rows for new Tableshift BRFSS task
-        self._data = self._parse_task_data(self._full_acs_data, new_task)
+        self._data = self._parse_task_data(self.full_sipp_data, new_task)
 
         # Re-make train/test/val split
         self._train_indices, self._test_indices, self._val_indices = self._make_train_test_val_split(

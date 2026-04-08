@@ -34,7 +34,7 @@ ACS_TASK_DESCRIPTION_DEFAULTS = {"respondent": "a survey respondent", "year": 20
 
 
 # Map of ACS column names to ColumnToText objects
-acs_columns_map: dict[str, object] = {
+acs_columns_map: dict[str, _ColumnToText] = {
     col_mapper.name: col_mapper for col_mapper in acs_columns.__dict__.values() if isinstance(col_mapper, _ColumnToText)
 }
 
@@ -47,11 +47,15 @@ class ACSTaskMetadata(TaskMetadata):
     folktables_obj: BasicProblem = None
 
     @classmethod
+    def get_task(cls, name: str, use_numeric_qa: bool = False) -> ACSTaskMetadata:
+        return super().get_task(name, use_numeric_qa)  # type: ignore[return-value]
+
+    @classmethod
     def make_task(
         cls,
         name: str,
         features: list[str],
-        target: str = None,
+        target: str,
         sensitive_attribute: str = None,
         target_threshold: Threshold = None,
         multiple_choice_qa: MultipleChoiceQA = None,

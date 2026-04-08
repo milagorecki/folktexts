@@ -13,7 +13,7 @@ import re
 from copy import deepcopy
 
 # from functools import partial
-from typing import Union
+from typing import Any, Union
 
 import pandas as pd
 from transformers import AutoTokenizer
@@ -37,7 +37,7 @@ from folktexts.ts import (
 )
 
 from .dataset import Dataset
-from .qa_interface import QAInterface
+from .qa_interface import MultipleChoiceQA, QAInterface
 from .task import TaskMetadata
 
 SYSTEM_PROMPT = """\
@@ -63,7 +63,7 @@ GEMMA_CHAT_PROMPT = """The provided information suggests that the answer is"""
 
 _valid_keys_cache = {}
 
-DEFAULT_PROMPT_STYLE = {
+DEFAULT_PROMPT_STYLE: dict[str, Any] = {
     "format": "bullet",
     "connector": "is",
     "granularity": "original",
@@ -74,15 +74,15 @@ DEFAULT_PROMPT_STYLE = {
 
 
 class PromptVariation:
-    def __init__(self, description: str, task: ACSTaskMetadata | TableshiftBRFSSTaskMetadata):
+    def __init__(self, description: str, task: TaskMetadata):
         assert (
             isinstance(task, ACSTaskMetadata)
             or isinstance(task, TableshiftBRFSSTaskMetadata)
             or isinstance(task, SIPPTaskMetadata)
         ), "Provide task object."
-        self.description = description
-        self.task = deepcopy(task)
-        self.cache = {}
+        self.description: str = description
+        self.task: TaskMetadata = deepcopy(task)
+        self.cache: dict = {}
 
         # define how to apply the transformation (on each cell of a cell or row-wise)
         if hasattr(self, "transform_row"):
@@ -104,11 +104,8 @@ class PromptVariation:
                 row[col] = self.transform_feature(col, row[col], **kwds)
         return row
 
-    # def transform_feature(self, col, val):
-    #     pass
-
-    # def tranform_row():
-    #     pass
+    def transform_feature(self, col: str, val, **kwds):
+        raise NotImplementedError("Subclass must implement 'transform_feature'.")
 
 
 class VaryFormat(PromptVariation):
@@ -174,7 +171,7 @@ class VaryValueMap(PromptVariation):
 
 
 class VaryFeatureOrder(PromptVariation):
-    def __init__(self, task, order: list | str = DEFAULT_PROMPT_STYLE["order"]):
+    def __init__(self, task, order: list | str | None = DEFAULT_PROMPT_STYLE["order"]):
         description = "Vary the order of the features."
         super().__init__(description, task)
         if order:
@@ -201,14 +198,14 @@ class VaryPrefix(PromptVariation):
         self,
         task: TaskMetadata,
         add_task_description: bool = True,
-        custom_prompt_prefix: str = DEFAULT_PROMPT_STYLE["custom_prompt_prefix"],
-        task_description: str = None,
+        custom_prompt_prefix: str | None = DEFAULT_PROMPT_STYLE["custom_prompt_prefix"],
+        task_description: str | None = None,
     ):
         description = "Vary the prefix printed before the prompt, by default the task description is printed."
         super().__init__(description, task)
         if add_task_description:
             assert task_description is not None, "Provide a task description to add."
-        self.task_description = task_description
+        self.task_description = task_description or ""
         self.add_task_description = add_task_description
         self.custom_prefix = custom_prompt_prefix
 
@@ -280,16 +277,16 @@ def get_valid_keys(cls):
     return _valid_keys_cache[cls]
 
 
-_building_blocks_cache = {}
-_last_cache_config = {}  # store the params used for the cache
+_building_blocks_cache: dict[str, PromptVariation] = {}
+_last_cache_config: dict[str, Any] = {}  # store the params used for the cache
 
 
 def build_config_dict(
     task: TaskMetadata,
     question: QAInterface,
     add_task_description: bool,
-    custom_prompt_prefix: str,
-    custom_prompt_suffix: str,
+    custom_prompt_prefix: str | None,
+    custom_prompt_suffix: str | None,
     prompt_variation: dict | None,
 ):
     return {
@@ -441,7 +438,7 @@ def encode_row_prompt_few_shot(
     n_shots: int,
     question: QAInterface = None,
     reuse_examples: bool = False,
-    compose_few_shot_examples: Union[bool, list] = False,
+    compose_few_shot_examples: Union[bool, list, str] = False,
     custom_prompt_prefix: str = None,
     prompt_variation: dict = {},
 ) -> str:
@@ -498,10 +495,12 @@ def encode_row_prompt_few_shot(
 
     # Add `n` example rows with respective labels
     for i in range(n_shots):
-        logging.debug(
-            f"shot {i}: label = {question.get_answer_key_from_value(y_examples.iloc[i])}\t "
-            f"index = {y_examples.index[i]}"
+        label = (
+            question.get_answer_key_from_value(y_examples.iloc[i])
+            if isinstance(question, MultipleChoiceQA)
+            else y_examples.iloc[i]
         )
+        logging.debug(f"shot {i}: label = {label}\t index = {y_examples.index[i]}")
         prompt += encode_row_prompt(
             X_examples.iloc[i],
             task=task,
@@ -526,7 +525,7 @@ def encode_row_prompt_few_shot(
                         }
                     )
                 ),
-                "custom_prompt_suffix": f" {question.get_answer_key_from_value(y_examples.iloc[i])}\n\n",
+                "custom_prompt_suffix": f" {label}\n\n",
                 "skip_question": True,
             },
         )
