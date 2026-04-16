@@ -223,6 +223,10 @@ def main():
 
     # Load model and tokenizer
     # > Web-hosted LLM
+    # Reasoning requires text-based answer extraction
+    if args.reasoning is not None and not args.use_generated_text:
+        parser.error("--use-generated-text must be set when --reasoning is specified.")
+
     if args.use_web_api_model:
         model = args.model
         tokenizer = None
@@ -250,7 +254,7 @@ def main():
 
     config = BenchmarkConfig(
         few_shot=args.few_shot,
-        use_generated_text=args.use_generated_text,  # when thinking is enabled, also set text-based extraction
+        use_generated_text=args.use_generated_text,
         numeric_risk_prompting=args.numeric_risk_prompting,
         reasoning=args.reasoning,
         reuse_few_shot_examples=args.reuse_few_shot_examples,

@@ -123,7 +123,7 @@ class TransformersLLMClassifier(LLMClassifier):
         risk_estimates : np.ndarray
             The risk estimates for each prompt in the batch.
         """
-        if question.get_answer_from_generated_text:
+        if question.use_generated_text:
             try:
                 # try to apply chat
                 # Query model

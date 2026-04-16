@@ -541,7 +541,7 @@ Question: {self.text}
                 match = re.search(pattern, text)
                 if match:
                     match_len = match.end() - match.start()
-                    print(f"key {key}: {re.search(pattern, text)}")
+                    logging.debug(f"key {key}: {re.search(pattern, text)}")
                     if match_len > best_match_len:
                         best_match_len = match_len
                         best_key = key

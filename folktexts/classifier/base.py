@@ -399,7 +399,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
 
                 # Store risk estimates for current question
                 batch_risk_scores[:, q_idx] = np.clip(risk_estimates_batch, 0, 1)
-                if q.get_answer_from_generated_text and isinstance(q, MultipleChoiceQA):
+                if q.use_generated_text and isinstance(q, MultipleChoiceQA):
                     for i, resp in enumerate(responses_batch):
                         if resp is not None:
                             extracted_answer = (
@@ -449,13 +449,15 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
                     f"Risk scores: {batch_risk_scores[idx_unclear]}"
                     f"\nRisk scores mean: {risk_scores[start_idx:end_idx][idx_unclear]}"
                 )
-                if questions[0].get_answer_from_generated_text:
+                if questions[0].use_generated_text:
                     tmp_texts = [
                         f"response {i}\n{item}\n\n"
                         for i, item in enumerate(model_outputs[-len(batch_data) * len(questions) :])
                         if i in idx_unclear
                     ]
-                logging.debug(msg + f"\nCorresponding responses: {tmp_texts}")
+                    logging.debug(msg + f"\nCorresponding responses: {tmp_texts}")
+                else:
+                    logging.debug(msg)
 
             # Save intermediate results
             path = save_intermed.get("path")
@@ -467,7 +469,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
                     path=batch_path,
                     risk_scores=risk_scores[:end_idx],
                     labels=save_intermed["labels"][:end_idx],
-                    responses=model_outputs if questions[0].get_answer_from_generated_text else None,
+                    responses=model_outputs if questions[0].use_generated_text else None,
                 )
 
         # Check that all risk scores were computed
