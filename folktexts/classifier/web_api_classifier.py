@@ -57,6 +57,18 @@ _MODEL_REGISTRY: dict[str, _ModelConfig] = {
         max_tpm=50000,
         max_rpm=500,
     ),
+    "gpt-5.2": _ModelConfig(
+        azure_api_version="unknown",
+        max_tpm=50000,
+        max_rpm=500,
+        is_reasoning_model=True,
+    ),
+    "gpt-5.4": _ModelConfig(
+        azure_api_version="unknown",
+        max_tpm=50000,
+        max_rpm=500,
+        is_reasoning_model=True,
+    ),
     "DeepSeek-V3.2": _ModelConfig(
         azure_api_version="1",
         deployment_name="openai/DeepSeek-V3.2",
