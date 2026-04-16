@@ -169,7 +169,7 @@ def query_model_text_batch(
     tokenizer: AutoTokenizer,
     max_new_tokens: int,  # = 2048,
     context_size: int = None,
-    enable_thinking: bool = None,
+    reasoning: str = None,
     thinking_end_token_id: int = None,
     system_prompt: str = None,
 ) -> list[str]:
@@ -192,11 +192,10 @@ def query_model_text_batch(
     context_size : int, optional
         The maximum context size for input tokens. If None, no truncation
         is applied to inputs.
-    enable_thinking : bool, optional
-        Whether to enable thinking mode for models that support it (e.g., Qwen3).
-        When True, uses `tokenizer.apply_chat_template` with `enable_thinking=True`.
-        When False, explicitly disables thinking mode. When None (default),
-        does not apply chat template formatting.
+    reasoning : str, optional
+        Reasoning effort string from inference kwargs. '0' explicitly disables
+        thinking mode; any other non-None value enables it. None (default) means
+        no chat template formatting is applied.
 
     Returns
     -------
@@ -206,17 +205,15 @@ def query_model_text_batch(
     """
     model_device = next(model.parameters()).device
 
-    # Apply chat template if enable_thinking is specified
+    # Convert reasoning string to bool for apply_chat_template
+    enable_thinking = None if reasoning is None else (reasoning != "0")
+
+    # Apply chat template if reasoning is specified
     if enable_thinking is not None:
         processed_inputs = []
 
-        supports_thinking = supports_enable_thinking(tokenizer=tokenizer)
-        chat_kwargs = {"enable_thinking": enable_thinking} if supports_thinking else {}
+        chat_kwargs = get_thinking_kwargs(tokenizer=tokenizer, enable=enable_thinking)
 
-        if not supports_thinking:
-            logging.warning(
-                "Tokenizer does not support 'enable_thinking' parameter. Falling back to standard chat template."
-            )
         for text in text_inputs:
             # Format as chat messages
             formatted_text = apply_chat_template(
@@ -274,11 +271,13 @@ def query_model_text_batch(
         if enable_thinking:
             if not thinking_end_token_id:
                 thinking_end_token_id = get_thinking_end_token_id(tokenizer=tokenizer)
-                if thinking_end_token_id is None:
-                    logging.warning(
-                        "Could not identify </think> token ID. Thinking content will not be separated from response."
-                    )
-                # None if not found -> index(None) will throw ValueError
+            if thinking_end_token_id is None:
+                logging.warning(
+                    "Could not identify </think> token ID. Thinking content will not be separated from response."
+                )
+                generated_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
+                generated_texts.append({"response": generated_text})
+                continue
             try:
                 # Find the </think> token from the end (in case there are multiple)
                 index = len(generated_tokens) - generated_tokens[::-1].index(thinking_end_token_id)
@@ -420,17 +419,23 @@ def get_thinking_end_token_id(tokenizer: AutoTokenizer) -> int | None:
         return None
 
 
-def supports_enable_thinking(tokenizer: AutoTokenizer) -> bool:
-    try:
-        tokenizer.apply_chat_template(
-            [{"role": "user", "content": "test"}],
-            tokenize=False,
-            add_generation_prompt=False,
-            enable_thinking=False,
-        )
-        return True
-    except TypeError:
-        return False
+_THINKING_PARAM_NAMES = ("enable_thinking",)
+
+
+def get_thinking_kwargs(tokenizer: AutoTokenizer, enable: bool) -> dict:
+    for param in _THINKING_PARAM_NAMES:
+        try:
+            tokenizer.apply_chat_template(
+                [{"role": "user", "content": "test"}],
+                tokenize=False,
+                add_generation_prompt=False,
+                **{param: False},
+            )
+            return {param: enable}
+        except TypeError:
+            continue
+    logging.warning("Tokenizer does not support any known parameter. Falling back to standard chat template.")
+    return {}
 
 
 def get_model_developer(model_name: str):

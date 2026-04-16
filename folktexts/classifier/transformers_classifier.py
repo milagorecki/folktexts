@@ -135,9 +135,7 @@ class TransformersLLMClassifier(LLMClassifier):
                     max_new_tokens=self.inference_kwargs[
                         "max_new_tokens"
                     ],  # TODO: get max nex tokens from task or question or model?
-                    enable_thinking=self.inference_kwargs.get(
-                        "enable_thinking", None
-                    ),  # TODO self.model.enable_thinking, not yet an attribute
+                    reasoning=self.inference_kwargs.get("reasoning"),
                     thinking_end_token_id=None,
                 )
 

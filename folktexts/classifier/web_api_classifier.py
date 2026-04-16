@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from dataclasses import dataclass
 from typing import Callable
 
 import dotenv
@@ -18,61 +19,105 @@ from folktexts.task import TaskMetadata
 from .base import LLMClassifier
 
 
+@dataclass
+class _ModelConfig:
+    """Configuration for a single web-API model."""
+
+    azure_api_version: str
+    deployment_name: str = None  # None = use model name as-is
+    max_tpm: int = 0
+    max_rpm: int = 0
+    is_reasoning_model: bool = False
+
+
+# Registry of known web-API models. Add new models here — one entry covers all
+# properties. Can be extended at runtime via WebAPILLMClassifier.load_model_registry().
+_MODEL_REGISTRY: dict[str, _ModelConfig] = {
+    "claude-opus-4-5": _ModelConfig(
+        azure_api_version="20251101",
+        deployment_name="azure_ai/claude-opus-4-5",
+        max_tpm=10000,
+        max_rpm=10,
+        is_reasoning_model=True,
+    ),
+    "o3": _ModelConfig(
+        azure_api_version="2025-04-16",
+        max_tpm=250000,
+        max_rpm=250,
+        is_reasoning_model=True,
+    ),
+    "o3-mini": _ModelConfig(
+        azure_api_version="2025-01-31",
+        max_tpm=2100000,
+        max_rpm=210,
+        is_reasoning_model=True,
+    ),
+    "gpt-5.1": _ModelConfig(
+        azure_api_version="2025-11-13",
+        max_tpm=50000,
+        max_rpm=500,
+    ),
+    "DeepSeek-V3.2": _ModelConfig(
+        azure_api_version="1",
+        deployment_name="openai/DeepSeek-V3.2",
+        max_tpm=5000000,
+        max_rpm=5000,
+    ),
+    "DeepSeek-R1": _ModelConfig(
+        azure_api_version="1",
+        deployment_name="openai/DeepSeek-R1",
+        max_tpm=5000000,
+        max_rpm=5000,
+        is_reasoning_model=True,
+    ),
+    "gpt-4.1": _ModelConfig(
+        azure_api_version="2025-04-14",
+        max_tpm=110000,
+        max_rpm=110,
+    ),
+    "o1": _ModelConfig(
+        azure_api_version="2024-12-17",
+        max_tpm=780000,
+        max_rpm=130,
+        is_reasoning_model=True,
+    ),
+    "gpt-4o-mini": _ModelConfig(
+        azure_api_version="2024-07-18",
+        max_tpm=250000,
+        max_rpm=2500,
+    ),
+    "o4-mini": _ModelConfig(
+        azure_api_version="2025-04-16",
+        max_tpm=250000,
+        max_rpm=250,
+        is_reasoning_model=True,
+    ),
+    "Kimi-K2-Thinking": _ModelConfig(
+        azure_api_version="1",
+        deployment_name="openai/Kimi-K2-Thinking",
+        is_reasoning_model=True,
+    ),
+    "Kimi-K2.5": _ModelConfig(
+        azure_api_version="1",
+        deployment_name="openai/Kimi-K2.5",
+        is_reasoning_model=True,
+    ),
+    "grok-4-fast-reasoning": _ModelConfig(
+        azure_api_version="1",
+        deployment_name="openai/grok-4-fast-reasoning",
+        is_reasoning_model=True,
+    ),
+    "grok-4-fast-non-reasoning": _ModelConfig(
+        azure_api_version="1",
+        deployment_name="openai/grok-4-fast-non-reasoning",
+    ),
+}
+
+
 class WebAPILLMClassifier(LLMClassifier):
     """Use an LLM through a web API to produce risk scores."""
 
-    _model_to_azure_api_version = {
-        "o3": "2025-04-16",
-        "o3-mini": "2025-01-31",
-        "gpt-5.1": "2025-11-13",
-        "DeepSeek-V3.2": "1",
-        "DeepSeek-R1": "1",
-        "gpt-4.1": "2025-04-14",
-        "o1": "2024-12-17",
-        "gpt-4o-mini": "2024-07-18",
-        "o4-mini": "2025-04-16",
-        "claude-opus-4-5": "20251101",
-        "Kimi-K2-Thinking": "1",
-        "Kimi-K2.5": "1",
-        "grok-4-fast-reasoning": "1",
-        "grok-4-fast-non-reasoning": "1",
-    }
-
-    _model_to_azure_deployment_name = {
-        "DeepSeek-V3.2": "openai/DeepSeek-V3.2",
-        "DeepSeek-R1": "openai/DeepSeek-R1",
-        "claude-opus-4-5": "azure_ai/claude-opus-4-5",
-        "Kimi-K2-Thinking": "openai/Kimi-K2-Thinking",
-        "Kimi-K2.5": "openai/Kimi-K2.5",
-        "grok-4-fast-reasoning": "openai/grok-4-fast-reasoning",
-        "grok-4-fast-non-reasoning": "openai/grok-4-fast-non-reasoning",
-    }
-
-    _model_to_max_tpm = {
-        "o3": 250000,
-        "o3-mini": 2100000,
-        "gpt-5.1": 50000,
-        "DeepSeek-V3.2": 5000000,
-        "DeepSeek-R1": 5000000,
-        "gpt-4.1": 110000,
-        "o1": 780000,
-        "gpt-4o-mini": 250000,
-        "o4-mini": 250000,
-        "claude-opus-4-5": 10000,
-    }
-
-    _model_to_max_rpm = {
-        "o3": 250,
-        "o3-mini": 210,
-        "gpt-5.1": 500,
-        "DeepSeek-V3.2": 5000,
-        "DeepSeek-R1": 5000,
-        "gpt-4.1": 110,
-        "o1": 130,
-        "gpt-4o-mini": 2500,
-        "o4-mini": 250,
-        "claude-opus-4-5": 10,
-    }
+    _registry: dict[str, _ModelConfig] = _MODEL_REGISTRY
 
     def __init__(
         self,
@@ -82,8 +127,8 @@ class WebAPILLMClassifier(LLMClassifier):
         encode_row: Callable[[pd.Series], str] = None,
         threshold: float = 0.5,
         correct_order_bias: bool = True,
-        max_api_rpm: int = min(_model_to_max_rpm.values()),
-        max_api_tpm: int = min(_model_to_max_tpm.values()),
+        max_api_rpm: int = min(cfg.max_rpm for cfg in _MODEL_REGISTRY.values() if cfg.max_rpm),
+        max_api_tpm: int = min(cfg.max_tpm for cfg in _MODEL_REGISTRY.values() if cfg.max_tpm),
         seed: int = 42,
         **inference_kwargs,
     ):
@@ -129,7 +174,8 @@ class WebAPILLMClassifier(LLMClassifier):
             seed=seed,
             **inference_kwargs,
         )
-        self.deployment_name = self._model_to_azure_deployment_name.get(model_name, model_name)
+        model_cfg = self._registry.get(model_name)
+        self.deployment_name = (model_cfg.deployment_name or model_name) if model_cfg else model_name
 
         # Initialize total cost of API calls
         self._total_cost = 0.0
@@ -138,26 +184,16 @@ class WebAPILLMClassifier(LLMClassifier):
         self._num_api_calls = 0
         self._total_response_time = 0.0
 
-        # Set maximum requests per minute
-        self.max_api_rpm = max_api_rpm
-        if "MAX_API_RPM" in os.environ:
-            self.max_api_rpm = int(os.getenv("MAX_API_RPM"))
-            logging.info(
-                f"MAX_API_RPM environment variable is set."
-                f" Overriding previous value of {max_api_rpm} with {self.max_api_rpm}."
-            )
-        else:
-            self.max_api_rpm = max(self.max_api_rpm, self._model_to_max_rpm.get(model_name, 0))
-        # Set maximum tokens per minute
-        self.max_api_tpm = max_api_tpm
-        if "MAX_API_TPM" in os.environ:
-            self.max_api_tpm = int(os.getenv("MAX_API_TPM"))
-            logging.warning(
-                "MAX_API_TPM environment variable is set."
-                f" Overriding previous value of {max_api_tpm} with {self.max_api_tpm}."
-            )
-        else:
-            self.max_api_tpm = max(self.max_api_tpm, self._model_to_max_tpm.get(model_name, 0))
+        # Set maximum requests / tokens per minute (env vars take priority over defaults)
+        self.max_api_rpm = max(max_api_rpm, model_cfg.max_rpm if model_cfg else 0)
+        if rpm_env := os.getenv("MAX_API_RPM"):
+            logging.info(f"MAX_API_RPM env var overrides {self.max_api_rpm} → {rpm_env}.")
+            self.max_api_rpm = int(rpm_env)
+
+        self.max_api_tpm = max(max_api_tpm, model_cfg.max_tpm if model_cfg else 0)
+        if tpm_env := os.getenv("MAX_API_TPM"):
+            logging.warning(f"MAX_API_TPM env var overrides {self.max_api_tpm} → {tpm_env}.")
+            self.max_api_tpm = int(tpm_env)
 
         # Check extra dependencies
         assert self.check_webAPI_deps(), "Web API dependencies are not installed."
@@ -174,13 +210,21 @@ class WebAPILLMClassifier(LLMClassifier):
             if "AZURE_API_BASE" not in os.environ:
                 raise ValueError("AZURE_API_BASE not found in environment variables")
 
+        # Validate reasoning argument for known reasoning models
+        reasoning = self.inference_kwargs.get("reasoning")
+        if (model_cfg and model_cfg.is_reasoning_model) and reasoning is None:
+            raise ValueError(
+                f"Model '{self.model_name}' is a reasoning model — "
+                "please specify --reasoning (e.g. 'medium', '0.25', '0')."
+            )
+
         # Set API type
         self.api_type = "completion"
 
         # litellm completion does not seem to provide reasoning with opt-in summary -> switch to responses API
         if (
             get_model_developer(self.model_name) == "OpenAI"
-            and self.inference_kwargs.get("enable_thinking", False)
+            and reasoning is not None
             and task.question.use_generated_text
         ):
             # log-probs not available via responses API, but then reasoning can only be a str!
@@ -234,6 +278,30 @@ class WebAPILLMClassifier(LLMClassifier):
             )
             return False
         return True
+
+    @classmethod
+    def load_model_registry(cls, path: str) -> None:
+        """Merge additional model configs from a YAML file into the registry.
+
+        The YAML file should be a mapping of model names to config fields, e.g.::
+
+            my-new-model:
+                azure_api_version: "2025-01-01"
+                deployment_name: "openai/my-new-model"
+                max_tpm: 100000
+                max_rpm: 500
+                is_reasoning_model: false
+        """
+        try:
+            import yaml  # type: ignore[import-untyped]
+        except ImportError:
+            raise ImportError("PyYAML is required to load a model registry file. Install it with: pip install pyyaml")
+
+        with open(path) as f:
+            data = yaml.safe_load(f)
+        for model_name, fields in data.items():
+            cls._registry[model_name] = _ModelConfig(**fields)
+        logging.info(f"Loaded {len(data)} model config(s) from '{path}'.")
 
     def _query_webapi_batch(
         self,
@@ -291,34 +359,39 @@ class WebAPILLMClassifier(LLMClassifier):
             api_call_params.pop("seed")
             logging.debug("Removed 'seed' from API call parameters for Claude model, as it is not supported.")
 
-        # Set extra arguments for reasoning-augmented models if thinking is enabled
-        enable_thinking = self.inference_kwargs.get("enable_thinking", False)
-        logging.debug("thinking is set to: " + str(enable_thinking))
-        if enable_thinking:
+        # Set extra arguments for reasoning-augmented models
+        _OPENAI_EFFORT_LEVELS = ("none", "minimal", "low", "medium", "high", "xhigh")
+        reasoning = self.inference_kwargs.get("reasoning")
+        logging.debug(f"reasoning is set to: {reasoning}")
+        if reasoning is not None and reasoning != "0":
             if self.model_name.startswith("claude"):
-                budget_tokens = 4096
-                logging.warning(f"Thinking enabled for Claude model. Setting budget_tokens to {budget_tokens}.")
-                # pass thinking params to Claude models
-                assert budget_tokens >= 1024, "budget_tokens must be at least 1024"
-                assert self.inference_kwargs["max_new_tokens"] >= budget_tokens, (
-                    "max_new_tokens must be greater than or equal to budget_tokens"
+                val = float(reasoning)
+                max_new_tokens = self.inference_kwargs["max_new_tokens"]
+                budget_tokens = int(val * max_new_tokens) if val <= 1.0 else int(val)
+                budget_tokens = max(budget_tokens, 1024)
+                assert budget_tokens <= max_new_tokens, (
+                    f"budget_tokens ({budget_tokens}) must not exceed max_new_tokens ({max_new_tokens})"
                 )
-
-                api_call_params["thinking"] = {"type": "enabled", "budget_tokens": 4096}
+                logging.warning(f"Thinking enabled for Claude model with budget_tokens={budget_tokens}.")
+                api_call_params["thinking"] = {"type": "enabled", "budget_tokens": budget_tokens}
             elif get_model_developer(self.model_name) == "OpenAI":
-                reasoning_effort = "medium"
-                # NOTE: reasoning_effort accepts a string value:
-                # ("none", "minimal", "low", "medium", "high", "xhigh"—"xhigh" (https://docs.litellm.ai/docs/providers/openai)
-                logging.warning(f"Thinking enabled for OpenAI model. Setting budget_tokens to {reasoning_effort}.")
+                # NOTE: reasoning_effort accepts: "none", "minimal", "low", "medium", "high", "xhigh"
+                # https://docs.litellm.ai/docs/providers/openai
+                if reasoning not in _OPENAI_EFFORT_LEVELS:
+                    raise ValueError(
+                        f"Invalid reasoning effort '{reasoning}' for OpenAI model. "
+                        f"Must be one of: {_OPENAI_EFFORT_LEVELS}"
+                    )
+                logging.warning(f"Thinking enabled for OpenAI model with reasoning_effort='{reasoning}'.")
                 if self.api_type == "responses":
                     # summary only available via responses API, but that does not support logprobs
                     # -> only use if extracting answer from generated text
                     api_call_params["reasoning"] = {
-                        "effort": reasoning_effort,
+                        "effort": reasoning,
                         "summary": "detailed",
                     }
                 else:
-                    api_call_params["reasoning_effort"] = reasoning_effort
+                    api_call_params["reasoning_effort"] = reasoning
         if set(api_call_params.keys()) - self.supported_params:
             raise RuntimeError(
                 f"Unsupported API parameters for model '{self.deployment_name}': "
@@ -397,7 +470,7 @@ class WebAPILLMClassifier(LLMClassifier):
                     reasoning_content = choice.message.reasoning_content
                     logging.debug(f"Received reasoning content: {reasoning_content}")
 
-                if self.inference_kwargs.get("enable_thinking", False) and len(reasoning_content) == 0:
+                if self.inference_kwargs.get("reasoning") not in (None, "0") and len(reasoning_content) == 0:
                     logging.debug("Reasoning enabled, but no reasoning content found in response.")
             else:
                 # response API
@@ -413,7 +486,7 @@ class WebAPILLMClassifier(LLMClassifier):
                                 reasoning_content += summary.text + "\n"
 
                 response_message = "\n".join(output_texts) if len(output_texts) > 0 else ""
-                if self.inference_kwargs.get("enable_thinking", False) and len(reasoning_content) == 0:
+                if self.inference_kwargs.get("reasoning") not in (None, "0") and len(reasoning_content) == 0:
                     logging.debug("Reasoning enabled, but no summary returned.")
                 elif len(reasoning_content) > 0:
                     logging.debug(f"Reasoning not enabled, but received reasoning content: {reasoning_content}")

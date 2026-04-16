@@ -39,11 +39,12 @@ class BenchmarkConfig:
         Q&A, by default False.
     use_generated_text : bool | False, optional
         Whether to  extract answer from generated text.  Default is False.
-    enable_thinking : bool, optional
-        Whether to enable thinking mode for models that support it (e.g., Qwen3).
-        Only applies when  `use_generated_text` is set. When enabled, uses the
-        tokenizer's  `apply_chat_template` with `enable_thinking=True`. Default
-        is False.
+    reasoning : str | None, optional
+        Reasoning/thinking effort for reasoning models. Use '0' for Qwen3 to
+        explicitly disable thinking; 'low'/'medium'/'high' for OpenAI reasoning
+        models; a float in (0, 1] (fraction of max_new_tokens) or a positive
+        integer string for Claude (literal budget_tokens, min 1024). Ignored
+        for non-reasoning models. Default is None.
     few_shot : int | None, optional
         Whether to use few-shot prompting with a given number of examples, by
         default None.
@@ -72,7 +73,7 @@ class BenchmarkConfig:
 
     numeric_risk_prompting: bool = False
     use_generated_text: bool = False
-    enable_thinking: bool = False
+    reasoning: str | None = None
     few_shot: int | None = None
     reuse_few_shot_examples: bool = False
     compose_few_shot_examples: str = "random"
@@ -770,7 +771,7 @@ class Benchmark:
         llm_inference_kwargs = {
             "correct_order_bias": config.correct_order_bias,
             "prompt_variation": config.prompt_variation or {},
-            "enable_thinking": config.enable_thinking,
+            "reasoning": config.reasoning,
         }
         if config.batch_size is not None:
             llm_inference_kwargs["batch_size"] = config.batch_size

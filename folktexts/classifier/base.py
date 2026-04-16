@@ -37,8 +37,8 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
     DEFAULT_INFERENCE_KWARGS = {
         "context_size": DEFAULT_CONTEXT_SIZE,
         "batch_size": DEFAULT_BATCH_SIZE,
-        "enable_thinking": False,  ## TODO: wrong place?
-        "max_new_tokens": DEFAULT_MAX_NEW_TOKENS,  ## TODO: wrong place?
+        "reasoning": None,
+        "max_new_tokens": DEFAULT_MAX_NEW_TOKENS,
     }
 
     def __init__(

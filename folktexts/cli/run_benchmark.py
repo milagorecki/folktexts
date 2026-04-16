@@ -108,13 +108,18 @@ def setup_arg_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
-        "--enable-thinking",
+        "--reasoning",
         help=(
-            "[bool] Whether to enable thinking mode for models that support it (e.g., Qwen3). "
-            "Only applies with --reasoning-prompting"
+            "[str] Reasoning/thinking effort for reasoning models. "
+            "Use '0' for Qwen3 to explicitly disable thinking (omit to use model default). "
+            "Use 'low', 'medium', or 'high' for OpenAI reasoning models (sets reasoning_effort). "
+            "Use a float in (0, 1] (fraction of max_new_tokens) or a positive integer "
+            "(literal budget_tokens, min 1024) for Claude reasoning models. "
+            "Ignored for non-reasoning models. Required for known reasoning models."
         ),
-        action="store_true",
-        default=False,
+        type=str,
+        required=False,
+        default=None,
     )
 
     parser.add_argument(
@@ -245,9 +250,9 @@ def main():
 
     config = BenchmarkConfig(
         few_shot=args.few_shot,
-        use_generated_text=args.use_generated_text,  # when thinking is enabled, also set text-based extraction, TODO: check - default number?
+        use_generated_text=args.use_generated_text,  # when thinking is enabled, also set text-based extraction
         numeric_risk_prompting=args.numeric_risk_prompting,
-        enable_thinking=args.enable_thinking,
+        reasoning=args.reasoning,
         reuse_few_shot_examples=args.reuse_few_shot_examples,
         compose_few_shot_examples=example_composition,
         batch_size=args.batch_size,
