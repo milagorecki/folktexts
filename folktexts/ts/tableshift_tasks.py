@@ -7,10 +7,19 @@ import logging
 from dataclasses import asdict, dataclass
 from string import Template
 
-from tableshift.configs.benchmark_configs import BENCHMARK_CONFIGS, PreprocessorConfig
-from tableshift.configs.experiment_config import ExperimentConfig
-from tableshift.core.splitter import RandomSplitter
-from tableshift.core.tasks import _TASK_REGISTRY, TaskConfig
+try:
+    from tableshift.configs.benchmark_configs import BENCHMARK_CONFIGS, PreprocessorConfig
+    from tableshift.configs.experiment_config import ExperimentConfig
+    from tableshift.core.splitter import RandomSplitter
+    from tableshift.core.tasks import _TASK_REGISTRY, TaskConfig
+    _TABLESHIFT_AVAILABLE = True
+except ImportError:
+    PreprocessorConfig = None
+    class TaskConfig:  # noqa: E701
+        pass
+    class ExperimentConfig:  # noqa: E701
+        pass
+    _TABLESHIFT_AVAILABLE = False
 
 from .._utils import hash_dict
 from ..col_to_text import ColumnToText as _ColumnToText
@@ -47,7 +56,7 @@ passthrough_preprocessor_config = PreprocessorConfig(
     max_categories=None,  # default
     n_bins=5,  # default
     sub_illegal_chars=True,  # default
-)
+) if _TABLESHIFT_AVAILABLE else None
 
 # Map of BRFSS column names to ColumnToText objects
 brfss_columns_map: dict[str, object] = {
@@ -119,6 +128,11 @@ class TableshiftBRFSSTaskMetadata(TaskMetadata):
         val_size: float = DEFAULT_VAL_SIZE,  # default in getter
         test_size: float = DEFAULT_TEST_SIZE,  # default in getter
     ) -> TableshiftBRFSSTaskMetadata:
+        if not _TABLESHIFT_AVAILABLE:
+            raise ImportError(
+                f"Task '{name}' requires the 'tableshift' package, which is not installed. "
+                "Install it with: pip install 'folktexts[tableshift]'"
+            )
 
         # Get the task info/object from the tableshift package
         try:
@@ -163,15 +177,16 @@ class TableshiftBRFSSTaskMetadata(TaskMetadata):
         return int(hash_dict(hashable_params), 16)
 
 
-# Instantiate folktables tasks
-tableshift_brfss_diabetes_task = TableshiftBRFSSTaskMetadata.make_tableshift_task(
-    name="BRFSS_Diabetes",
-    target_threshold=brfss_diabetes_threshold,
-    description="predict whether an individual has ever been told they have diabetes",
-)
+# Instantiate folktables tasks (only if tableshift is available)
+if _TABLESHIFT_AVAILABLE:
+    tableshift_brfss_diabetes_task = TableshiftBRFSSTaskMetadata.make_tableshift_task(
+        name="BRFSS_Diabetes",
+        target_threshold=brfss_diabetes_threshold,
+        description="predict whether an individual has ever been told they have diabetes",
+    )
 
-tableshift_brfss_hypertension_task = TableshiftBRFSSTaskMetadata.make_tableshift_task(
-    name="BRFSS_Blood_Pressure",
-    target_threshold=brfss_hypertension_threshold,
-    description="predict whether an individual has ever been told they have diabetes",
-)
+    tableshift_brfss_hypertension_task = TableshiftBRFSSTaskMetadata.make_tableshift_task(
+        name="BRFSS_Blood_Pressure",
+        target_threshold=brfss_hypertension_threshold,
+        description="predict whether an individual has ever been told they have diabetes",
+    )

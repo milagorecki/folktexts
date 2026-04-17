@@ -30,11 +30,17 @@ from folktexts.sipp import (
     SIPP_TASK_DESCRIPTION_DEFAULTS,
     SIPPTaskMetadata,
 )
-from folktexts.ts import (
-    TABLESHIFT_TASK_DESCRIPTION,
-    TABLESHIFT_TASK_DESCRIPTION_DEFAULTS,
-    TableshiftBRFSSTaskMetadata,
-)
+
+try:
+    from folktexts.ts import (
+        TABLESHIFT_TASK_DESCRIPTION,
+        TABLESHIFT_TASK_DESCRIPTION_DEFAULTS,
+        TableshiftBRFSSTaskMetadata,
+    )
+except ImportError:
+    TABLESHIFT_TASK_DESCRIPTION = None
+    TABLESHIFT_TASK_DESCRIPTION_DEFAULTS = None
+    TableshiftBRFSSTaskMetadata = None
 
 from .dataset import Dataset
 from .qa_interface import MultipleChoiceQA, QAInterface
@@ -77,7 +83,7 @@ class PromptVariation:
     def __init__(self, description: str, task: ACSTaskMetadata | TableshiftBRFSSTaskMetadata):
         assert (
             isinstance(task, ACSTaskMetadata)
-            or isinstance(task, TableshiftBRFSSTaskMetadata)
+            or (TableshiftBRFSSTaskMetadata is not None and isinstance(task, TableshiftBRFSSTaskMetadata))
             or isinstance(task, SIPPTaskMetadata)
         ), "Provide task object."
         self.description = description
@@ -379,7 +385,11 @@ def update_building_blocks_if_needed(current_config, task):
 
     task_description_dict = {
         "ACS": ACS_TASK_DESCRIPTION.substitute(ACS_TASK_DESCRIPTION_DEFAULTS),
-        "BRFSS": TABLESHIFT_TASK_DESCRIPTION.substitute(TABLESHIFT_TASK_DESCRIPTION_DEFAULTS),
+        **(
+            {"BRFSS": TABLESHIFT_TASK_DESCRIPTION.substitute(TABLESHIFT_TASK_DESCRIPTION_DEFAULTS)}
+            if TABLESHIFT_TASK_DESCRIPTION is not None
+            else {}
+        ),
         "SIPP": SIPP_TASK_DESCRIPTION.substitute(SIPP_TASK_DESCRIPTION_DEFAULTS),
     }
     task_description = next(task_description_dict[key] for key in task_description_dict.keys() if key in task.name)

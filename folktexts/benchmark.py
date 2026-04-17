@@ -21,7 +21,6 @@ from .plotting import render_evaluation_plots, render_fairness_plots
 from .prompting import encode_row_prompt, encode_row_prompt_few_shot
 from .sipp import SIPPDataset, SIPPTaskMetadata
 from .task import TaskMetadata
-from .ts import TableshiftBRFSSDataset, TableshiftBRFSSTaskMetadata
 
 DEFAULT_SEED = 42
 DEFAULT_FIT_THRESHOLD_N = 100
@@ -599,6 +598,8 @@ class Benchmark:
         config = config.update(**kwargs)
 
         # Fetch Tableshift task and dataset
+        from .ts import TableshiftBRFSSDataset, TableshiftBRFSSTaskMetadata  # noqa: PLC0415
+
         tableshift_task = TableshiftBRFSSTaskMetadata.get_task(
             name=task_name,
             use_numeric_qa=config.numeric_risk_prompting,

@@ -8,10 +8,10 @@ import logging
 from pathlib import Path
 
 import pandas as pd
-from tableshift import get_iid_dataset
 
 from ..dataset import Dataset
 from .tableshift_tasks import (
+    _TABLESHIFT_AVAILABLE,
     TableshiftBRFSSTaskMetadata,
     passthrough_preprocessor_config,
 )
@@ -73,6 +73,12 @@ class TableshiftBRFSSDataset(Dataset):
         **kwargs
             Extra key-word arguments to be passed to the Dataset constructor.
         """
+        if not _TABLESHIFT_AVAILABLE:
+            raise ImportError(
+                "Loading BRFSS data requires the 'tableshift' package, which is not installed. "
+                "Install it with: pip install 'folktexts[tableshift]'"
+            )
+
         # Parse task if given a string
         task_obj = TableshiftBRFSSTaskMetadata.get_task(task) if isinstance(task, str) else task
         logging.debug(f"task_obj : {task_obj.tableshift_obj.__dict__}")
@@ -96,6 +102,7 @@ class TableshiftBRFSSDataset(Dataset):
             else:
                 # Load Tableshift data source
                 logging.info("Loading TableShift task data (may take a while)...")
+                from tableshift import get_iid_dataset  # noqa: PLC0415
                 tab_dataset = get_iid_dataset(
                     task_obj.name.lower(),
                     cache_dir=cache_dir,
