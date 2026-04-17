@@ -461,6 +461,15 @@ class Benchmark:
         save_json(self.results, path=results_file_path)
         logging.info(f"Saved experiment results to '{results_file_path.as_posix()}'")
 
+        # Save token usage alongside results if the classifier has a tracker
+        token_tracker = getattr(self.llm_clf, "token_tracker", None)
+        if token_tracker is not None:
+            token_file_path = self.results_dir / f"token_usage.bench-{hash(self)}.jsonl"
+            # If the tracker was streaming to a different path, copy records here too
+            if token_tracker.output_path != token_file_path:
+                token_tracker.save(token_file_path)
+            logging.info(f"Saved token usage to '{token_file_path.as_posix()}'")
+
     @classmethod
     def make_acs_benchmark(
         cls,

@@ -15,6 +15,7 @@ import pandas as pd
 from folktexts.llm_utils import get_model_developer
 from folktexts.qa_interface import DirectNumericQA, MultipleChoiceQA
 from folktexts.task import TaskMetadata
+from folktexts.token_tracker import TokenTracker
 
 from .base import LLMClassifier
 
@@ -142,6 +143,7 @@ class WebAPILLMClassifier(LLMClassifier):
         max_api_rpm: int = min(cfg.max_rpm for cfg in _MODEL_REGISTRY.values() if cfg.max_rpm),
         max_api_tpm: int = min(cfg.max_tpm for cfg in _MODEL_REGISTRY.values() if cfg.max_tpm),
         seed: int = 42,
+        token_tracker: TokenTracker | None = None,
         **inference_kwargs,
     ):
         """Creates an LLMClassifier object that uses a web API for inference.
@@ -195,6 +197,11 @@ class WebAPILLMClassifier(LLMClassifier):
         self._total_completion_tokens = 0
         self._num_api_calls = 0
         self._total_response_time = 0.0
+
+        # Optional token tracker; previous cumulative totals used to compute per-batch deltas
+        self.token_tracker = token_tracker
+        self._prev_tracker_prompt_tokens = 0
+        self._prev_tracker_completion_tokens = 0
 
         # Set maximum requests / tokens per minute (env vars take priority over defaults)
         self.max_api_rpm = max(max_api_rpm, model_cfg.max_rpm if model_cfg else 0)
@@ -658,7 +665,7 @@ class WebAPILLMClassifier(LLMClassifier):
                 risk_estimates_batch.append(np.nan)
                 outputs_batch.append(None)
 
-        self.track_stats()
+        self.track_stats(batch_size=len(prompts_batch))
         return risk_estimates_batch, outputs_batch
 
     # def track_cost_callback(
@@ -676,7 +683,7 @@ class WebAPILLMClassifier(LLMClassifier):
     #     except Exception as e:
     #         logging.error(f"Failed to track cost of API calls: {e}")
 
-    def track_stats(self):
+    def track_stats(self, batch_size: int = 1):
         # get all tracker attributes with defaults
         total_cost = getattr(self.client.tracker, "total_cost", 0)
         total_prompt_tokens = getattr(self.client.tracker, "total_prompt_tokens", 0)
@@ -693,6 +700,18 @@ class WebAPILLMClassifier(LLMClassifier):
             logging.info(f"Mean response time: {mean_response_time:.2f}s")
         else:
             logging.info("Mean response time: Not available")
+
+        if self.token_tracker is not None:
+            batch_prompt = total_prompt_tokens - self._prev_tracker_prompt_tokens
+            batch_completion = total_completion_tokens - self._prev_tracker_completion_tokens
+            if batch_prompt > 0 or batch_completion > 0:
+                self.token_tracker.record_batch(
+                    prompt_tokens=batch_prompt,
+                    completion_tokens=batch_completion,
+                    batch_size=batch_size,
+                )
+            self._prev_tracker_prompt_tokens = total_prompt_tokens
+            self._prev_tracker_completion_tokens = total_completion_tokens
 
     def track_cost_callback(
         self,

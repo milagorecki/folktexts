@@ -13,6 +13,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from folktexts.llm_utils import query_model_batch_multiple_passes, query_model_text_batch
 from folktexts.qa_interface import DirectNumericQA, MultipleChoiceQA
 from folktexts.task import TaskMetadata
+from folktexts.token_tracker import TokenTracker
 
 from .._utils import hash_dict
 from .base import LLMClassifier
@@ -31,6 +32,7 @@ class TransformersLLMClassifier(LLMClassifier):
         threshold: float = 0.5,
         correct_order_bias: bool = True,
         seed: int = 42,
+        token_tracker: TokenTracker | None = None,
         **inference_kwargs,
     ):
         """Creates an LLMClassifier based on a huggingface transformers model.
@@ -58,6 +60,9 @@ class TransformersLLMClassifier(LLMClassifier):
             by default True.
         seed : int, optional
             The random seed - used for reproducibility.
+        token_tracker : TokenTracker, optional
+            A :class:`~folktexts.token_tracker.TokenTracker` instance for
+            recording token usage. If *None*, no tracking is performed.
         **inference_kwargs
             Additional keyword arguments to be used at inference time. Options
             include `context_size` and `batch_size`.
@@ -65,6 +70,7 @@ class TransformersLLMClassifier(LLMClassifier):
         # Transformers objects for the model and tokenizer
         self._model = model
         self._tokenizer = tokenizer
+        self.token_tracker = token_tracker
 
         # Fetch name for transformers model
         model_name = Path(self._model.name_or_path).name
@@ -123,6 +129,13 @@ class TransformersLLMClassifier(LLMClassifier):
         risk_estimates : np.ndarray
             The risk estimates for each prompt in the batch.
         """
+        # Count prompt tokens once (shared by both branches)
+        if self.token_tracker is not None:
+            prompt_tokens = sum(
+                len(self._tokenizer.encode(p, add_special_tokens=False))
+                for p in prompts_batch
+            )
+
         if question.use_generated_text:
             try:
                 # try to apply chat
@@ -145,6 +158,17 @@ class TransformersLLMClassifier(LLMClassifier):
                     )
                     for text in generated_text_batch
                 ]
+
+                if self.token_tracker is not None:
+                    completion_tokens = sum(
+                        len(self._tokenizer.encode(t.get("response", ""), add_special_tokens=False))
+                        for t in generated_text_batch
+                    )
+                    self.token_tracker.record_batch(
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        batch_size=len(prompts_batch),
+                    )
 
                 # sanitized_texts = [text.replace(";", "") for text in generated_text_batch]
                 return risk_estimates_batch, generated_text_batch
@@ -173,5 +197,14 @@ class TransformersLLMClassifier(LLMClassifier):
                 )
                 for ltp in last_token_probs_batch
             ]
+
+            if self.token_tracker is not None:
+                # Each forward pass generates exactly one token per prompt
+                completion_tokens = len(prompts_batch) * question.num_forward_passes
+                self.token_tracker.record_batch(
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    batch_size=len(prompts_batch),
+                )
 
             return risk_estimates_batch, last_token_probs_batch  # ltp not used
