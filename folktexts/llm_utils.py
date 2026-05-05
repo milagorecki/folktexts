@@ -98,13 +98,20 @@ def query_model_batch_multiple_passes(
         Last token *linear* probabilities for each forward pass, for each text
         in the input batch. The output has shape (batch_size, n_passes, vocab_size).
     """
-    # If `digits_only`, get token IDs for digit tokens
-    allowed_tokens_filter = np.ones(len(tokenizer.vocab), dtype=bool)
+    # Mask is sized to the model's logits dim, not the tokenizer's vocab dict:
+    # neither `len(tokenizer.vocab)` nor `tokenizer.vocab_size` is reliable
+    # (Gemma-3 has `len(vocab) == vocab_size + 1`; Llama-3.2 has
+    # `len(vocab) == vocab_size + 256`). Only `model.config.vocab_size` matches
+    # the actual logits axis we're masking.
+    vocab_dim = model.config.vocab_size
+    allowed_tokens_filter = np.ones(vocab_dim, dtype=bool)
     vocab_mismatch = False
     if digits_only:
-        allowed_token_ids = np.array([tok_id for token, tok_id in tokenizer.vocab.items() if token.isdecimal()])
+        allowed_token_ids = np.array(
+            [tok_id for token, tok_id in tokenizer.vocab.items() if token.isdecimal() and tok_id < vocab_dim]
+        )
 
-        allowed_tokens_filter = np.zeros(len(tokenizer.vocab), dtype=bool)
+        allowed_tokens_filter = np.zeros(vocab_dim, dtype=bool)
         allowed_tokens_filter[allowed_token_ids] = True
 
     # Current text batch
@@ -122,7 +129,7 @@ def query_model_batch_multiple_passes(
             current_probs[:, ~allowed_tokens_filter] = 0
         except IndexError:
             logging.error(
-                "Size of tokenizer.vocab and model output don't match. Fix by recreating allowd_token_filter."
+                "Size of tokenizer.vocab and model output don't match. Fix by recreating allowed_token_filter."
             )
             vocab_mismatch = True
             actual_vocab_size = current_probs.shape[1]
@@ -140,7 +147,7 @@ def query_model_batch_multiple_passes(
             if any(probs < PROB_WARN_THR for probs in total_digit_probs):
                 logging.error(f"Digit probabilities are too low: {total_digit_probs}")
 
-        # Add the highest likelihood token to each text in the batch
+        # Add the highest likelihood token to each text in the batch (greedy decoding)
         next_tokens = [tokenizer.decode([np.argmax(probs)]) for probs in current_probs]
         current_batch = [text + next_token for text, next_token in zip(current_batch, next_tokens)]
 
@@ -153,7 +160,7 @@ def query_model_batch_multiple_passes(
     assert last_token_probs_array.shape == (
         len(text_inputs),
         n_passes,
-        len(tokenizer.vocab) if not vocab_mismatch else actual_vocab_size,
+        vocab_dim if not vocab_mismatch else actual_vocab_size,
     )
     return last_token_probs_array
 

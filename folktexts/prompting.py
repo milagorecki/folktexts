@@ -16,6 +16,7 @@ from copy import deepcopy
 from typing import Any, Union
 
 import pandas as pd
+from jinja2 import TemplateError
 from transformers import AutoTokenizer
 
 from folktexts.acs import (
@@ -40,8 +41,17 @@ from .dataset import Dataset
 from .qa_interface import MultipleChoiceQA, QAInterface
 from .task import TaskMetadata
 
+# Sentinel distinguishing "use the mode-appropriate default" from `None`
+# ("explicitly disable the role"). Module-private; not part of the public API.
+_DEFAULT = object()
+
 SYSTEM_PROMPT = """\
 You are a helpful assistant. You answer multiple-choice questions based on the information provided.
+"""
+
+NUMERIC_SYSTEM_PROMPT = """\
+You are a helpful assistant. You provide numeric probability \
+estimates based on the information provided.
 """
 
 # ACS_TASK_DESCRIPTION = """\
@@ -60,6 +70,16 @@ You are a helpful assistant. You answer multiple-choice questions based on the i
 
 ANTHROPIC_CHAT_PROMPT = """If had to select one of the options, my answer would be"""
 GEMMA_CHAT_PROMPT = """The provided information suggests that the answer is"""
+# NOTE: The leading `0.` is part of the prefill, so the model only generates
+# the digits after the decimal point. This caps the expressible probability
+# at the open interval [0, 1) — true posteriors at or near 1.0 cannot be
+# emitted exactly. If you need full [0, 1] coverage, override `chat_prompt`
+# with e.g. `"Answer (between 0 and 1): "` and let the model produce the
+# leading digit itself (note that this also widens the digit-scoring search
+# space and may degrade calibration for low-probability cases).
+
+NUMERIC_CHAT_PROMPT = """Answer (between 0 and 1): 0."""
+
 
 _valid_keys_cache = {}
 
@@ -245,12 +265,14 @@ class VarySuffix(PromptVariation):
         question: QAInterface = None,
         custom_prompt_suffix: str = DEFAULT_PROMPT_STYLE["custom_prompt_suffix"],
         skip_question: bool = False,
+        with_answer_prefill: bool = True,
     ):
         description = "Vary the suffix, in particular the question."
         super().__init__(description, task)
         self.question = question if question else task.question
         self.custom_suffix = custom_prompt_suffix
         self.skip_question = skip_question
+        self.with_answer_prefill = with_answer_prefill
 
     def transform_row(
         self,
@@ -260,7 +282,10 @@ class VarySuffix(PromptVariation):
         if self.skip_question:
             suffix = f"\n{self.question.get_answer_prefix()}{self.custom_suffix if self.custom_suffix else ''}"
         else:
-            suffix = f"\n{self.question.get_question_prompt()}{self.custom_suffix if self.custom_suffix else ''}"
+            suffix = (
+                f"\n{self.question.get_question_prompt(with_answer_prefill=self.with_answer_prefill)}"
+                f"{self.custom_suffix if self.custom_suffix else ''}"
+            )
         row = pd.Series(
             {
                 **{index: val for index, val in row.items()},
@@ -313,7 +338,14 @@ BLOCK_MAPPING = {
     "custom_prompt_prefix": ["prefix"],
     "custom_prompt_suffix": ["suffix"],
     "question": ["suffix"],
-    "prompt_variation": ["prefix", "suffix", "order", "granularity", "connector", "format"],
+    "prompt_variation": [
+        "prefix",
+        "suffix",
+        "order",
+        "granularity",
+        "connector",
+        "format",
+    ],
     # map indivdiual prompt variations
     "task_description": ["prefix"],
     "granularity": ["granularity"],
@@ -321,6 +353,7 @@ BLOCK_MAPPING = {
     "format": ["format"],
     "order": ["order"],
     "skip_question": ["suffix"],
+    "with_answer_prefill": ["suffix"],
 }
 
 
@@ -339,11 +372,11 @@ def update_building_blocks_if_needed(current_config, task):
         last_config = _last_cache_config or {}
         for key, value in current_config.items():
             if key == "prompt_variation":  # is itself a dict
-                all_varkeys = set(value.keys()).union(last_config.get(key, {}).keys())
+                all_varkeys = set((value or {}).keys()).union((last_config.get(key) or {}).keys())
                 for varkey in all_varkeys:
-                    if value.get(varkey) != last_config.get(key, {}).get(varkey):
-                        prev = re.sub("\s+", " ", str(last_config.get(key, {}).get(varkey))).strip()
-                        curr = re.sub("\s+", " ", str(value.get(varkey))).strip()
+                    if (value or {}).get(varkey) != (last_config.get(key) or {}).get(varkey):
+                        prev = re.sub(r"\s+", " ", str((last_config.get(key) or {}).get(varkey))).strip()
+                        curr = re.sub(r"\s+", " ", str((value or {}).get(varkey))).strip()
                         logging.debug(f"{varkey}(last -> curr): {prev} -> {curr}")
                         changed_keys.append(varkey)
             else:
@@ -358,7 +391,10 @@ def update_building_blocks_if_needed(current_config, task):
     def _configure_variation(cls, default_kwargs):
         valid_keys = get_valid_keys(cls)
         # merge and overwrite defaults with variations
-        merged = {**default_kwargs, **(current_config.get("prompt_variation", {}) or {})}
+        merged = {
+            **default_kwargs,
+            **(current_config.get("prompt_variation", {}) or {}),
+        }
         # filter out keys not in class __init__
         filtered_kwargs = {k: v for k, v in merged.items() if k in valid_keys}
         return cls(task=task, **filtered_kwargs)
@@ -386,6 +422,9 @@ def update_building_blocks_if_needed(current_config, task):
                 {
                     "question": current_config["question"],
                     "custom_prompt_suffix": current_config["custom_prompt_suffix"],
+                    "with_answer_prefill": (current_config.get("prompt_variation") or {}).get(
+                        "with_answer_prefill", True
+                    ),
                 },
             )
         if "order" in affected_blocks:
@@ -409,7 +448,12 @@ def encode_row_prompt(
     custom_prompt_suffix: str = None,
     prompt_variation: dict | None = None,
 ) -> str:
-    """Encode a question regarding a given row."""
+    """Encode a question regarding a given row.
+
+    `with_answer_prefill` is forwarded to `question.get_question_prompt`. The
+    chat-template path passes `False` so the prefill is supplied as a separate
+    assistant turn rather than baked into the user message.
+    """
     global _building_blocks_cache, _last_cache_config
 
     # ensure only feature defined for the task are used
@@ -418,14 +462,26 @@ def encode_row_prompt(
 
     # current config
     curr_config = build_config_dict(
-        task, question, add_task_description, custom_prompt_prefix, custom_prompt_suffix, prompt_variation
+        task,
+        question,
+        add_task_description,
+        custom_prompt_prefix,
+        custom_prompt_suffix,
+        prompt_variation,
     )
 
     # if update cache is different
     update_building_blocks_if_needed(current_config=curr_config, task=task)
 
     # order of value map (granularity), connector and format should not be changed
-    for variation in ["prefix", "suffix", "order", "granularity", "connector", "format"]:
+    for variation in [
+        "prefix",
+        "suffix",
+        "order",
+        "granularity",
+        "connector",
+        "format",
+    ]:
         if variation in _building_blocks_cache.keys():
             row = _building_blocks_cache[variation](row)
     return "".join(row.values)
@@ -492,6 +548,7 @@ def encode_row_prompt_few_shot(
 
     prompt_var = prompt_variation.copy() or {}
     prompt_var.pop("example_order", 0)
+    prompt_var.pop("with_answer_prefill", 0)
 
     # Add `n` example rows with respective labels
     for i in range(n_shots):
@@ -543,43 +600,163 @@ def encode_row_prompt_few_shot(
     return prompt
 
 
+def tokenizer_supports_system_prompt(tokenizer: AutoTokenizer) -> bool:
+    """Check whether the tokenizer's chat template supports system messages.
+
+    Some models (e.g. Gemma) raise a TemplateError when a system role is used.
+    Other templates surface this with different exception types depending on
+    transformers / Jinja versions (e.g. `RuntimeError`, `KeyError`, or a
+    template-defined exception macro), so we treat any failure of the probe
+    as "system role not supported" rather than letting it propagate and
+    crash the benchmark.
+    """
+    test_conversation = [
+        {"role": "system", "content": "test"},
+        {"role": "user", "content": "test"},
+    ]
+    try:
+        tokenizer.apply_chat_template(test_conversation, tokenize=False)
+        return True
+    except (TemplateError, ValueError):
+        return False
+    except Exception:
+        # Defensive fallback for unexpected template-rendering failures —
+        # safer to skip the system prompt than to hard-fail the benchmark.
+        return False
+
+
+# CHECK!
+def resolve_chat_defaults(
+    numeric: bool,
+    system_prompt: str | None = None,
+    chat_prompt: str | None = None,
+) -> tuple[str, str]:
+    """Resolve default system_prompt / chat_prompt for chat-template prompting.
+
+    A `None` value means "use the default for this mode". To explicitly disable
+    a role downstream, override the resolved value with `None` after calling
+    this function (which is what `Benchmark.make_benchmark` does for tokenizers
+    that reject the system role).
+    """
+    if system_prompt is None:
+        system_prompt = NUMERIC_SYSTEM_PROMPT if numeric else SYSTEM_PROMPT
+    if chat_prompt is None:
+        chat_prompt = NUMERIC_CHAT_PROMPT if numeric else ANTHROPIC_CHAT_PROMPT
+    return system_prompt, chat_prompt
+
+
 def encode_row_prompt_chat(
     row: pd.Series,
     task: TaskMetadata,
     tokenizer: AutoTokenizer,
-    question: QAInterface = None,
-    **chat_template_kwargs,
+    system_prompt: str | None = _DEFAULT,  # type: ignore[assignment]
+    chat_prompt: str | None = _DEFAULT,  # type: ignore[assignment]
+    numeric: bool = False,
+    question: QAInterface | None = None,
+    custom_prompt_prefix: str | None = None,
+    prompt_variation: dict | None = None,
 ) -> str:
-    # TODO: implement two functions
-    # - one for gemma-like models that are not compatible with system prompts
-    # - and another for regular models compatible with system prompts
-    logging.warning("NOTE :: Untested feature!!")
+    """Encode a row prompt using the tokenizer's chat template.
+
+    Parameters
+    ----------
+    row : pd.Series
+        The row that the question will be about.
+    task : TaskMetadata
+        The task metadata object.
+    tokenizer : AutoTokenizer
+        The tokenizer whose chat template will be applied.
+    system_prompt : str | None, optional
+        System prompt text. If omitted, the mode-appropriate default selected
+        by `numeric` is used. Pass `None` explicitly to disable the system
+        role (e.g. for Gemma-style templates that reject it).
+    chat_prompt : str | None, optional
+        Assistant prefill text. If omitted, the mode-appropriate default
+        selected by `numeric` is used. Pass `None` explicitly to skip the
+        assistant prefill — note that this routes inference through
+        `add_generation_prompt=True` and breaks the last-token scoring
+        assumption used by `LLMClassifier`, so it is not appropriate for the
+        benchmark path.
+    numeric : bool, optional
+        Whether numeric risk prompting is being used. Selects which default
+        prompts are applied when `system_prompt` / `chat_prompt` are omitted.
+    question : QAInterface, optional
+        The question interface to use.
+    custom_prompt_prefix : str, optional
+        A custom prompt prefix to prepend.
+
+    Returns
+    -------
+    str
+        The fully formatted chat-template prompt.
+    """
+    if system_prompt is _DEFAULT:
+        system_prompt = NUMERIC_SYSTEM_PROMPT if numeric else SYSTEM_PROMPT
+    if chat_prompt is _DEFAULT:
+        chat_prompt = NUMERIC_CHAT_PROMPT if numeric else ANTHROPIC_CHAT_PROMPT
+
+    prompt_var = prompt_variation.copy() if prompt_variation is not None else {}
+
+    # Skip the answer prefill in the user message: the chat path supplies it
+    # as the assistant turn (`chat_prompt`). Including it in both turns would
+    # duplicate the string in the rendered prompt and silently degrade scoring.
+    user_content = encode_row_prompt(
+        row,
+        task,
+        question=question,
+        custom_prompt_prefix=custom_prompt_prefix,
+        prompt_variation={**prompt_var, "with_answer_prefill": False},
+    )
 
     return apply_chat_template(
         tokenizer,
-        (SYSTEM_PROMPT + encode_row_prompt(row, task, question=question)),
-        **chat_template_kwargs,
+        user_prompt=user_content,
+        system_prompt=system_prompt,
+        chat_prompt=chat_prompt,
     )
 
 
 def apply_chat_template(
     tokenizer: AutoTokenizer,
     user_prompt: str,
-    system_prompt: str = None,
-    chat_prompt: str = ANTHROPIC_CHAT_PROMPT,
+    system_prompt: str | None = None,
+    chat_prompt: str | None = None,
     **kwargs,
 ) -> str:
+    """Apply the tokenizer's chat template to assemble a single prompt string.
+
+    Notes
+    -----
+    `system_prompt` is treated as "include" iff it is not `None`. This means an
+    empty string `""` will inject an empty system message rather than be
+    treated as "no system role" — pass `None` (or omit the argument) to skip
+    the system role entirely.
+
+    `chat_prompt` is the assistant prefill. When provided, the returned prompt
+    is trimmed so it ends exactly with `chat_prompt`, preserving the
+    last-token scoring contract relied on by `LLMClassifier`. If the chat
+    template mutates or strips the prefill (so it cannot be located verbatim
+    in the rendered output), a `ValueError` is raised rather than silently
+    returning a corrupted prompt.
+
+    When `chat_prompt is None`, `add_generation_prompt=True` is used and the
+    model is left to generate freely; this is **not** appropriate for the
+    benchmark scoring path (the last token will be a template-emitted role
+    header, not the prefill).
+    """
     # Add system prompt
-    conversation = [{"role": "system", "content": system_prompt}] if system_prompt else []
+    conversation = [{"role": "system", "content": system_prompt}] if system_prompt is not None else []
 
     # Add user prompt
     conversation.append({"role": "user", "content": user_prompt})
 
-    # Using the Anthropic-style chat prompt
-    conversation.append({"role": "assistant", "content": chat_prompt})
-
-    # Default kwargs
-    kwargs.setdefault("add_generation_prompt", False)
+    if chat_prompt is not None:
+        # Using the Anthropic-style chat prompt
+        conversation.append({"role": "assistant", "content": chat_prompt})
+        kwargs.setdefault("add_generation_prompt", False)
+    else:
+        # No assistant prefill; let the model generate freely
+        kwargs.setdefault("add_generation_prompt", True)
 
     # Apply prompt template
     filled_prompt = tokenizer.apply_chat_template(
@@ -588,9 +765,22 @@ def apply_chat_template(
         **kwargs,
     )
 
-    # Make sure no special tokens follow the `CHAT_PROMPT`;
-    # > some models add a newline character and/or a <end_of_turn> token
-    filled_prompt = filled_prompt[: len(chat_prompt) + filled_prompt.find(chat_prompt)]
+    if chat_prompt is not None:
+        # Trim any special tokens that the template appended after the prefill
+        # (e.g. a trailing newline or `<end_of_turn>`) so the last token of the
+        # returned prompt is the last token of `chat_prompt` itself — this is
+        # what `LLMClassifier` assumes when it reads answer-token probabilities.
+        idx = filled_prompt.rfind(chat_prompt)
+        if idx == -1:
+            raise ValueError(
+                "Assistant prefill not found verbatim in the templated output; "
+                "the tokenizer's chat template likely transforms it (e.g. "
+                "stripping or escaping). Cannot safely trim trailing tokens — "
+                "pass a `chat_prompt` that survives templating, or run without "
+                "an assistant prefill."
+            )
+        filled_prompt = filled_prompt[: idx + len(chat_prompt)]
+
     return filled_prompt
 
 

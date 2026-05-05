@@ -39,8 +39,16 @@ class QAInterface(ABC):
         """Returns the answer label that follows the question (e.g. 'Answer:')."""
         raise NotImplementedError
 
-    def get_question_prompt(self) -> str:
-        """Returns a question and answer key."""
+    def get_question_prompt(self, with_answer_prefill: bool = True) -> str:
+        """Returns the question text.
+
+        `with_answer_prefill=True` (the default) bakes the answer prefill into
+        the returned string — required by the zero-shot / few-shot last-token
+        scoring path, which reads probabilities from the very next token after
+        the prefill. Set to `False` for chat-template prompting, where the
+        prefill is supplied separately as the assistant turn (otherwise the
+        same string ends up emitted twice and silently degrades scoring).
+        """
         raise NotImplementedError
 
     def get_answer_from_model_output(
@@ -98,21 +106,35 @@ class DirectNumericQA(QAInterface):
 
     def get_answer_prefix(self) -> str:
         if self.answer_probability:
-            return "Answer: 0."
+            return "Answer (between 0 and 1): 0."
         return "Answer: "
 
-    def get_question_prompt(self) -> str:
-        return f"Question: {self.text}\n{self.get_answer_prefix()}"
+    def get_question_prompt(self, with_answer_prefill: bool = True) -> str:
+        question_prompt = f"Question: {self.text}"
+        if with_answer_prefill:
+            question_prompt += "\n" + self.get_answer_prefix()
 
-    def _get_numeric_tokens(self, tokenizer_vocab: dict[str, int]) -> dict[str, int]:
+        return question_prompt
+
+    def _get_numeric_tokens(
+        self,
+        tokenizer_vocab: dict[str, int],
+        vocab_dim: int,
+    ) -> dict[str, int]:
         """Returns the indices of tokens that correspond to numbers.
 
         This can include digits ("0"-"9"), multi-digit tokens (e.g., "100"), and
         the decimal point (".").
-        """
-        numeric_tokens = {key: token_id for key, token_id in tokenizer_vocab.items() if key.isdigit()}
 
-        if "." in tokenizer_vocab:
+        Token ids are filtered to `< vocab_dim` (the model's logits axis); some
+        tokenizer families place added/special tokens beyond the base vocab,
+        and the caller indexes `last_token_probs` by these ids.
+        """
+        numeric_tokens = {
+            key: token_id for key, token_id in tokenizer_vocab.items() if key.isdigit() and token_id < vocab_dim
+        }
+
+        if "." in tokenizer_vocab and tokenizer_vocab["."] < vocab_dim:
             numeric_tokens["."] = tokenizer_vocab["."]
 
         return numeric_tokens
@@ -144,7 +166,10 @@ class DirectNumericQA(QAInterface):
         answer over multiple forward passes, but for now we'll just take the
         argmax on each forward pass.
         """
-        numeric_tokens_vocab = self._get_numeric_tokens(tokenizer_vocab)
+        numeric_tokens_vocab = self._get_numeric_tokens(
+            tokenizer_vocab,
+            vocab_dim=last_token_probs.shape[-1],
+        )
 
         if len(last_token_probs) < self.num_forward_passes:
             logging.info(f"Expected {self.num_forward_passes} forward passes, got {len(last_token_probs)}.")
@@ -290,13 +315,12 @@ class MultipleChoiceQA(QAInterface):
     def get_answer_prefix(self) -> str:
         return "Answer:"
 
-    def get_question_prompt(self) -> str:
+    def get_question_prompt(self, with_answer_prefill: bool = True) -> str:
         choice_str = "\n".join(f"{key}. {choice.text}." for key, choice in self.key_to_choice.items())
-
-        return f"""\
-Question: {self.text}
-{choice_str}
-{self.get_answer_prefix()}"""
+        prompt = f"Question: {self.text}\n{choice_str}"
+        if with_answer_prefill:
+            prompt += f"\n{self.get_answer_prefix()}"
+        return prompt
 
     def _decode_model_output_to_choice_distribution(
         self,
