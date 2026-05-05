@@ -131,15 +131,22 @@ class TransformersLLMClassifier(LLMClassifier):
         """
         # Count prompt tokens once (shared by both branches)
         if self.token_tracker is not None:
-            prompt_tokens = sum(
-                len(self._tokenizer.encode(p, add_special_tokens=False))
-                for p in prompts_batch
-            )
+            prompt_tokens = sum(len(self._tokenizer.encode(p, add_special_tokens=False)) for p in prompts_batch)
 
         if question.use_generated_text:
             try:
                 # try to apply chat
                 # Query model
+                system_prompt = (
+                    "Please respond with a single letter."
+                    if isinstance(question, MultipleChoiceQA)
+                    else (
+                        """Your response MUST end with your probability estimate in the following format:
+                        Probability: X%
+                        where X is a number between 0 and 100.
+                        """
+                    )
+                )
                 generated_text_batch = query_model_text_batch(
                     text_inputs=prompts_batch,
                     model=self.model,
@@ -150,6 +157,7 @@ class TransformersLLMClassifier(LLMClassifier):
                     ],  # TODO: get max nex tokens from task or question or model?
                     reasoning=self.inference_kwargs.get("reasoning"),
                     thinking_end_token_id=None,
+                    system_prompt=system_prompt,
                 )
 
                 risk_estimates_batch = [
