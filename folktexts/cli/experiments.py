@@ -1,5 +1,11 @@
 """General constants and helper classes to run the main experiments on htcondor."""
 
+# monkey patch for classad
+import collections
+import collections.abc
+
+collections.MutableMapping = collections.abc.MutableMapping
+
 import logging
 import sys
 from dataclasses import asdict, dataclass, field
