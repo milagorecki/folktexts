@@ -123,7 +123,7 @@ def make_llm_clf_experiment(
     executable_path: str,
     model_name: str,
     task: str,
-    results_dir: str,
+    results_dir: str | Path,
     models_dir: str,
     env_vars_str: str = "",
     **kwargs,

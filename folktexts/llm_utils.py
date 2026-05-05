@@ -172,7 +172,7 @@ def query_model_text_batch(
     reasoning: str = None,
     thinking_end_token_id: int = None,
     system_prompt: str = None,
-) -> list[str]:
+) -> list[dict[str, str]]:
     """Generate text completions for a batch of prompts.
 
     Uses the model's generate() method for autoregressive text generation,
@@ -199,7 +199,7 @@ def query_model_text_batch(
 
     Returns
     -------
-    generated_texts : list[str]
+    generated_texts : list[dict[str, str]]
         The generated text completions for each input prompt. Only the
         newly generated tokens are returned (not the input prompt).
     """
@@ -396,7 +396,7 @@ def get_model_folder_path(model_name: str, root_dir="/tmp") -> str:
     return (Path(root_dir) / folder_name).resolve().as_posix()
 
 
-def get_model_size_B(model_name: str, default: int = None) -> int:
+def get_model_size_B(model_name: str, default: int = None) -> float | int | None:
     """Get the model size from the model name, in Billions of parameters."""
     regex = re.search(r"((?P<times>\d+)[xX])?(?P<size>(\d\.)?\d+)[bB]", model_name)
     if regex:

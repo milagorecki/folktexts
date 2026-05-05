@@ -419,14 +419,13 @@ class WebAPILLMClassifier(LLMClassifier):
 
         # Get system prompt depending on Q&A type
         if isinstance(question, DirectNumericQA):
-            system_prompt = "Your response must start with a number representing the estimated probability."
-            # system_prompt = (
-            #     "You are a highly specialized assistant that always responds with a single number. "
-            #     "For every input, you must analyze the request and respond with only the relevant single number, "
-            #     "without any additional text, explanation, or symbols."
-            # )
+            system_prompt = """Your response MUST end with your probability estimate in the following format:
+                        Probability: X%
+                        where X is a number between 0 and 100.
+                        """
+            # system_prompt = "Your response must start with a number representing the estimated probability."
         elif isinstance(question, MultipleChoiceQA):
-            system_prompt = "Please respond with a single letter."
+            system_prompt = "Your response MUST be a single letter."
         else:
             raise ValueError(f"Unknown question type '{type(question)}'.")
 

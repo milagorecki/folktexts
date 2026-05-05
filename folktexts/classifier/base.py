@@ -136,7 +136,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         return self._task
 
     @property
-    def custom_prompt_prefix(self) -> str:
+    def custom_prompt_prefix(self) -> str | None:
         return self._custom_prompt_prefix
 
     @property
@@ -235,7 +235,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
     def predict(
         self,
         data: pd.DataFrame,
-        predictions_save_path: str | Path = None,
+        predictions_save_path: str | Path | None = None,
         labels: pd.Series | np.ndarray = None,
     ) -> np.ndarray | dict[str, np.ndarray]:
         """Returns binary predictions for the given data."""
@@ -249,7 +249,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
     def predict_proba(
         self,
         data: pd.DataFrame,
-        predictions_save_path: str | Path = None,
+        predictions_save_path: str | Path | None = None,
         labels: pd.Series | np.ndarray = None,
     ) -> np.ndarray:
         """Returns probability estimates for the given data.
@@ -280,20 +280,21 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
                 "`predictions_save_path` to save alongside predictions to disk. "
             )
 
-        # Check if `predictions_save_path` exists and load predictions if possible
-        logging.info(
-            f"Check if predictions_save_path '{predictions_save_path}' exists:{Path(predictions_save_path).exists()}"
-        )
-        if predictions_save_path is not None and Path(predictions_save_path).exists():
-            result = self._load_predictions_from_disk(predictions_save_path, data=data)
-            if result is not None:
-                logging.info(f"Loaded predictions from {predictions_save_path}.")
-                return self._make_predictions_multiclass(result)
-            else:
-                logging.error(
-                    f"Failed to load predictions from {predictions_save_path}. "
-                    f"Re-computing predictions and overwriting local file..."
-                )
+        if predictions_save_path is not None:
+            # Check if `predictions_save_path` exists and load predictions if possible
+            logging.info(
+                f"Check if predictions_save_path '{predictions_save_path}' exists:{Path(predictions_save_path).exists()}"
+            )
+            if Path(predictions_save_path).exists():
+                result = self._load_predictions_from_disk(predictions_save_path, data=data)
+                if result is not None:
+                    logging.info(f"Loaded predictions from {predictions_save_path}.")
+                    return self._make_predictions_multiclass(result)
+                else:
+                    logging.error(
+                        f"Failed to load predictions from {predictions_save_path}. "
+                        f"Re-computing predictions and overwriting local file..."
+                    )
 
         if not isinstance(data, pd.DataFrame):
             raise ValueError(f"`data` must be a pd.DataFrame, received {type(data)} instead.")
