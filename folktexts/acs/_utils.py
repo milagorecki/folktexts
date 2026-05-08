@@ -30,7 +30,7 @@ def parse_pums_code(
                     continue
 
                 code, description = m.group("code"), m.group("description")
-                file_cache[int(code)] = postprocess(description) if postprocess else description
+                file_cache[int(code)] = description  # raw; postprocess applied at lookup
 
         CACHE_PUMS_CODES[file] = file_cache
 
@@ -42,7 +42,8 @@ def parse_pums_code(
         logging.warning(f"Could not find code '{value}' in file '{file}'")
         return "N/A"
 
-    return file_cache[value]
+    raw = file_cache[value]
+    return postprocess(raw) if postprocess else raw
 
 
 def reset_cache():

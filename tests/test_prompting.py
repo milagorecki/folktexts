@@ -1,19 +1,133 @@
 """Tests for the prompt variation framework in folktexts/prompting.py."""
 from __future__ import annotations
 
+import re
+
 import pytest
 from folktexts.prompting import (
     DEFAULT_PROMPT_STYLE,
+    FeatureItem,
+    PromptBuilder,
+    PromptConfig,
     VaryConnector,
     VaryFeatureOrder,
     VaryFormat,
+    VaryOrder,
     VaryPrefix,
     VarySuffix,
+    VarySystemPrompt,
     VaryValueMap,
     encode_row_prompt,
     encode_row_prompt_few_shot,
     reset_building_block_cache,
 )
+
+
+def _make_items(task, row) -> list[FeatureItem]:
+    """Create FeatureItems from a task and row (pre-VaryValueMap)."""
+    return [
+        FeatureItem(col=col, label=task.cols_to_text[col].short_description, raw_value=row[col])
+        for col in task.features
+        if col in row.index
+    ]
+
+
+class TestVaryValueMap:
+
+    def test_original_returns_strings(self, acs_income_task, acs_row):
+        items = _make_items(acs_income_task, acs_row)
+        result = VaryValueMap(cols_to_text=acs_income_task.cols_to_text)(items)
+        for item in result:
+            assert isinstance(item.text_value, str), (
+                f"Expected str for col={item.col!r}, got {type(item.text_value)}"
+            )
+
+    def test_original_age_exact(self, acs_income_task, acs_row):
+        items = _make_items(acs_income_task, acs_row)
+        result = VaryValueMap(cols_to_text=acs_income_task.cols_to_text)(items)
+        agep = next(i for i in result if i.col == "AGEP")
+        assert "years old" in agep.text_value
+        assert "-" not in agep.text_value.split("years")[0]
+
+    def test_original_wkhp_exact(self, acs_income_task, acs_row):
+        items = _make_items(acs_income_task, acs_row)
+        result = VaryValueMap(cols_to_text=acs_income_task.cols_to_text)(items)
+        wkhp = next(i for i in result if i.col == "WKHP")
+        assert "hours" in wkhp.text_value
+        assert "-" not in wkhp.text_value.split("hours")[0]
+
+    def test_low_returns_strings(self, acs_income_task, acs_row):
+        from folktexts.acs.acs_columns_alt import simplified_value_maps
+        items = _make_items(acs_income_task, acs_row)
+        vm = VaryValueMap.with_low_granularity(acs_income_task.cols_to_text, simplified_value_maps)
+        result = vm(items)
+        for item in result:
+            assert isinstance(item.text_value, str), (
+                f"Expected str for col={item.col!r} with low granularity, got {type(item.text_value)}"
+            )
+
+    def test_low_age_is_range(self, acs_income_task, acs_row):
+        from folktexts.acs.acs_columns_alt import simplified_value_maps
+        items = _make_items(acs_income_task, acs_row)
+        vm = VaryValueMap.with_low_granularity(acs_income_task.cols_to_text, simplified_value_maps)
+        result = vm(items)
+        agep = next(i for i in result if i.col == "AGEP")
+        assert "years old" in agep.text_value
+        age_part = agep.text_value.split("years")[0].strip()
+        is_range = "-" in age_part
+        is_edge = age_part.startswith("Less than") or age_part.endswith("or more")
+        assert is_range or is_edge, f"Expected age range, got {agep.text_value!r}"
+
+    def test_low_wkhp_is_range(self, acs_income_task, acs_row):
+        from folktexts.acs.acs_columns_alt import simplified_value_maps
+        items = _make_items(acs_income_task, acs_row)
+        vm = VaryValueMap.with_low_granularity(acs_income_task.cols_to_text, simplified_value_maps)
+        result = vm(items)
+        wkhp = next(i for i in result if i.col == "WKHP")
+        is_range = "-" in wkhp.text_value.split("hours")[0]
+        is_edge = wkhp.text_value.startswith("more than") or wkhp.text_value.startswith("N/A")
+        assert is_range or is_edge, f"Expected hours range, got {wkhp.text_value!r}"
+
+    def test_with_low_granularity_does_not_mutate_task(self, acs_income_task, acs_row):
+        from folktexts.acs.acs_columns_alt import simplified_value_maps
+        original_map = acs_income_task.cols_to_text["AGEP"]._value_map
+        VaryValueMap.with_low_granularity(acs_income_task.cols_to_text, simplified_value_maps)
+        assert acs_income_task.cols_to_text["AGEP"]._value_map is original_map
+
+
+class TestVaryOrder:
+
+    def test_reversed(self, acs_income_task, acs_row):
+        features = acs_income_task.features
+        reversed_order = list(reversed(features))
+        items = _make_items(acs_income_task, acs_row)
+        result = VaryOrder(order=reversed_order)(items)
+        assert [i.col for i in result] == reversed_order
+
+    def test_none_leaves_order_unchanged(self, acs_income_task, acs_row):
+        items = _make_items(acs_income_task, acs_row)
+        result = VaryOrder(order=None)(items)
+        assert [i.col for i in result] == [i.col for i in items]
+
+    def test_alias(self):
+        assert VaryFeatureOrder is VaryOrder
+
+
+class TestVaryConnector:
+
+    @pytest.mark.parametrize("connector,expected_sep", [
+        ("is", " is "),
+        ("=",  " = "),
+        (":",  ": "),
+    ])
+    def test_connector(self, acs_income_task, acs_row, connector, expected_sep):
+        items = _make_items(acs_income_task, acs_row)
+        items = VaryValueMap(cols_to_text=acs_income_task.cols_to_text)(items)
+        result = VaryConnector(connector=connector)(items)
+        for item in result:
+            assert expected_sep in item.connected, (
+                f"connector={connector!r}: separator {expected_sep!r} not found in {item.connected!r}"
+            )
 
 
 class TestVaryFormat:
@@ -25,127 +139,103 @@ class TestVaryFormat:
         ("textbullet", "- The ", ".\n"),
     ])
     def test_format(self, acs_income_task, acs_row, fmt, expected_start, expected_end):
-        # VaryFormat must be applied after VaryValueMap -> VaryConnector (per source warning)
-        row = VaryValueMap(task=acs_income_task, granularity="original")(acs_row.copy())
-        row = VaryConnector(task=acs_income_task, connector="is")(row)
-        vf = VaryFormat(task=acs_income_task, format=fmt)
-        result = vf(row)
-        print(result)
-        for col in acs_income_task.features:
-            val = result[col]
-            if expected_start:
-                assert val.startswith(expected_start), (
-                    f"format={fmt!r}: expected start {expected_start!r}, got {val!r}"
-                )
-            assert val.endswith(expected_end), (
-                f"format={fmt!r}: expected end {expected_end!r}, got {val!r}"
+        items = _make_items(acs_income_task, acs_row)
+        items = VaryValueMap(cols_to_text=acs_income_task.cols_to_text)(items)
+        items = VaryConnector(connector="is")(items)
+        result = VaryFormat(format=fmt)(items)
+        assert isinstance(result, str)
+        if expected_start:
+            assert result.startswith(expected_start), (
+                f"format={fmt!r}: expected start {expected_start!r}, got beginning {result[:20]!r}"
             )
+        assert result.endswith(expected_end), (
+            f"format={fmt!r}: expected end {expected_end!r}, got end {result[-20:]!r}"
+        )
+
+    def test_invalid_format_raises(self):
+        with pytest.raises(ValueError):
+            VaryFormat(format="invalid_format")
 
 
-class TestVaryConnector:
+class TestVarySystemPrompt:
 
-    @pytest.mark.parametrize("connector,expected_sep", [
-        ("is",  " is "),
-        ("=",   " = "),
-        (":",   ": "),
-    ])
-    def test_connector(self, acs_income_task, acs_row, connector, expected_sep):
-        # VaryConnector must be applied after VaryValueMap (per source warning)
-        row = VaryValueMap(task=acs_income_task, granularity="original")(acs_row.copy())
-        vc = VaryConnector(task=acs_income_task, connector=connector)
-        result = vc(row)
-        print(result)
-        for col in acs_income_task.features:
-            assert expected_sep in result[col], (
-                f"connector={connector!r}: separator {expected_sep!r} not found in {result[col]!r}"
-            )
+    def test_returns_system_prompt_string(self):
+        sp = "You are a helpful assistant."
+        vsp = VarySystemPrompt(system_prompt=sp)
+        assert vsp() == sp
 
-
-class TestVaryValueMap:
-
-    def test_original_returns_strings(self, acs_income_task, acs_row):
-        result = VaryValueMap(task=acs_income_task, granularity="original")(acs_row.copy())
-        print(result)
-        for col in acs_income_task.features:
-            assert isinstance(result[col], str), (
-                f"Expected str for col={col!r}, got {type(result[col])}"
-            )
-
-    def test_original_age_exact(self, acs_income_task, acs_row):
-        result = VaryValueMap(task=acs_income_task, granularity="original")(acs_row.copy())
-        assert "years old" in result["AGEP"]
-        # exact age: no dash (not a range)
-        assert "-" not in result["AGEP"].split("years")[0]
-
-    def test_original_wkhp_exact(self, acs_income_task, acs_row):
-        result = VaryValueMap(task=acs_income_task, granularity="original")(acs_row.copy())
-        assert "hours" in result["WKHP"]
-        assert "-" not in result["WKHP"].split("hours")[0]
-
-    def test_low_returns_strings(self, acs_income_task, acs_row):
-        result = VaryValueMap(task=acs_income_task, granularity="low")(acs_row.copy())
-        print(result)
-        for col in acs_income_task.features:
-            assert isinstance(result[col], str), (
-                f"Expected str for col={col!r} with low granularity, got {type(result[col])}"
-            )
-
-    def test_low_age_is_range(self, acs_income_task, acs_row):
-        result = VaryValueMap(task=acs_income_task, granularity="low")(acs_row.copy())
-        # e.g. "30-39 years old" or "Less than 18 years old" or "90 or more years old"
-        assert "years old" in result["AGEP"]
-        age_part = result["AGEP"].split("years")[0].strip()
-        is_range = "-" in age_part
-        is_edge = age_part.startswith("Less than") or age_part.endswith("or more")
-        assert is_range or is_edge, f"Expected age range, got {result['AGEP']!r}"
-
-    def test_low_wkhp_is_range(self, acs_income_task, acs_row):
-        result = VaryValueMap(task=acs_income_task, granularity="low")(acs_row.copy())
-        # e.g. "30-39 hours" or "more than 60 hours" or N/A
-        wkhp = result["WKHP"]
-        is_range = "-" in wkhp.split("hours")[0]
-        is_edge = wkhp.startswith("more than") or wkhp.startswith("N/A")
-        assert is_range or is_edge, f"Expected hours range, got {wkhp!r}"
-
-
-class TestVaryFeatureOrder:
-
-    def test_reversed(self, acs_income_task, acs_row):
-        features = acs_income_task.features
-        reversed_order = list(reversed(features))
-        result = VaryFeatureOrder(task=acs_income_task, order=reversed_order)(acs_row.copy())
-        feature_set = set(features)
-        result_features = [c for c in result.index if c in feature_set]
-        assert result_features == reversed_order
-
-    def test_none_leaves_row_unchanged(self, acs_income_task, acs_row):
-        result = VaryFeatureOrder(task=acs_income_task, order=None)(acs_row.copy())
-        assert list(result.index) == list(acs_row.index)
+    def test_in_prompt_config(self, acs_income_task):
+        sp = "System instruction."
+        config = PromptConfig.default(acs_income_task)
+        assert config.system_prompt is None
+        config_with_sp = PromptConfig(
+            prefix=config.prefix,
+            value_map=config.value_map,
+            order=config.order,
+            connector=config.connector,
+            format=config.format,
+            suffix=config.suffix,
+            system_prompt=VarySystemPrompt(system_prompt=sp),
+        )
+        assert config_with_sp.system_prompt() == sp
 
 
 class TestVaryPrefix:
 
-    def test_adds_prefix_key(self, acs_income_task, acs_row):
-        vp = VaryPrefix(task=acs_income_task, add_task_description=True, task_description="Desc.\n")
-        result = vp(acs_row.copy())
-        assert "_PREFIX" in result.index
-
-    def test_contains_task_description(self, acs_income_task, acs_row):
+    def test_contains_task_description(self, acs_income_task):
         desc = "Custom task description.\n"
-        vp = VaryPrefix(task=acs_income_task, add_task_description=True, task_description=desc)
-        result = vp(acs_row.copy())
-        assert desc in result["_PREFIX"]
+        vp = VaryPrefix(task_description=desc, add_task_description=True)
+        result = vp()
+        assert desc in result
+
+    def test_no_task_description(self, acs_income_task):
+        vp = VaryPrefix(task_description="Some desc.\n", add_task_description=False)
+        result = vp()
+        assert "Information:" in result
+        assert "Some desc." not in result
+
+    def test_custom_prefix_appended(self, acs_income_task):
+        vp = VaryPrefix(task_description="Desc.\n", add_task_description=True, custom_prefix="Extra context.")
+        result = vp()
+        assert "Extra context." in result
+        assert "Desc." in result
 
 
 class TestVarySuffix:
 
-    def test_adds_suffix_key(self, acs_income_task, acs_row):
-        result = VarySuffix(task=acs_income_task)(acs_row.copy())
-        assert "_SUFFIX" in result.index
+    def test_contains_question_text(self, acs_income_task):
+        vs = VarySuffix(question=acs_income_task.question, show_question=True)
+        result = vs()
+        assert acs_income_task.question.get_question_prompt() in result
 
-    def test_contains_question_text(self, acs_income_task, acs_row):
-        result = VarySuffix(task=acs_income_task)(acs_row.copy())
-        assert acs_income_task.question.get_question_prompt() in result["_SUFFIX"]
+    def test_show_question_false_uses_answer_prefix(self, acs_income_task):
+        vs = VarySuffix(question=acs_income_task.question, show_question=False)
+        result = vs()
+        assert acs_income_task.question.get_answer_prefix() in result
+        assert acs_income_task.question.get_question_prompt() not in result
+
+    def test_show_label(self, acs_income_task):
+        vs = VarySuffix(question=acs_income_task.question, show_question=False, show_label=True, label="A")
+        result = vs()
+        assert " A" in result
+
+
+class TestPromptBuilder:
+
+    def test_build_returns_nonempty_string(self, acs_income_task, acs_row):
+        config = PromptConfig.default(acs_income_task)
+        prompt = PromptBuilder(acs_income_task).build(acs_row, config)
+        assert isinstance(prompt, str) and len(prompt) > 0
+
+    def test_build_contains_question(self, acs_income_task, acs_row):
+        config = PromptConfig.default(acs_income_task)
+        prompt = PromptBuilder(acs_income_task).build(acs_row, config)
+        assert acs_income_task.question.get_question_prompt() in prompt
+
+    def test_build_contains_task_description(self, acs_income_task, acs_row):
+        config = PromptConfig.default(acs_income_task)
+        prompt = PromptBuilder(acs_income_task).build(acs_row, config)
+        assert "survey" in prompt.lower()
 
 
 class TestEncodeRowPrompt:
@@ -155,6 +245,7 @@ class TestEncodeRowPrompt:
 
     def test_returns_nonempty_string(self, acs_income_task, acs_row):
         prompt = encode_row_prompt(acs_row, task=acs_income_task)
+        print(f"\n--- default ---\n{prompt}")
         assert isinstance(prompt, str) and len(prompt) > 0
 
     def test_contains_question(self, acs_income_task, acs_row):
@@ -174,14 +265,66 @@ class TestEncodeRowPrompt:
             acs_row, task=acs_income_task,
             prompt_variation={**DEFAULT_PROMPT_STYLE, "format": "comma"},
         )
+        print(f"\n--- bullet ---\n{prompt_bullet}")
+        print(f"\n--- comma ---\n{prompt_comma}")
         assert prompt_bullet != prompt_comma
 
-    def test_reset_cache_still_produces_valid_prompt(self, acs_income_task, acs_row):
+    def test_reset_cache_is_noop(self, acs_income_task, acs_row):
         encode_row_prompt(acs_row, task=acs_income_task)
         reset_building_block_cache()
         prompt = encode_row_prompt(acs_row, task=acs_income_task)
-        print(prompt)
         assert isinstance(prompt, str) and len(prompt) > 0
+
+    @pytest.mark.parametrize("connector", ["is", "=", ":"])
+    def test_connector_variation(self, acs_income_task, acs_row, connector):
+        prompt = encode_row_prompt(
+            acs_row, task=acs_income_task,
+            prompt_variation={**DEFAULT_PROMPT_STYLE, "connector": connector},
+        )
+        print(f"\n--- connector={connector!r} ---\n{prompt}")
+        assert isinstance(prompt, str) and len(prompt) > 0
+
+    def test_low_granularity_variation(self, acs_income_task, acs_row):
+        prompt_orig = encode_row_prompt(
+            acs_row, task=acs_income_task,
+            prompt_variation={**DEFAULT_PROMPT_STYLE, "granularity": "original"},
+        )
+        prompt_low = encode_row_prompt(
+            acs_row, task=acs_income_task,
+            prompt_variation={**DEFAULT_PROMPT_STYLE, "granularity": "low"},
+        )
+        print(f"\n--- granularity=original ---\n{prompt_orig}")
+        print(f"\n--- granularity=low ---\n{prompt_low}")
+        assert isinstance(prompt_low, str) and len(prompt_low) > 0
+        assert prompt_orig != prompt_low
+
+    def test_order_variation(self, acs_income_task, acs_row):
+        features = acs_income_task.features
+        reversed_order = list(reversed(features))
+        prompt_default = encode_row_prompt(acs_row, task=acs_income_task)
+        prompt_reversed = encode_row_prompt(
+            acs_row, task=acs_income_task,
+            prompt_variation={**DEFAULT_PROMPT_STYLE, "order": reversed_order},
+        )
+        print(f"\n--- order=default ---\n{prompt_default}")
+        print(f"\n--- order=reversed ---\n{prompt_reversed}")
+        assert prompt_default != prompt_reversed
+
+    def test_custom_prompt_prefix(self, acs_income_task, acs_row):
+        prompt = encode_row_prompt(
+            acs_row, task=acs_income_task,
+            custom_prompt_prefix="Extra context here.",
+        )
+        print(f"\n--- custom_prompt_prefix ---\n{prompt}")
+        assert "Extra context here." in prompt
+
+    def test_custom_prompt_suffix(self, acs_income_task, acs_row):
+        prompt = encode_row_prompt(
+            acs_row, task=acs_income_task,
+            custom_prompt_suffix=" [end]",
+        )
+        print(f"\n--- custom_prompt_suffix ---\n{prompt}")
+        assert prompt.endswith(" [end]")
 
 
 class TestEncodeRowPromptFewShot:
@@ -189,20 +332,22 @@ class TestEncodeRowPromptFewShot:
     def setup_method(self):
         reset_building_block_cache()
 
-    def test_returns_string(self, acs_income_task, acs_income_dataset, acs_row):
+    @pytest.mark.parametrize("composition", ["random", "balanced"])
+    def test_returns_string(self, acs_income_task, acs_income_dataset, acs_row, composition):
         prompt = encode_row_prompt_few_shot(
             acs_row,
             task=acs_income_task,
             dataset=acs_income_dataset,
-            n_shots=1,
+            n_shots=2,
             reuse_examples=True,
+            compose_few_shot_examples=composition,
         )
+        print(f"\n--- few-shot (2 shots, composition={composition!r}) ---\n{prompt}")
         assert isinstance(prompt, str) and len(prompt) > 0
 
     def test_balanced_examples_contain_both_labels(
         self, acs_income_task, acs_income_dataset, acs_row
     ):
-        """With compose_few_shot_examples='balanced', each label should appear equally."""
         n_shots = 2
         prompt = encode_row_prompt_few_shot(
             acs_row,
@@ -212,22 +357,15 @@ class TestEncodeRowPromptFewShot:
             reuse_examples=True,
             compose_few_shot_examples="balanced",
         )
-        print(prompt)
+        print(f"\n--- few-shot balanced ---\n{prompt}")
         answer_prefix = acs_income_task.question.get_answer_prefix()
-        # Extract the answer key after each "Answer:" in the few-shot examples
-        # (skip the final unanswered one at the end)
-        import re
         answers = re.findall(rf"{re.escape(answer_prefix)}\s*(\w+)", prompt)
-        print("Extracted few-shot answers:", answers)
         assert len(answers) == n_shots, f"Expected {n_shots} answers, got {answers}"
-        unique_answers = set(answers)
-        assert len(unique_answers) == 2, (
-            f"Expected both labels in balanced examples, got {unique_answers}"
+        assert len(set(answers)) == 2, (
+            f"Expected both labels in balanced examples, got {set(answers)}"
         )
 
     def test_question_appears_once_at_end(self, acs_income_task, acs_income_dataset, acs_row):
-        """The question prompt should only appear at the end for the target row.
-        Few-shot examples use only the answer key as suffix, not the full question."""
         prompt = encode_row_prompt_few_shot(
             acs_row,
             task=acs_income_task,
@@ -237,4 +375,4 @@ class TestEncodeRowPromptFewShot:
         )
         question_text = acs_income_task.question.get_question_prompt()
         assert prompt.count(question_text) == 1
-        assert prompt.endswith(question_text) 
+        assert prompt.endswith(question_text)
