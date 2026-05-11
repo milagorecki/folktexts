@@ -79,7 +79,9 @@ class ACSDataset(Dataset):
             Extra key-word arguments to be passed to the Dataset constructor.
         """
         # Create "folktables" sub-folder under the given cache dir
-        cache_dir = Path(cache_dir or DEFAULT_DATA_DIR).expanduser().resolve() / "folktables"
+        cache_dir = (
+            Path(cache_dir or DEFAULT_DATA_DIR).expanduser().resolve() / "folktables"
+        )
         if not cache_dir.exists():
             logging.warning(f"Creating cache directory '{cache_dir}' for ACS data.")
             cache_dir.mkdir(exist_ok=True, parents=False)
@@ -97,7 +99,9 @@ class ACSDataset(Dataset):
         )
 
         # Get full ACS dataset
-        full_acs_data = data_source.get_data(states=state_list, download=True, random_seed=seed)
+        full_acs_data = data_source.get_data(
+            states=state_list, download=True, random_seed=seed
+        )
 
         # Parse data for this task
         parsed_data = cls._parse_task_data(full_acs_data, task_obj)
@@ -120,8 +124,10 @@ class ACSDataset(Dataset):
         self._data = self._parse_task_data(self._full_acs_data, new_task)
 
         # Re-make train/test/val split
-        self._train_indices, self._test_indices, self._val_indices = self._make_train_test_val_split(
-            self._data, self.test_size, self.val_size, self._rng
+        self._train_indices, self._test_indices, self._val_indices = (
+            self._make_train_test_val_split(
+                self._data, self.test_size, self.val_size, self._rng
+            )
         )
 
         # Check if sub-sampling is necessary (it's applied only to train/test/val indices)
@@ -131,7 +137,9 @@ class ACSDataset(Dataset):
         self._task = new_task
 
     @classmethod
-    def _parse_task_data(cls, full_df: pd.DataFrame, task: ACSTaskMetadata) -> pd.DataFrame:
+    def _parse_task_data(
+        cls, full_df: pd.DataFrame, task: ACSTaskMetadata
+    ) -> pd.DataFrame:
         """Parse a DataFrame for compatibility with the given task object.
 
         Parameters
@@ -154,7 +162,13 @@ class ACSDataset(Dataset):
             parsed_df = full_df
 
         # Threshold the target column if necessary
-        if task.target is not None and task.target_threshold is not None and task.get_target() not in parsed_df.columns:
-            parsed_df[task.get_target()] = task.target_threshold.apply_to_column_data(parsed_df[task.target])
+        if (
+            task.target is not None
+            and task.target_threshold is not None
+            and task.get_target() not in parsed_df.columns
+        ):
+            parsed_df[task.get_target()] = task.target_threshold.apply_to_column_data(
+                parsed_df[task.target]
+            )
 
         return parsed_df

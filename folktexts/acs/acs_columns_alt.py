@@ -171,7 +171,10 @@ def transform_pobp(x):
         **{i: 2 for i in [17, 18, 19, 20, 26, 27, 29, 31, 38, 39, 46, 55]},
         # IL, IN, IA, KS, MI, MN, MO, NE, ND, OH, SD, WI
         # South USA
-        **{i: 3 for i in [1, 5, 10, 11, 12, 13, 21, 22, 24, 28, 37, 40, 45, 47, 48, 51, 54]},
+        **{
+            i: 3
+            for i in [1, 5, 10, 11, 12, 13, 21, 22, 24, 28, 37, 40, 45, 47, 48, 51, 54]
+        },
         # AL, AR, DE, DC, FL, GA, KY, LA, MD, MS, NC, OK, SC, TN, TX, VA, WV
         # West USA
         **{i: 4 for i in [2, 4, 6, 8, 15, 16, 30, 32, 35, 41, 49, 53, 56]},
@@ -328,7 +331,9 @@ def transform_pobp_unsd(x):
             name = name[: name.find("(")].strip()
         if name in manually_matched_area_names.keys():
             name = manually_matched_area_names[name]
-        for idx, (region, area) in unsd_data[["Sub-region Name", "Country or Area"]].iterrows():
+        for idx, (region, area) in unsd_data[
+            ["Sub-region Name", "Country or Area"]
+        ].iterrows():
             if name == area:
                 return region
             if name in area:
@@ -336,7 +341,9 @@ def transform_pobp_unsd(x):
         if name in manually_matched_name_to_subregion.keys():
             return manually_matched_name_to_subregion[name]
         else:
-            logging.warning(f"Could not find code '{x}' or name '{name}' in file '{ACS_CODEBOOK_DIR / 'UNSD.csv'}'")
+            logging.warning(
+                f"Could not find code '{x}' or name '{name}' in file '{ACS_CODEBOOK_DIR / 'UNSD.csv'}'"
+            )
             return "N/A"
 
 

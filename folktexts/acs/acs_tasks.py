@@ -30,12 +30,18 @@ The survey was conducted among US residents in $year. \
 Please answer the question based on the information provided. \
 The data provided is enough to reach an approximate answer$suffix.
 """)
-ACS_TASK_DESCRIPTION_DEFAULTS = {"respondent": "a survey respondent", "year": 2018, "suffix": ""}
+ACS_TASK_DESCRIPTION_DEFAULTS = {
+    "respondent": "a survey respondent",
+    "year": 2018,
+    "suffix": "",
+}
 
 
 # Map of ACS column names to ColumnToText objects
 acs_columns_map: dict[str, object] = {
-    col_mapper.name: col_mapper for col_mapper in acs_columns.__dict__.values() if isinstance(col_mapper, _ColumnToText)
+    col_mapper.name: col_mapper
+    for col_mapper in acs_columns.__dict__.values()
+    if isinstance(col_mapper, _ColumnToText)
 }
 
 
@@ -61,11 +67,17 @@ class ACSTaskMetadata(TaskMetadata):
     ) -> ACSTaskMetadata:
         """Create an ACS task object from the given parameters."""
         # Resolve target column name
-        target_col_name = target_threshold.apply_to_column_name(target) if target_threshold is not None else target
+        target_col_name = (
+            target_threshold.apply_to_column_name(target)
+            if target_threshold is not None
+            else target
+        )
 
         # Get default Q&A interfaces for this task's target column
         if multiple_choice_qa is None:
-            multiple_choice_qa = acs_questions.acs_multiple_choice_qa_map.get(target_col_name)
+            multiple_choice_qa = acs_questions.acs_multiple_choice_qa_map.get(
+                target_col_name
+            )
         if direct_numeric_qa is None:
             direct_numeric_qa = acs_questions.acs_numeric_qa_map.get(target_col_name)
 
