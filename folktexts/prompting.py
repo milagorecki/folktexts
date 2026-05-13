@@ -217,54 +217,75 @@ class PromptConfig:
 
     @classmethod
     def default(cls, task: TaskMetadata) -> "PromptConfig":
-        return _build_config(task)
+        return cls.from_dict({}, task=task)
+
+    @classmethod
+    def from_dict(
+        cls,
+        pv: dict,
+        task: TaskMetadata,
+        question: QAInterface | None = None,
+        add_task_description: bool = True,
+        custom_prompt_prefix: str | None = None,
+        custom_prompt_suffix: str | None = None,
+        system_prompt: str | None = None,
+    ) -> "PromptConfig":
+        """Build a PromptConfig from a prompt-variation dict.
+
+        Parameters
+        ----------
+        pv : dict
+            Prompt style overrides; see ``DEFAULT_PROMPT_STYLE`` for supported keys.
+        task : TaskMetadata
+            The task that defines features, column mappings, and the question.
+        question : QAInterface, optional
+            Override the task's default question interface.
+        add_task_description : bool, optional
+            Whether to include the task description in the prefix.
+        custom_prompt_prefix : str, optional
+            Text to prepend before the task description. Overridden by
+            ``pv["custom_prompt_prefix"]`` if present.
+        custom_prompt_suffix : str, optional
+            Text to append after the row encoding. Overridden by
+            ``pv["custom_prompt_suffix"]`` if present.
+        system_prompt : str, optional
+            System prompt string; wrapped in ``VarySystemPrompt`` when provided.
+        """
+        question = question or task.question
+
+        granularity = pv.get("granularity", DEFAULT_PROMPT_STYLE["granularity"])
+        value_map = (
+            VaryValueMap.with_low_granularity(task.cols_to_text, _get_simplified_value_maps(task))
+            if granularity == "low"
+            else VaryValueMap(task.cols_to_text)
+        )
+
+        order_raw = pv.get("order", DEFAULT_PROMPT_STYLE["order"])
+        if isinstance(order_raw, str):
+            order_raw = [col.strip() for col in order_raw.split(",")]
+
+        return cls(
+            prefix=VaryPrefix(
+                task_description=_get_task_description(task, pv.get("task_description")),
+                add_task_description=add_task_description,
+                custom_prefix=pv.get("custom_prompt_prefix", custom_prompt_prefix),
+            ),
+            value_map=value_map,
+            order=VaryOrder(order=order_raw),
+            connector=VaryConnector(connector=pv.get("connector", DEFAULT_PROMPT_STYLE["connector"])),
+            format=VaryFormat(format=pv.get("format", DEFAULT_PROMPT_STYLE["format"])),
+            suffix=VarySuffix(
+                question=question,
+                show_question=pv.get("show_question", DEFAULT_PROMPT_STYLE["show_question"]),
+                custom_suffix=pv.get("custom_prompt_suffix", custom_prompt_suffix),
+            ),
+            system_prompt=VarySystemPrompt(system_prompt) if system_prompt is not None else None,
+        )
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _build_config(
-    task: TaskMetadata,
-    question: QAInterface | None = None,
-    add_task_description: bool = True,
-    custom_prompt_prefix: str | None = None,
-    custom_prompt_suffix: str | None = None,
-    prompt_variation: dict | None = None,
-    system_prompt: str | None = None,
-) -> PromptConfig:
-    pv = prompt_variation or {}
-    question = question or task.question
-
-    granularity = pv.get("granularity", DEFAULT_PROMPT_STYLE["granularity"])
-    value_map = (
-        VaryValueMap.with_low_granularity(task.cols_to_text, _get_simplified_value_maps(task))
-        if granularity == "low"
-        else VaryValueMap(task.cols_to_text)
-    )
-
-    order_raw = pv.get("order", DEFAULT_PROMPT_STYLE["order"])
-    if isinstance(order_raw, str):
-        order_raw = [col.strip() for col in order_raw.split(",")]
-
-    return PromptConfig(
-        prefix=VaryPrefix(
-            task_description=_get_task_description(task, pv.get("task_description")),
-            add_task_description=add_task_description,
-            custom_prefix=pv.get("custom_prompt_prefix", custom_prompt_prefix),
-        ),
-        value_map=value_map,
-        order=VaryOrder(order=order_raw),
-        connector=VaryConnector(connector=pv.get("connector", DEFAULT_PROMPT_STYLE["connector"])),
-        format=VaryFormat(format=pv.get("format", DEFAULT_PROMPT_STYLE["format"])),
-        suffix=VarySuffix(
-            question=question,
-            show_question=pv.get("show_question", DEFAULT_PROMPT_STYLE["show_question"]),
-            custom_suffix=pv.get("custom_prompt_suffix", custom_prompt_suffix),
-        ),
-        system_prompt=VarySystemPrompt(system_prompt) if system_prompt is not None else None,
-    )
 
 
 def _get_task_description(task: TaskMetadata, override: str | None = None) -> str:
@@ -448,13 +469,13 @@ def encode_row_prompt(
         The fully formatted prompt string.
     """
     row = row[task.features]
-    config = _build_config(
+    config = PromptConfig.from_dict(
+        pv=prompt_variation or {},
         task=task,
         question=question,
         add_task_description=add_task_description,
         custom_prompt_prefix=custom_prompt_prefix,
         custom_prompt_suffix=custom_prompt_suffix,
-        prompt_variation=prompt_variation,
     )
     return PromptBuilder(task).build(row, config)
 
@@ -539,12 +560,12 @@ def encode_row_prompt_few_shot(
         logging.debug(f"shot {i}: label={label}\tindex={y_examples.index[i]}")
         examples.append((X_examples.iloc[i], label))
 
-    config = _build_config(
+    config = PromptConfig.from_dict(
+        pv=pv,
         task=task,
         question=question,
         add_task_description=True,
         custom_prompt_prefix=custom_prompt_prefix,
-        prompt_variation=pv,
     )
     prompt = PromptBuilder(task).build_few_shot(
         row=row,
@@ -614,12 +635,12 @@ def encode_row_prompt_chat(
 
     # Suppress answer prefix in the user message; it's supplied as the
     # assistant prefill turn so it must not appear twice.
-    config = _build_config(
+    config = PromptConfig.from_dict(
+        pv=prompt_variation or {},
         task=task,
         question=question,
         custom_prompt_prefix=custom_prompt_prefix,
         custom_prompt_suffix=custom_prompt_suffix,
-        prompt_variation=prompt_variation,
         system_prompt=system_prompt,
     )
     return PromptBuilder(task).build_chat(row[task.features], config, tokenizer, chat_prompt=chat_prompt)
