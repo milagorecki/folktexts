@@ -1,4 +1,5 @@
 """Tests for the prompt variation framework in folktexts/prompting.py."""
+
 from __future__ import annotations
 
 import re
@@ -19,7 +20,6 @@ from folktexts.prompting import (
     VaryValueMap,
     encode_row_prompt,
     encode_row_prompt_few_shot,
-    reset_building_block_cache,
 )
 
 
@@ -33,14 +33,11 @@ def _make_items(task, row) -> list[FeatureItem]:
 
 
 class TestVaryValueMap:
-
     def test_original_returns_strings(self, acs_income_task, acs_row):
         items = _make_items(acs_income_task, acs_row)
         result = VaryValueMap(cols_to_text=acs_income_task.cols_to_text)(items)
         for item in result:
-            assert isinstance(item.text_value, str), (
-                f"Expected str for col={item.col!r}, got {type(item.text_value)}"
-            )
+            assert isinstance(item.text_value, str), f"Expected str for col={item.col!r}, got {type(item.text_value)}"
 
     def test_original_age_exact(self, acs_income_task, acs_row):
         items = _make_items(acs_income_task, acs_row)
@@ -58,6 +55,7 @@ class TestVaryValueMap:
 
     def test_low_returns_strings(self, acs_income_task, acs_row):
         from folktexts.acs.acs_columns_alt import simplified_value_maps
+
         items = _make_items(acs_income_task, acs_row)
         vm = VaryValueMap.with_low_granularity(acs_income_task.cols_to_text, simplified_value_maps)
         result = vm(items)
@@ -68,6 +66,7 @@ class TestVaryValueMap:
 
     def test_low_age_is_range(self, acs_income_task, acs_row):
         from folktexts.acs.acs_columns_alt import simplified_value_maps
+
         items = _make_items(acs_income_task, acs_row)
         vm = VaryValueMap.with_low_granularity(acs_income_task.cols_to_text, simplified_value_maps)
         result = vm(items)
@@ -80,6 +79,7 @@ class TestVaryValueMap:
 
     def test_low_wkhp_is_range(self, acs_income_task, acs_row):
         from folktexts.acs.acs_columns_alt import simplified_value_maps
+
         items = _make_items(acs_income_task, acs_row)
         vm = VaryValueMap.with_low_granularity(acs_income_task.cols_to_text, simplified_value_maps)
         result = vm(items)
@@ -90,13 +90,13 @@ class TestVaryValueMap:
 
     def test_with_low_granularity_does_not_mutate_task(self, acs_income_task, acs_row):
         from folktexts.acs.acs_columns_alt import simplified_value_maps
+
         original_map = acs_income_task.cols_to_text["AGEP"]._value_map
         VaryValueMap.with_low_granularity(acs_income_task.cols_to_text, simplified_value_maps)
         assert acs_income_task.cols_to_text["AGEP"]._value_map is original_map
 
 
 class TestVaryOrder:
-
     def test_reversed(self, acs_income_task, acs_row):
         features = acs_income_task.features
         reversed_order = list(reversed(features))
@@ -114,12 +114,14 @@ class TestVaryOrder:
 
 
 class TestVaryConnector:
-
-    @pytest.mark.parametrize("connector,expected_sep", [
-        ("is", " is "),
-        ("=",  " = "),
-        (":",  ": "),
-    ])
+    @pytest.mark.parametrize(
+        "connector,expected_sep",
+        [
+            ("is", " is "),
+            ("=", " = "),
+            (":", ": "),
+        ],
+    )
     def test_connector(self, acs_income_task, acs_row, connector, expected_sep):
         items = _make_items(acs_income_task, acs_row)
         items = VaryValueMap(cols_to_text=acs_income_task.cols_to_text)(items)
@@ -131,13 +133,15 @@ class TestVaryConnector:
 
 
 class TestVaryFormat:
-
-    @pytest.mark.parametrize("fmt,expected_start,expected_end", [
-        ("bullet",     "- ",     "\n"),
-        ("comma",      None,     ", "),
-        ("text",       "The ",   ". "),
-        ("textbullet", "- The ", ".\n"),
-    ])
+    @pytest.mark.parametrize(
+        "fmt,expected_start,expected_end",
+        [
+            ("bullet", "- ", "\n"),
+            ("comma", None, ", "),
+            ("text", "The ", ". "),
+            ("textbullet", "- The ", ".\n"),
+        ],
+    )
     def test_format(self, acs_income_task, acs_row, fmt, expected_start, expected_end):
         items = _make_items(acs_income_task, acs_row)
         items = VaryValueMap(cols_to_text=acs_income_task.cols_to_text)(items)
@@ -148,9 +152,7 @@ class TestVaryFormat:
             assert result.startswith(expected_start), (
                 f"format={fmt!r}: expected start {expected_start!r}, got beginning {result[:20]!r}"
             )
-        assert result.endswith(expected_end), (
-            f"format={fmt!r}: expected end {expected_end!r}, got end {result[-20:]!r}"
-        )
+        assert result.endswith(expected_end), f"format={fmt!r}: expected end {expected_end!r}, got end {result[-20:]!r}"
 
     def test_invalid_format_raises(self):
         with pytest.raises(ValueError):
@@ -158,7 +160,6 @@ class TestVaryFormat:
 
 
 class TestVarySystemPrompt:
-
     def test_returns_system_prompt_string(self):
         sp = "You are a helpful assistant."
         vsp = VarySystemPrompt(system_prompt=sp)
@@ -181,7 +182,6 @@ class TestVarySystemPrompt:
 
 
 class TestVaryPrefix:
-
     def test_contains_task_description(self, acs_income_task):
         desc = "Custom task description.\n"
         vp = VaryPrefix(task_description=desc, add_task_description=True)
@@ -202,7 +202,6 @@ class TestVaryPrefix:
 
 
 class TestVarySuffix:
-
     def test_contains_question_text(self, acs_income_task):
         vs = VarySuffix(question=acs_income_task.question, show_question=True)
         result = vs()
@@ -221,7 +220,6 @@ class TestVarySuffix:
 
 
 class TestPromptBuilder:
-
     def test_build_returns_nonempty_string(self, acs_income_task, acs_row):
         config = PromptConfig.default(acs_income_task)
         prompt = PromptBuilder(acs_income_task).build(acs_row, config)
@@ -239,10 +237,6 @@ class TestPromptBuilder:
 
 
 class TestEncodeRowPrompt:
-
-    def setup_method(self):
-        reset_building_block_cache()
-
     def test_returns_nonempty_string(self, acs_income_task, acs_row):
         prompt = encode_row_prompt(acs_row, task=acs_income_task)
         print(f"\n--- default ---\n{prompt}")
@@ -258,27 +252,24 @@ class TestEncodeRowPrompt:
 
     def test_different_formats_produce_different_prompts(self, acs_income_task, acs_row):
         prompt_bullet = encode_row_prompt(
-            acs_row, task=acs_income_task,
+            acs_row,
+            task=acs_income_task,
             prompt_variation={**DEFAULT_PROMPT_STYLE, "format": "bullet"},
         )
         prompt_comma = encode_row_prompt(
-            acs_row, task=acs_income_task,
+            acs_row,
+            task=acs_income_task,
             prompt_variation={**DEFAULT_PROMPT_STYLE, "format": "comma"},
         )
         print(f"\n--- bullet ---\n{prompt_bullet}")
         print(f"\n--- comma ---\n{prompt_comma}")
         assert prompt_bullet != prompt_comma
 
-    def test_reset_cache_is_noop(self, acs_income_task, acs_row):
-        encode_row_prompt(acs_row, task=acs_income_task)
-        reset_building_block_cache()
-        prompt = encode_row_prompt(acs_row, task=acs_income_task)
-        assert isinstance(prompt, str) and len(prompt) > 0
-
     @pytest.mark.parametrize("connector", ["is", "=", ":"])
     def test_connector_variation(self, acs_income_task, acs_row, connector):
         prompt = encode_row_prompt(
-            acs_row, task=acs_income_task,
+            acs_row,
+            task=acs_income_task,
             prompt_variation={**DEFAULT_PROMPT_STYLE, "connector": connector},
         )
         print(f"\n--- connector={connector!r} ---\n{prompt}")
@@ -286,11 +277,13 @@ class TestEncodeRowPrompt:
 
     def test_low_granularity_variation(self, acs_income_task, acs_row):
         prompt_orig = encode_row_prompt(
-            acs_row, task=acs_income_task,
+            acs_row,
+            task=acs_income_task,
             prompt_variation={**DEFAULT_PROMPT_STYLE, "granularity": "original"},
         )
         prompt_low = encode_row_prompt(
-            acs_row, task=acs_income_task,
+            acs_row,
+            task=acs_income_task,
             prompt_variation={**DEFAULT_PROMPT_STYLE, "granularity": "low"},
         )
         print(f"\n--- granularity=original ---\n{prompt_orig}")
@@ -303,7 +296,8 @@ class TestEncodeRowPrompt:
         reversed_order = list(reversed(features))
         prompt_default = encode_row_prompt(acs_row, task=acs_income_task)
         prompt_reversed = encode_row_prompt(
-            acs_row, task=acs_income_task,
+            acs_row,
+            task=acs_income_task,
             prompt_variation={**DEFAULT_PROMPT_STYLE, "order": reversed_order},
         )
         print(f"\n--- order=default ---\n{prompt_default}")
@@ -312,7 +306,8 @@ class TestEncodeRowPrompt:
 
     def test_custom_prompt_prefix(self, acs_income_task, acs_row):
         prompt = encode_row_prompt(
-            acs_row, task=acs_income_task,
+            acs_row,
+            task=acs_income_task,
             custom_prompt_prefix="Extra context here.",
         )
         print(f"\n--- custom_prompt_prefix ---\n{prompt}")
@@ -320,7 +315,8 @@ class TestEncodeRowPrompt:
 
     def test_custom_prompt_suffix(self, acs_income_task, acs_row):
         prompt = encode_row_prompt(
-            acs_row, task=acs_income_task,
+            acs_row,
+            task=acs_income_task,
             custom_prompt_suffix=" [end]",
         )
         print(f"\n--- custom_prompt_suffix ---\n{prompt}")
@@ -328,10 +324,6 @@ class TestEncodeRowPrompt:
 
 
 class TestEncodeRowPromptFewShot:
-
-    def setup_method(self):
-        reset_building_block_cache()
-
     @pytest.mark.parametrize("composition", ["random", "balanced"])
     def test_returns_string(self, acs_income_task, acs_income_dataset, acs_row, composition):
         prompt = encode_row_prompt_few_shot(
@@ -345,9 +337,7 @@ class TestEncodeRowPromptFewShot:
         print(f"\n--- few-shot (2 shots, composition={composition!r}) ---\n{prompt}")
         assert isinstance(prompt, str) and len(prompt) > 0
 
-    def test_balanced_examples_contain_both_labels(
-        self, acs_income_task, acs_income_dataset, acs_row
-    ):
+    def test_balanced_examples_contain_both_labels(self, acs_income_task, acs_income_dataset, acs_row):
         n_shots = 2
         prompt = encode_row_prompt_few_shot(
             acs_row,
@@ -361,9 +351,7 @@ class TestEncodeRowPromptFewShot:
         answer_prefix = acs_income_task.question.get_answer_prefix()
         answers = re.findall(rf"{re.escape(answer_prefix)}\s*(\w+)", prompt)
         assert len(answers) == n_shots, f"Expected {n_shots} answers, got {answers}"
-        assert len(set(answers)) == 2, (
-            f"Expected both labels in balanced examples, got {set(answers)}"
-        )
+        assert len(set(answers)) == 2, f"Expected both labels in balanced examples, got {set(answers)}"
 
     def test_question_appears_once_at_end(self, acs_income_task, acs_income_dataset, acs_row):
         prompt = encode_row_prompt_few_shot(

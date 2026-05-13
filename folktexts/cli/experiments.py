@@ -3,19 +3,19 @@
 # monkey patch for classad
 import collections
 import collections.abc
-
-collections.MutableMapping = collections.abc.MutableMapping
-
 import logging
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import ClassVar
 
-import classad
 import htcondor
 
 from folktexts._utils import hash_dict
+
+collections.MutableMapping = collections.abc.MutableMapping  # type: ignore[attr-defined]
+
+import classad  # noqa: E402
 
 # Cluster settings
 DEFAULT_JOB_BID = 25  # htcondor bid (min. is 15 apparently...)

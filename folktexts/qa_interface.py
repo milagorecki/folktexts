@@ -58,13 +58,21 @@ class QAInterface(ABC):
     ):
         if not self.use_generated_text:
             if last_token_probs is None:
-                raise ValueError("last_token_probs must be provided when use_generated_text is False")
+                raise ValueError(
+                    "last_token_probs must be provided when use_generated_text is False"
+                )
             if tokenizer_vocab is None:
-                raise ValueError("tokenizer_vocab must be provided when use_generated_text is False")
-            return self.get_answer_from_token_probs(last_token_probs=last_token_probs, tokenizer_vocab=tokenizer_vocab)
+                raise ValueError(
+                    "tokenizer_vocab must be provided when use_generated_text is False"
+                )
+            return self.get_answer_from_token_probs(
+                last_token_probs=last_token_probs, tokenizer_vocab=tokenizer_vocab
+            )
         else:
             if text is None:
-                raise ValueError("text must be provided when use_generated_text is True")
+                raise ValueError(
+                    "text must be provided when use_generated_text is True"
+                )
             # check conistency if using multiple text samples: assert(len(text) == self.use_generated_text)
             return self.get_answer_from_generated_text(text=text)
 
@@ -148,15 +156,38 @@ class DirectNumericQA(QAInterface):
     def get_question_prompt(self) -> str:
         return f"Question: {self.text}\n{self.get_answer_prefix()}"
 
-    def _get_numeric_tokens(self, tokenizer_vocab: dict[str, int]) -> dict[str, int]:
+    def _get_numeric_tokens(
+        self,
+        tokenizer_vocab: dict[str, int],
+        vocab_dim: int,
+    ) -> dict[str, int]:
         """Returns the indices of tokens that correspond to numbers.
 
         This can include digits ("0"-"9"), multi-digit tokens (e.g., "100"), and
         the decimal point (".").
-        """
-        numeric_tokens = {key: token_id for key, token_id in tokenizer_vocab.items() if key.isdigit()}
 
-        if "." in tokenizer_vocab:
+        Parameters
+        ----------
+        tokenizer_vocab : dict[str, int]
+            The tokenizer vocabulary mapping token strings to token IDs.
+        vocab_dim : int
+            Size of the model's logits axis. Token IDs >= vocab_dim are excluded
+            (some tokenizer families place added/special tokens beyond the base
+            vocab, and the caller indexes ``last_token_probs`` by these IDs).
+
+        Returns
+        -------
+        dict[str, int]
+            Mapping from numeric token string to token ID, filtered to
+            ``token_id < vocab_dim``.
+        """
+        numeric_tokens = {
+            key: token_id
+            for key, token_id in tokenizer_vocab.items()
+            if key.isdigit() and token_id < vocab_dim
+        }
+
+        if "." in tokenizer_vocab and tokenizer_vocab["."] < vocab_dim:
             numeric_tokens["."] = tokenizer_vocab["."]
 
         return numeric_tokens
@@ -188,16 +219,24 @@ class DirectNumericQA(QAInterface):
         answer over multiple forward passes, but for now we'll just take the
         argmax on each forward pass.
         """
-        numeric_tokens_vocab = self._get_numeric_tokens(tokenizer_vocab)
+        numeric_tokens_vocab = self._get_numeric_tokens(
+            tokenizer_vocab,
+            vocab_dim=last_token_probs.shape[-1],
+        )
 
         if len(last_token_probs) < self.num_forward_passes:
-            logging.info(f"Expected {self.num_forward_passes} forward passes, got {len(last_token_probs)}.")
+            logging.info(
+                f"Expected {self.num_forward_passes} forward passes, got "
+                f"{len(last_token_probs)}."
+            )
 
         answer_text = ""
         for ltp in last_token_probs:
             # Get the probability of each numeric token
             num_tokens_probs = {
-                num_token: ltp[token_id] if isinstance(ltp[token_id], float) else ltp[token_id].item()
+                num_token: ltp[token_id]
+                if isinstance(ltp[token_id], float)
+                else ltp[token_id].item()
                 for num_token, token_id in numeric_tokens_vocab.items()
             }
 
@@ -205,7 +244,9 @@ class DirectNumericQA(QAInterface):
             most_likely_numeric_token = max(num_tokens_probs, key=num_tokens_probs.get)
             answer_text += str(most_likely_numeric_token)
 
-            logging.debug(f"Total prob. assigned to numeric tokens: {sum(num_tokens_probs.values()):.2%}")
+            logging.debug(
+                f"Total prob. assigned to numeric tokens: {sum(num_tokens_probs.values()):.2%}"
+            )
 
         # Filter out any non-numeric characters
         match_ = re.match(r"[-+]?\d*\.\d+|\d+", answer_text)
@@ -241,7 +282,11 @@ class Choice:
 
     def get_numeric_value(self) -> float:
         """Returns the numeric value of the choice."""
-        return self.numeric_value if self.numeric_value is not None else float(self.data_value)
+        return (
+            self.numeric_value
+            if self.numeric_value is not None
+            else float(self.data_value)
+        )
 
 
 @dataclass(frozen=True, eq=True)  # NOTE: kw_only=True requires Python 3.10
@@ -250,13 +295,17 @@ class MultipleChoiceQA(QAInterface):
 
     num_forward_passes: int = 1  # NOTE: overrides superclass default
     choices: tuple[Choice] = dataclasses.field(default_factory=tuple)
-    _answer_keys_source: tuple[str] = dataclasses.field(default_factory=lambda: tuple(_ALPHABET))
+    _answer_keys_source: tuple[str] = dataclasses.field(
+        default_factory=lambda: tuple(_ALPHABET)
+    )
 
     def __post_init__(self):
         if not self.choices:
             raise ValueError("Choices must be provided.")
         if len(self.choices) > len(self._answer_keys_source):
-            raise ValueError("Number of choices must be less than or equal to the number of answer keys.")
+            raise ValueError(
+                "Number of choices must be less than or equal to the number of answer keys."
+            )
 
     def __hash__(self) -> int:
         return int(hash_dict(dataclasses.asdict(self)), 16)
@@ -282,7 +331,9 @@ class MultipleChoiceQA(QAInterface):
         )
 
     @classmethod
-    def create_answer_keys_permutations(cls, question: "MultipleChoiceQA") -> Iterator["MultipleChoiceQA"]:
+    def create_answer_keys_permutations(
+        cls, question: "MultipleChoiceQA"
+    ) -> Iterator["MultipleChoiceQA"]:
         """Yield questions with all permutations of answer keys.
 
         Parameters
@@ -336,12 +387,14 @@ class MultipleChoiceQA(QAInterface):
         return "Answer:"
 
     def get_question_prompt(self) -> str:
-        choice_str = "\n".join(f"{key}. {choice.text}." for key, choice in self.key_to_choice.items())
+        choice_str = "\n".join(
+            f"{key}. {choice.text}." for key, choice in self.key_to_choice.items()
+        )
 
-        return f"""\
-Question: {self.text}
-{choice_str}
-{self.get_answer_prefix() if not self.use_generated_text else ""}"""
+        prompt = f"Question: {self.text}\n{choice_str}"
+        if not self.use_generated_text:
+            prompt += f"\n{self.get_answer_prefix()}"
+        return prompt
 
     ## TODO: only when thinking is enabled -> store in question? or remove again somewhere else?
 
@@ -386,18 +439,23 @@ Question: {self.text}
             prf: {
                 choice: last_token_probs[choice_token_id].item()
                 for choice in self.choices
-                if (choice_token_id := _get_choice_token_id(choice, prefix=prf)) is not None
+                if (choice_token_id := _get_choice_token_id(choice, prefix=prf))
+                is not None
             }
             for prf in prefixes
         }
 
         # Choose the prefix with the highest probability density
-        best_prefix = max(answers_per_prefix, key=lambda prf: sum(answers_per_prefix[prf].values()))
+        best_prefix = max(
+            answers_per_prefix, key=lambda prf: sum(answers_per_prefix[prf].values())
+        )
         answers = answers_per_prefix[best_prefix]
 
         # Log prefix information in debug mode
         for prefix, choice_probs in answers_per_prefix.items():
-            logging.debug(f"prefix='{prefix}' has density {sum(choice_probs.values()):.2%}")
+            logging.debug(
+                f"prefix='{prefix}' has density {sum(choice_probs.values()):.2%}"
+            )
 
         # Normalize probabilities to sum to 1
         answers_sum_prob = sum(answers.values())
@@ -406,10 +464,19 @@ Question: {self.text}
         msg = f"Answers have {answers_sum_prob:.2%} probability assigned."
         if answers_sum_prob < ANSWER_PROB_THRESHOLD:
             id_to_tok = {v: k for k, v in tokenizer_vocab.items()}
-            argmax_token = id_to_tok[np.argmax(last_token_probs)]
+            argmax_id = int(np.argmax(last_token_probs))
+            argmax_token = id_to_tok.get(argmax_id, f"<id={argmax_id}>")
             logging.warning(msg + f" Argmax token: '{argmax_token}'.")
         else:
             logging.debug(msg)
+
+        # No mass on any choice token — happens when the top-K logprobs cap
+        # excludes all answer-letter variants (vLLM/WebAPI), or with extreme
+        # FP16 underflow on transformers. Fall back to uniform over the QA's
+        # declared choices: same effect as the model saying "I don't know."
+        if answers_sum_prob <= 0 or not answers:
+            n = len(self.choices)
+            return {choice: 1.0 / n for choice in self.choices}
 
         return {choice: prob / answers_sum_prob for choice, prob in answers.items()}
 
@@ -460,7 +527,9 @@ Question: {self.text}
             return answers[positive_choice]
 
         # Compute risk estimate by summing weighted choices
-        risk_estimate = sum(choice.get_numeric_value() * prob for choice, prob in answers.items())
+        risk_estimate = sum(
+            choice.get_numeric_value() * prob for choice, prob in answers.items()
+        )
 
         logging.debug(f"Risk estimate: {risk_estimate:.2f}")
         return risk_estimate
@@ -498,7 +567,9 @@ Question: {self.text}
             return choices[positive_choice]
 
         # Compute risk estimate by summing weighted choices
-        risk_estimate = sum(choice.get_numeric_value() * prob for choice, prob in choices.items())
+        risk_estimate = sum(
+            choice.get_numeric_value() * prob for choice, prob in choices.items()
+        )
 
         logging.debug(f"Risk estimate: {risk_estimate:.2f}")
         return risk_estimate
@@ -556,7 +627,9 @@ Question: {self.text}
         self,
         text: str,
     ) -> dict[Choice, float]:
-        logging.debug("Based on single text answer, so answer probabilities are either 0. or 1. when identifiable.")
+        logging.debug(
+            "Based on single text answer, so answer probabilities are either 0. or 1. when identifiable."
+        )
         answer_key = self._extract_answer_key_from_generated_text(text)
         if answer_key is None:
             p = 1.0 / len(self.choices)
@@ -579,12 +652,14 @@ Question: {self.text}
         counts = Counter(
             answer_key
             for output in text_samples
-            if (answer_key := self._extract_answer_key_from_generated_text(output)) is not None
+            if (answer_key := self._extract_answer_key_from_generated_text(output))
+            is not None
         )  # dict
 
         # Compute relative frequencies
         answer_dist = {
-            self.key_to_choice[answer_key]: count / num_model_outputs for answer_key, count in counts.items()
+            self.key_to_choice[answer_key]: count / num_model_outputs
+            for answer_key, count in counts.items()
         }
 
         # total prob

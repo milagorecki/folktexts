@@ -50,7 +50,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         threshold: float = 0.5,
         correct_order_bias: bool = True,
         seed: int = 42,
-        prompt_variation: dict = {},
+        prompt_variation: dict | None = None,
         **inference_kwargs,
     ):
         """Creates an LLMClassifier object.
@@ -94,7 +94,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
             default_encode_row_prompt,
             task=self.task,
             custom_prompt_prefix=self.custom_prompt_prefix,
-            prompt_variation=self.prompt_variation,
+            prompt_variation=self._prompt_variation,
         )
 
         self._threshold = threshold
@@ -119,7 +119,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
             model_name=self.model_name,
             task_hash=hash(self.task),
             custom_prompt_prefix=self.custom_prompt_prefix,
-            prompt_variation=hash_dict(self.prompt_variation),
+            prompt_variation=hash_dict(self.prompt_variation) if self.prompt_variation else None,
             correct_order_bias=self.correct_order_bias,
             threshold=self.threshold,
             encode_row_hash=hash_function(self.encode_row),
@@ -140,7 +140,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         return self._custom_prompt_prefix
 
     @property
-    def prompt_variation(self) -> dict:
+    def prompt_variation(self) -> dict | None:
         return self._prompt_variation
 
     @property
@@ -198,15 +198,43 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         """Converts positive class scores to multiclass scores."""
         return np.column_stack([1 - pos_class_scores, pos_class_scores])
 
-    def fit(self, X, y, *, false_pos_cost=1.0, false_neg_cost=1.0, threshold_obj="balanced_accuracy", **kwargs):
-        """Uses the provided data sample to fit the prediction threshold."""
+    def fit(
+        self,
+        X,
+        y,
+        *,
+        false_pos_cost=1.0,
+        false_neg_cost=1.0,
+        threshold_obj="balanced_accuracy",
+        **kwargs,
+    ):
+        """Uses the provided data sample to fit the prediction threshold.
+
+        Parameters
+        ----------
+        X : pd.DataFrame
+            Feature data to run inference on.
+        y : pd.Series
+            True binary labels for the data.
+        false_pos_cost : float, optional
+            Cost of a false positive; used to weight the threshold search.
+        false_neg_cost : float, optional
+            Cost of a false negative; used to weight the threshold search.
+        threshold_obj : str, optional
+            Metric to maximise when searching for the best threshold
+            (e.g. ``"balanced_accuracy"``).
+        """
 
         # Compute risk estimates for the data
         y_pred_scores = self._get_positive_class_scores(self.predict_proba(X, **kwargs))
 
         # Compute the best threshold for the given data
         self.threshold = compute_best_threshold(
-            y, y_pred_scores, false_pos_cost=false_pos_cost, false_neg_cost=false_neg_cost, maximize=threshold_obj
+            y,
+            y_pred_scores,
+            false_pos_cost=false_pos_cost,
+            false_neg_cost=false_neg_cost,
+            maximize=threshold_obj,
         )
         self._threshold_obj = threshold_obj  ## TODO: save in llm_clf._threshold_obj before calling fun
 
@@ -283,7 +311,8 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         if predictions_save_path is not None:
             # Check if `predictions_save_path` exists and load predictions if possible
             logging.info(
-                f"Check if predictions_save_path '{predictions_save_path}' exists:{Path(predictions_save_path).exists()}"
+                f"Check if predictions_save_path '{predictions_save_path}' exists:"
+                f"{Path(predictions_save_path).exists()}"
             )
             if Path(predictions_save_path).exists():
                 result = self._load_predictions_from_disk(predictions_save_path, data=data)
@@ -382,14 +411,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
             for q_idx, q in enumerate(questions):
                 # Encode batch data into natural text prompts
                 # TODO: potential improvement: encode outside loop with question placeholder, only replace placeholder
-                data_texts_batch = [
-                    self.encode_row(
-                        row,
-                        question=q,
-                        custom_prompt_prefix=self.custom_prompt_prefix,
-                    )
-                    for _, row in batch_data.iterrows()
-                ]
+                data_texts_batch = [self.encode_row(row, question=q) for _, row in batch_data.iterrows()]
 
                 # Query the model with the batch of data
                 risk_estimates_batch, responses_batch = self._query_prompt_risk_estimates_batch(

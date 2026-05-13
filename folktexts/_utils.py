@@ -23,7 +23,10 @@ def is_valid_number(num) -> bool:
 def safe_division(a: float, b: float, *, worst_result: float):
     """Try to divide the given arguments and return `worst_result` if unsuccessful."""
     if b == 0 or not is_valid_number(a) or not is_valid_number(b):
-        logging.debug(f"Using `worst_result={worst_result}` in place of the following division: {a} / {b}")
+        logging.debug(
+            f"Using `worst_result={worst_result}` in place of the following "
+            f"division: {a} / {b}"
+        )
         return worst_result
     else:
         return a / b
@@ -143,12 +146,14 @@ def is_bool(element: any) -> bool:
 
 
 class ParseDict(Action):
+    """argparse Action that parses 'key1=val1;key2=val2' strings into a dict."""
+
     def __call__(self, parser, namespace, values, option_string=None):
         setattr(namespace, self.dest, dict())
         # assume dict to be passed as 'key1=val1;key2=val2'
-        logging.debug("ParseDict received values:", values)
+        logging.debug(f"ParseDict received values: {values}")
         if len(values) > 1:
-            logging.error("ParseDict received more than one value:", values)
+            logging.error(f"ParseDict received more than one value: {values}")
         value_list = values[0].split(";")
         for pair in value_list:
             key, _, value = pair.partition("=")

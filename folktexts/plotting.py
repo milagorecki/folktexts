@@ -76,13 +76,22 @@ def render_evaluation_plots(
     # ### ### ### ###
     # Plot ROC curve
     # ### ### ### ###
-    disp = RocCurveDisplay.from_predictions(y_true=y_true, y_pred=y_pred_scores, plot_chance_level=True)
+    disp = RocCurveDisplay.from_predictions(
+        y_true=y_true, y_pred=y_pred_scores, plot_chance_level=True
+    )
     disp.figure_.suptitle("ROC Curve" + model_str)
 
     # Plot ROC point
     if "fpr" in eval_results and "tpr" in eval_results and "threshold" in eval_results:
         fpr, tpr = eval_results["fpr"], eval_results["tpr"]
-        plt.plot(fpr, tpr, "ro", markersize=5, lw=0, label=f"threshold={eval_results['threshold']:.2f}")
+        plt.plot(
+            fpr,
+            tpr,
+            "ro",
+            markersize=5,
+            lw=0,
+            label=f"threshold={eval_results['threshold']:.2f}",
+        )
         plt.legend()
 
     show_or_save(disp.figure_, "roc_curve")
@@ -90,7 +99,9 @@ def render_evaluation_plots(
     # ### ### ### ### ### ###
     # Plot calibration curve
     # ### ### ### ### ### ###
-    disp = CalibrationDisplay.from_predictions(y_true=y_true, y_prob=y_pred_scores, n_bins=5, strategy="quantile")
+    disp = CalibrationDisplay.from_predictions(
+        y_true=y_true, y_prob=y_pred_scores, n_bins=5, strategy="quantile"
+    )
     disp.figure_.suptitle("Calibration Curve" + model_str)
     show_or_save(disp.figure_, "calibration_curve")
 
@@ -107,14 +118,18 @@ def render_evaluation_plots(
     # Plot distribution of scores per label #
     # ### ### ### ### ### ### ### ### ### ###
     sns.kdeplot(
-        data=pd.DataFrame({"score": y_pred_scores, "label": y_true}).reset_index(drop=True),
+        data=pd.DataFrame({"score": y_pred_scores, "label": y_true}).reset_index(
+            drop=True
+        ),
         x="score",
         hue="label",
         multiple="fill",
     )
     plt.xlim(y_pred_scores.min(), y_pred_scores.max())
     plt.xlabel("Predicted Risk Score")
-    plt.gcf().suptitle("Score Distribution per Label" + (f" - {model_name}" if model_name else ""))
+    plt.gcf().suptitle(
+        "Score Distribution per Label" + (f" - {model_name}" if model_name else "")
+    )
     show_or_save(plt.gcf(), "score_distribution_per_label")
 
     return results
@@ -138,7 +153,9 @@ def render_fairness_plots(  # noqa: C901
         return {}
 
     # Plot fairness plots if sensitive attribute is provided
-    assert len(sensitive_attribute) == len(y_true) == len(y_pred_scores), "All arrays should have the same length."
+    assert len(sensitive_attribute) == len(y_true) == len(y_pred_scores), (
+        "All arrays should have the same length."
+    )
 
     # Initialize vars
     results = {}
@@ -189,7 +206,9 @@ def render_fairness_plots(  # noqa: C901
 
         # If the group is too small of a fraction, skip (curve will be too erratic)
         if len(group_indices) / len(sensitive_attribute) < group_size_threshold:
-            logging.info(f"Skipping group '{group_value_map(s_value)}' as it's too small.")
+            logging.info(
+                f"Skipping group '{group_value_map(s_value)}' as it's too small."
+            )
             continue
 
         # Plot group-specific ROC curve
@@ -243,7 +262,9 @@ def render_fairness_plots(  # noqa: C901
 
         # If the group is too small of a fraction, skip (curve will be too erratic)
         if len(group_indices) / len(sensitive_attribute) < group_size_threshold:
-            logging.info(f"Skipping group {group_value_map(s_value)} plot as it's too small.")
+            logging.info(
+                f"Skipping group {group_value_map(s_value)} plot as it's too small."
+            )
             continue
 
         # Plot global calibration curve

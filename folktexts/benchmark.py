@@ -50,9 +50,10 @@ class BenchmarkConfig:
     reuse_few_shot_examples : bool, optional
         Whether to reuse the same samples for few-shot prompting (or sample new
         ones every time), by default False.
-    balance_few_shot_examples : bool, optional
-        Whether to balance the samples for few-shot prompting with respect to
-        their labels, by default False.
+    compose_few_shot_examples : str | list, optional
+        How to select few-shot samples: ``"random"`` (default), ``"balanced"``
+        (equal draws per class), or a list of per-class counts such as
+        ``[3, 2]``.
     batch_size : int | None, optional
         The batch size to use for inference.
     context_size : int | None, optional
@@ -68,6 +69,9 @@ class BenchmarkConfig:
         `{"column_name": "value"}`.
     seed : int, optional
         Random seed -- to set for reproducibility.
+    prompt_variation : dict | None, optional
+        Dictionary of prompt style overrides (e.g. ``{"format": "bullet",
+        "connector": "is"}``). ``None`` means no variation is applied.
     """
 
     numeric_risk_prompting: bool = False
@@ -123,9 +127,15 @@ class BenchmarkConfig:
         cfg = dataclasses.asdict(self)
         if isinstance(cfg["compose_few_shot_examples"], list):
             cfg["compose_few_shot_examples"] = tuple(cfg["compose_few_shot_examples"])
-        cfg["feature_subset"] = tuple(cfg["feature_subset"]) if cfg["feature_subset"] else None
-        cfg["population_filter_hash"] = hash_dict(cfg["population_filter"]) if cfg["population_filter"] else None
-        cfg["prompt_variation"] = hash_dict(cfg["prompt_variation"]) if cfg["prompt_variation"] else None
+        cfg["feature_subset"] = (
+            tuple(cfg["feature_subset"]) if cfg["feature_subset"] else None
+        )
+        cfg["population_filter_hash"] = (
+            hash_dict(cfg["population_filter"]) if cfg["population_filter"] else None
+        )
+        cfg["prompt_variation"] = (
+            hash_dict(cfg["prompt_variation"]) if cfg["prompt_variation"] else None
+        )
         return int(hash_dict(cfg), 16)
 
 
@@ -190,8 +200,10 @@ class Benchmark:
 
         # Log initialization
         msg = (
-            f"\n** Benchmark initialization **\nModel: {self.model_name};\n"
-            f"Task: {self.task.name};\nHash: {hash(self)};\n"
+            f"\n** Benchmark initialization **\n"
+            f"Model: {self.model_name};\n"
+            f"Task: {self.task.name};\n"
+            f"Hash: {hash(self)};\n"
         )
         logging.info(msg)
 
@@ -263,7 +275,10 @@ class Benchmark:
         return self.results_dir / f"{self.dataset.name}.{data_split}_predictions.csv"
 
     def run(
-        self, results_root_dir: str | Path, fit_threshold: int | bool = 0, threshold_obj: str = "balanced_accuracy"
+        self,
+        results_root_dir: str | Path,
+        fit_threshold: int | bool = 0,
+        threshold_obj: str = "balanced_accuracy",
     ) -> float:
         """Run the calibration benchmark experiment.
 
@@ -292,7 +307,9 @@ class Benchmark:
 
         # Get sensitive attribute data if available
         s_test = None
-        logging.info(f"Sensitive attribute defined by task: {self.task.sensitive_attribute}")
+        logging.info(
+            f"Sensitive attribute defined by task: {self.task.sensitive_attribute}"
+        )
         if self.task.sensitive_attribute is not None:
             s_test = self.dataset.get_sensitive_attribute_data().loc[y_test.index]
 
@@ -303,7 +320,9 @@ class Benchmark:
             predictions_save_path=test_predictions_save_path,
             labels=y_test,  # used only to save alongside predictions in disk
         )
-        self._y_test_scores = self.llm_clf._get_positive_class_scores(self._y_test_scores)
+        self._y_test_scores = self.llm_clf._get_positive_class_scores(
+            self._y_test_scores
+        )
 
         # If requested, fit the threshold on a small portion of the train set
         if fit_threshold:
@@ -327,7 +346,9 @@ class Benchmark:
         # Evaluate test risk scores
         count_nan = np.isnan(self._y_test_scores).sum()
         if count_nan > 0:
-            logging.warning(f"Predicted scores contain NaN values, dropping {count_nan} indices.")
+            logging.warning(
+                f"Predicted scores contain NaN values, dropping {count_nan} indices."
+            )
             # Get indices of NaNs
             nan_indices = np.where(np.isnan(self._y_test_scores))[0]
             nan_mask = ~np.isnan(self._y_test_scores)
@@ -341,7 +362,9 @@ class Benchmark:
             self._results = evaluate_predictions(
                 y_true=y_test.to_numpy()[nan_mask],
                 y_pred_scores=self._y_test_scores[nan_mask],
-                sensitive_attribute=s_test.to_numpy()[nan_mask],  # .drop(index=nan_indices, axis=0),
+                sensitive_attribute=s_test.to_numpy()[
+                    nan_mask
+                ],  # .drop(index=nan_indices, axis=0),
                 threshold=self.llm_clf.threshold,
                 model_name=self.llm_clf.model_name,
             )
@@ -356,7 +379,11 @@ class Benchmark:
             )
 
         self._results["threshold_fitted_on"] = self.llm_clf._threshold_fitted_on
-        self._results["threshold_obj"] = self.llm_clf._threshold_obj if self.llm_clf._threshold_fitted_on > 0 else None
+        self._results["threshold_obj"] = (
+            self.llm_clf._threshold_obj
+            if self.llm_clf._threshold_fitted_on > 0
+            else None
+        )
         ## TODO: set to None by default, only change when fitting, then this check is no longer needed
 
         if self.task.sensitive_attribute is not None:
@@ -531,7 +558,9 @@ class Benchmark:
             use_text_output_for_qa=config.use_generated_text,
         )
 
-        acs_dataset = ACSDataset.make_from_task(task=acs_task, cache_dir=data_dir, **acs_dataset_configs)
+        acs_dataset = ACSDataset.make_from_task(
+            task=acs_task, cache_dir=data_dir, **acs_dataset_configs
+        )
 
         return cls.make_benchmark(
             task=acs_task,
@@ -598,7 +627,10 @@ class Benchmark:
         config = config.update(**kwargs)
 
         # Fetch Tableshift task and dataset
-        from .ts import TableshiftBRFSSDataset, TableshiftBRFSSTaskMetadata  # noqa: PLC0415
+        from .ts import (  # noqa: PLC0415
+            TableshiftBRFSSDataset,
+            TableshiftBRFSSTaskMetadata,
+        )
 
         tableshift_task = TableshiftBRFSSTaskMetadata.get_task(
             name=task_name,
@@ -681,7 +713,9 @@ class Benchmark:
             use_text_output_for_qa=config.use_generated_text,
         )
 
-        sipp_dataset = SIPPDataset.make_from_task(task=sipp_task, cache_dir=data_dir, **sipp_dataset_configs)
+        sipp_dataset = SIPPDataset.make_from_task(
+            task=sipp_task, cache_dir=data_dir, **sipp_dataset_configs
+        )
 
         return cls.make_benchmark(
             task=sipp_task,
@@ -738,7 +772,10 @@ class Benchmark:
         # Handle TaskMetadata object
         task = TaskMetadata.get_task(task) if isinstance(task, str) else task
 
-        if config.use_generated_text and config.use_generated_text != task.use_text_output_for_qa:
+        if (
+            config.use_generated_text
+            and config.use_generated_text != task.use_text_output_for_qa
+        ):
             task.use_text_output_for_qa = config.use_generated_text
             if config.numeric_risk_prompting:
                 raise NotImplementedError  # TODO
@@ -752,7 +789,9 @@ class Benchmark:
 
         # Check dataset is compatible with task
         if dataset.task is not task and dataset.task.name != task.name:
-            raise ValueError(f"Dataset task '{dataset.task.name}' does not match the provided task '{task.name}'.")
+            raise ValueError(
+                f"Dataset task '{dataset.task.name}' does not match the provided task '{task.name}'."
+            )
 
         if config.population_filter is not None:
             dataset = dataset.filter(config.population_filter)
@@ -774,7 +813,10 @@ class Benchmark:
         else:
             print("Using zero-shot prompting.")
             encode_row_function = partial(
-                encode_row_prompt, task=task, prompt_variation=config.prompt_variation or {}, **kwargs
+                encode_row_prompt,
+                task=task,
+                prompt_variation=config.prompt_variation or {},
+                **kwargs,
             )
 
         # Parse LLMClassifier parameters

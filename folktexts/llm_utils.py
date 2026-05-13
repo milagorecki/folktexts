@@ -44,7 +44,10 @@ def query_model_batch(
     model_device = next(model.parameters()).device
 
     # Tokenize
-    token_inputs = [tokenizer.encode(text, return_tensors="pt").flatten()[-context_size:] for text in text_inputs]
+    token_inputs = [
+        tokenizer.encode(text, return_tensors="pt").flatten()[-context_size:]
+        for text in text_inputs
+    ]
     idx_last_token = [tok_seq.shape[0] - 1 for tok_seq in token_inputs]
 
     # Pad
@@ -107,7 +110,9 @@ def query_model_batch_multiple_passes(
     allowed_tokens_filter = np.ones(len(tokenizer.vocab), dtype=bool)
     vocab_mismatch = False
     if digits_only:
-        allowed_token_ids = np.array([tok_id for token, tok_id in tokenizer.vocab.items() if token.isdecimal()])
+        allowed_token_ids = np.array(
+            [tok_id for token, tok_id in tokenizer.vocab.items() if token.isdecimal()]
+        )
 
         allowed_tokens_filter = np.zeros(len(tokenizer.vocab), dtype=bool)
         allowed_tokens_filter[allowed_token_ids] = True
@@ -133,7 +138,13 @@ def query_model_batch_multiple_passes(
             actual_vocab_size = current_probs.shape[1]
             allowed_tokens_filter = np.ones(actual_vocab_size, dtype=bool)
             if digits_only:
-                allowed_token_ids = np.array([tok_id for token, tok_id in tokenizer.vocab.items() if token.isdecimal()])
+                allowed_token_ids = np.array(
+                    [
+                        tok_id
+                        for token, tok_id in tokenizer.vocab.items()
+                        if token.isdecimal()
+                    ]
+                )
 
                 allowed_tokens_filter = np.zeros(current_probs.shape[1], dtype=bool)
                 allowed_tokens_filter[allowed_token_ids] = True
@@ -147,7 +158,9 @@ def query_model_batch_multiple_passes(
 
         # Add the highest likelihood token to each text in the batch
         next_tokens = [tokenizer.decode([np.argmax(probs)]) for probs in current_probs]
-        current_batch = [text + next_token for text, next_token in zip(current_batch, next_tokens)]
+        current_batch = [
+            text + next_token for text, next_token in zip(current_batch, next_tokens)
+        ]
 
         # Store the probabilities of the last token for each text in the batch
         last_token_probs.append(current_probs)
@@ -231,7 +244,10 @@ def query_model_text_batch(
 
     # Tokenize inputs
     cutoff = -context_size if context_size is not None else None
-    token_inputs = [tokenizer.encode(text, return_tensors="pt").flatten()[cutoff:] for text in text_inputs]
+    token_inputs = [
+        tokenizer.encode(text, return_tensors="pt").flatten()[cutoff:]
+        for text in text_inputs
+    ]
 
     # Track input lengths to extract only generated tokens later
     input_lengths = [len(tokens) for tokens in token_inputs]
@@ -275,34 +291,56 @@ def query_model_text_batch(
                 logging.warning(
                     "Could not identify </think> token ID. Thinking content will not be separated from response."
                 )
-                generated_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
+                generated_text = tokenizer.decode(
+                    generated_tokens, skip_special_tokens=True
+                )
                 generated_texts.append({"response": generated_text})
                 continue
             try:
                 # Find the </think> token from the end (in case there are multiple)
-                index = len(generated_tokens) - generated_tokens[::-1].index(thinking_end_token_id)
+                index = len(generated_tokens) - generated_tokens[::-1].index(
+                    thinking_end_token_id
+                )
                 # Only decode content after </think>
                 content_tokens = generated_tokens[index:]
                 thinking_tokens = generated_tokens[:index]
 
-                thinking_content = tokenizer.decode(thinking_tokens, skip_special_tokens=True).strip("\n")
-                content = tokenizer.decode(content_tokens, skip_special_tokens=True).strip("\n")
+                thinking_content = tokenizer.decode(
+                    thinking_tokens, skip_special_tokens=True
+                ).strip("\n")
+                content = tokenizer.decode(
+                    content_tokens, skip_special_tokens=True
+                ).strip("\n")
 
                 # Log all decoded tokens at debug level
                 logging.debug(f"=== Generated output {i + 1}/{len(outputs)} ===")
-                logging.debug(f"Thinking content ({len(thinking_content)} chars):\n{thinking_content}")
+                logging.debug(
+                    f"Thinking content ({len(thinking_content)} chars):\n{thinking_content}"
+                )
                 logging.debug(f"Response content ({len(content)} chars):\n{content}")
 
-                generated_texts.append({"reasoning": thinking_content, "response": content})
+                generated_texts.append(
+                    {"reasoning": thinking_content, "response": content}
+                )
             except ValueError:
                 # </think> token not found - decode entire output
-                logging.warning("</think> token not found in output. Using full generated text.")
-                generated_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
-                logging.debug(f"=== Generated output {i + 1}/{len(outputs)} (no thinking separation) ===")
-                logging.debug(f"Full content ({len(generated_text)} chars):\n{generated_text}")
+                logging.warning(
+                    "</think> token not found in output. Using full generated text."
+                )
+                generated_text = tokenizer.decode(
+                    generated_tokens, skip_special_tokens=True
+                )
+                logging.debug(
+                    f"=== Generated output {i + 1}/{len(outputs)} (no thinking separation) ==="
+                )
+                logging.debug(
+                    f"Full content ({len(generated_text)} chars):\n{generated_text}"
+                )
                 generated_texts.append({"response": generated_text})
         else:
-            generated_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
+            generated_text = tokenizer.decode(
+                generated_tokens, skip_special_tokens=True
+            )
             logging.debug(f"=== Generated output {i + 1}/{len(outputs)} ===")
             logging.debug(f"Content ({len(generated_text)} chars):\n{generated_text}")
             generated_texts.append({"response": generated_text})
@@ -353,7 +391,9 @@ def load_model_tokenizer(
     if padding_side is None:
         tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
     else:
-        tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, padding_side=padding_side)
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_name_or_path, padding_side=padding_side
+        )
 
     # Set default keyword arguments for loading the pretrained model
     model_kwargs = dict(
@@ -401,7 +441,9 @@ def get_model_size_B(model_name: str, default: int = None) -> float | int | None
     regex = re.search(r"((?P<times>\d+)[xX])?(?P<size>(\d\.)?\d+)[bB]", model_name)
     if regex:
         size = regex.group("size")
-        return (float(size) if "." in size else int(size)) * int(regex.group("times") or 1)
+        return (float(size) if "." in size else int(size)) * int(
+            regex.group("times") or 1
+        )
 
     if default is not None:
         return default
@@ -415,7 +457,9 @@ def get_thinking_end_token_id(tokenizer: AutoTokenizer) -> int | None:
     if len(think_id) == 1:
         return think_id[0]
     else:
-        logging.debug("Could not identify token id marking the end of thinking content.")
+        logging.debug(
+            "Could not identify token id marking the end of thinking content."
+        )
         return None
 
 
@@ -434,7 +478,9 @@ def get_thinking_kwargs(tokenizer: AutoTokenizer, enable: bool) -> dict:
             return {param: enable}
         except TypeError:
             continue
-    logging.warning("Tokenizer does not support any known parameter. Falling back to standard chat template.")
+    logging.warning(
+        "Tokenizer does not support any known parameter. Falling back to standard chat template."
+    )
     return {}
 
 
