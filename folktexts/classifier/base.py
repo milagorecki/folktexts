@@ -17,6 +17,7 @@ from tqdm.auto import tqdm
 
 from folktexts.dataset import Dataset
 from folktexts.evaluation import compute_best_threshold
+from folktexts.prompting import PromptConfig
 from folktexts.prompting import encode_row_prompt as default_encode_row_prompt
 from folktexts.qa_interface import DirectNumericQA, MultipleChoiceQA
 from folktexts.task import TaskMetadata
@@ -45,12 +46,11 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         self,
         model_name: str,
         task: TaskMetadata | str,
-        custom_prompt_prefix: str = None,
         encode_row: Callable[[pd.Series], str] = None,
         threshold: float = 0.5,
         correct_order_bias: bool = True,
         seed: int = 42,
-        prompt_variation: dict | None = None,
+        prompt_config: PromptConfig | None = None,
         **inference_kwargs,
     ):
         """Creates an LLMClassifier object.
@@ -61,9 +61,6 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
             The model name or ID.
         task : TaskMetadata | str
             The task metadata object or name of an already created task.
-        custom_prompt_prefix : str, optional
-            A custom prompt prefix to supply to the model before the encoded
-            row data, by default None.
         encode_row : Callable[[pd.Series], str], optional
             The function used to encode tabular rows into natural text. If not
             provided, will use the default encoding function for the task.
@@ -87,14 +84,13 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         # self.max_new_tokens # what is the models native max
 
         self._task = TaskMetadata.get_task(task) if isinstance(task, str) else task
-        self._custom_prompt_prefix = custom_prompt_prefix
-        self._prompt_variation = prompt_variation
+
+        self._prompt_config = prompt_config or PromptConfig.from_dict(pv={}, task=self.task)
 
         self._encode_row = encode_row or partial(
             default_encode_row_prompt,
             task=self.task,
-            custom_prompt_prefix=self.custom_prompt_prefix,
-            prompt_variation=self._prompt_variation,
+            prompt_config=self._prompt_config,
         )
 
         self._threshold = threshold
@@ -118,8 +114,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         hash_params = dict(
             model_name=self.model_name,
             task_hash=hash(self.task),
-            custom_prompt_prefix=self.custom_prompt_prefix,
-            prompt_variation=hash_dict(self.prompt_variation) if self.prompt_variation else None,
+            prompt_config_hash=hash(self.prompt_config),
             correct_order_bias=self.correct_order_bias,
             threshold=self.threshold,
             encode_row_hash=hash_function(self.encode_row),
@@ -136,12 +131,8 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         return self._task
 
     @property
-    def custom_prompt_prefix(self) -> str | None:
-        return self._custom_prompt_prefix
-
-    @property
-    def prompt_variation(self) -> dict | None:
-        return self._prompt_variation
+    def prompt_config(self) -> PromptConfig:
+        return self._prompt_config
 
     @property
     def encode_row(self) -> Callable[[pd.Series], str]:
@@ -379,8 +370,8 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         risk_scores = np.empty(len(df))
         risk_scores.fill(fill_value)  # fill with -1's
 
-        batch_size = self._inference_kwargs["batch_size"]
-        context_size = self._inference_kwargs["context_size"]
+        batch_size = self._inference_kwargs["batch_size"] or DEFAULT_BATCH_SIZE
+        context_size = self._inference_kwargs["context_size"] or DEFAULT_CONTEXT_SIZE
         num_batches = math.ceil(len(df) / batch_size)
 
         # Get questions to ask
@@ -483,7 +474,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
                     logging.debug(msg)
 
             # Save intermediate results
-            path = save_intermed.get("path")
+            path = Path(save_intermed["path"]) if save_intermed.get("path") is not None else None
 
             if batch_idx % 10 == 0 and path is not None:
                 # add _batch + suffix to path
@@ -506,7 +497,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
 
     def _save_intermediate_results(
         self,
-        path: str | Path,
+        path: Path,
         risk_scores: np.ndarray,
         labels: pd.Series | np.ndarray,
         responses: list = None,

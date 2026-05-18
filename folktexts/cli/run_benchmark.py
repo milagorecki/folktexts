@@ -139,6 +139,17 @@ def setup_arg_parser() -> ArgumentParser:
         required=False,
     )
 
+    parser.add_argument(
+        "--example-order",
+        type=str,
+        help=(
+            "[str] Comma-separated permutation of few-shot example indices, e.g. '2,0,1'. "
+            "Only used when --few-shot is set."
+        ),
+        required=False,
+        default=None,
+    )
+
     # Optionally, receive a list of features to use (subset of original list)
     parser.add_argument(
         "--use-feature-subset",
@@ -245,20 +256,25 @@ def main():
         else:
             model, tokenizer = load_model_tokenizer(args.model)
 
-    example_composition = args.compose_few_shot_examples
-    if "," in example_composition:
-        example_composition = [int(count) for count in example_composition.split(",")]
+    # Build FewShotConfig if few-shot prompting is requested
+    from folktexts.benchmark import BenchmarkConfig
+    from folktexts.prompting import FewShotConfig
+
+    few_shot_config = None
+    if args.few_shot:
+        few_shot_config = FewShotConfig(
+            n_shots=args.few_shot,
+            compose=args.compose_few_shot_examples,
+            reuse_examples=args.reuse_few_shot_examples,
+            example_order=args.example_order,
+        )
 
     # Fill Benchmark config
-    from folktexts.benchmark import BenchmarkConfig
-
     config = BenchmarkConfig(
-        few_shot=args.few_shot,
+        few_shot_config=few_shot_config,
         use_generated_text=args.use_generated_text,
         numeric_risk_prompting=args.numeric_risk_prompting,
         reasoning=args.reasoning,
-        reuse_few_shot_examples=args.reuse_few_shot_examples,
-        compose_few_shot_examples=example_composition,
         batch_size=args.batch_size,
         context_size=args.context_size,
         correct_order_bias=not args.dont_correct_order_bias,

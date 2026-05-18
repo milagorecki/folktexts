@@ -27,7 +27,6 @@ class TransformersLLMClassifier(LLMClassifier):
         model: AutoModelForCausalLM,
         tokenizer: AutoTokenizer,
         task: TaskMetadata | str,
-        custom_prompt_prefix: str = None,
         encode_row: Callable[[pd.Series], str] = None,
         threshold: float = 0.5,
         correct_order_bias: bool = True,
@@ -45,9 +44,6 @@ class TransformersLLMClassifier(LLMClassifier):
             The tokenizer used to train the model.
         task : TaskMetadata | str
             The task metadata object or name of an already created task.
-        custom_prompt_prefix : str, optional
-            A custom prompt prefix to supply to the model before the encoded
-            row data, by default None.
         encode_row : Callable[[pd.Series], str], optional
             The function used to encode tabular rows into natural text. If not
             provided, will use the default encoding function for the task.
@@ -78,7 +74,6 @@ class TransformersLLMClassifier(LLMClassifier):
         super().__init__(
             model_name=model_name,
             task=task,
-            custom_prompt_prefix=custom_prompt_prefix,
             encode_row=encode_row,
             correct_order_bias=correct_order_bias,
             threshold=threshold,

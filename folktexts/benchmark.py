@@ -18,7 +18,7 @@ from .classifier import LLMClassifier, TransformersLLMClassifier, WebAPILLMClass
 from .dataset import Dataset
 from .evaluation import evaluate_predictions
 from .plotting import render_evaluation_plots, render_fairness_plots
-from .prompting import encode_row_prompt, encode_row_prompt_few_shot
+from .prompting import FewShotConfig, PromptConfig, encode_row_prompt, encode_row_prompt_few_shot
 from .sipp import SIPPDataset, SIPPTaskMetadata
 from .task import TaskMetadata
 
@@ -44,16 +44,9 @@ class BenchmarkConfig:
         models; a float in (0, 1] (fraction of max_new_tokens) or a positive
         integer string for Claude (literal budget_tokens, min 1024). Ignored
         for non-reasoning models. Default is None.
-    few_shot : int | None, optional
-        Whether to use few-shot prompting with a given number of examples, by
-        default None.
-    reuse_few_shot_examples : bool, optional
-        Whether to reuse the same samples for few-shot prompting (or sample new
-        ones every time), by default False.
-    compose_few_shot_examples : str | list, optional
-        How to select few-shot samples: ``"random"`` (default), ``"balanced"``
-        (equal draws per class), or a list of per-class counts such as
-        ``[3, 2]``.
+    few_shot_config : FewShotConfig | None, optional
+        Few-shot prompting configuration (number of shots, composition, example
+        order, reuse). ``None`` means zero-shot prompting.
     batch_size : int | None, optional
         The batch size to use for inference.
     context_size : int | None, optional
@@ -77,9 +70,7 @@ class BenchmarkConfig:
     numeric_risk_prompting: bool = False
     use_generated_text: bool = False
     reasoning: str | None = None
-    few_shot: int | None = None
-    reuse_few_shot_examples: bool = False
-    compose_few_shot_examples: str = "random"
+    few_shot_config: FewShotConfig | None = None
     batch_size: int | None = None
     context_size: int | None = None
     correct_order_bias: bool = True
@@ -114,6 +105,8 @@ class BenchmarkConfig:
         """Load the configuration from disk."""
         obj = load_json(path)
         if isinstance(obj, dict):
+            if isinstance(obj.get("few_shot_config"), dict):
+                obj["few_shot_config"] = FewShotConfig(**obj["few_shot_config"])
             return cls(**obj)
         else:
             raise ValueError(f"Invalid configuration file '{path}'.")
@@ -125,17 +118,10 @@ class BenchmarkConfig:
     def __hash__(self) -> int:
         """Generates a unique hash for the configuration."""
         cfg = dataclasses.asdict(self)
-        if isinstance(cfg["compose_few_shot_examples"], list):
-            cfg["compose_few_shot_examples"] = tuple(cfg["compose_few_shot_examples"])
-        cfg["feature_subset"] = (
-            tuple(cfg["feature_subset"]) if cfg["feature_subset"] else None
-        )
-        cfg["population_filter_hash"] = (
-            hash_dict(cfg["population_filter"]) if cfg["population_filter"] else None
-        )
-        cfg["prompt_variation"] = (
-            hash_dict(cfg["prompt_variation"]) if cfg["prompt_variation"] else None
-        )
+        cfg["feature_subset"] = tuple(cfg["feature_subset"]) if cfg["feature_subset"] else None
+        cfg["population_filter_hash"] = hash_dict(cfg["population_filter"]) if cfg["population_filter"] else None
+        cfg["prompt_variation"] = hash_dict(cfg["prompt_variation"]) if cfg["prompt_variation"] else None
+        cfg["few_shot_config"] = hash(self.few_shot_config) if self.few_shot_config else None
         return int(hash_dict(cfg), 16)
 
 
@@ -194,7 +180,7 @@ class Benchmark:
         self.config = config
 
         self._y_test_scores: Optional[np.ndarray] = None
-        self._results_root_dir: Optional[Path] = DEFAULT_ROOT_RESULTS_DIR
+        self._results_root_dir: Path = DEFAULT_ROOT_RESULTS_DIR
         self._results: Optional[dict] = None
         self._plots: Optional[dict] = None
 
@@ -224,13 +210,6 @@ class Benchmark:
 
     @property
     def results(self):
-        # Add benchmark configs to the results
-        self._results["config"] = self.configs_dict
-        self._results["benchmark_hash"] = hash(self)
-        self._results["results_dir"] = self.results_dir.as_posix()
-        self._results["results_root_dir"] = self.results_root_dir.as_posix()
-        self._results["current_time"] = get_current_timestamp()
-
         return self._results
 
     @property
@@ -279,7 +258,7 @@ class Benchmark:
         results_root_dir: str | Path,
         fit_threshold: int | bool = 0,
         threshold_obj: str = "balanced_accuracy",
-    ) -> float:
+    ) -> dict:
         """Run the calibration benchmark experiment.
 
         Parameters
@@ -292,8 +271,8 @@ class Benchmark:
 
         Returns
         -------
-        float
-            The benchmark metric value. By default this is the ECE score.
+        dict
+            Dictionary of evaluation results.
         """
         if self._results is not None:
             logging.warning("Benchmark was already run. Overriding previous results.")
@@ -307,9 +286,7 @@ class Benchmark:
 
         # Get sensitive attribute data if available
         s_test = None
-        logging.info(
-            f"Sensitive attribute defined by task: {self.task.sensitive_attribute}"
-        )
+        logging.info(f"Sensitive attribute defined by task: {self.task.sensitive_attribute}")
         if self.task.sensitive_attribute is not None:
             s_test = self.dataset.get_sensitive_attribute_data().loc[y_test.index]
 
@@ -320,9 +297,7 @@ class Benchmark:
             predictions_save_path=test_predictions_save_path,
             labels=y_test,  # used only to save alongside predictions in disk
         )
-        self._y_test_scores = self.llm_clf._get_positive_class_scores(
-            self._y_test_scores
-        )
+        self._y_test_scores = self.llm_clf._get_positive_class_scores(self._y_test_scores)
 
         # If requested, fit the threshold on a small portion of the train set
         if fit_threshold:
@@ -346,25 +321,22 @@ class Benchmark:
         # Evaluate test risk scores
         count_nan = np.isnan(self._y_test_scores).sum()
         if count_nan > 0:
-            logging.warning(
-                f"Predicted scores contain NaN values, dropping {count_nan} indices."
-            )
+            logging.warning(f"Predicted scores contain NaN values, dropping {count_nan} indices.")
             # Get indices of NaNs
             nan_indices = np.where(np.isnan(self._y_test_scores))[0]
             nan_mask = ~np.isnan(self._y_test_scores)
             logging.info(f"Indices with NaN values: {nan_indices}")
+            s_arr = s_test.to_numpy() if s_test is not None else None
             logging.info(
                 "New shapes:"
                 f"y_test: {y_test.to_numpy().shape} -> {y_test.to_numpy()[nan_mask].shape},"
                 f"y_test_scores: {self._y_test_scores.shape} -> {self._y_test_scores[nan_mask].shape},"
-                f"s_test: {s_test.to_numpy().shape} -> {s_test.to_numpy()[nan_mask].shape}"
+                + ("\ns_test: " + f"{s_arr.shape} -> {s_arr[nan_mask].shape}" if s_arr is not None else "")
             )
             self._results = evaluate_predictions(
                 y_true=y_test.to_numpy()[nan_mask],
                 y_pred_scores=self._y_test_scores[nan_mask],
-                sensitive_attribute=s_test.to_numpy()[
-                    nan_mask
-                ],  # .drop(index=nan_indices, axis=0),
+                sensitive_attribute=s_arr[nan_mask] if s_arr is not None else None,
                 threshold=self.llm_clf.threshold,
                 model_name=self.llm_clf.model_name,
             )
@@ -379,11 +351,7 @@ class Benchmark:
             )
 
         self._results["threshold_fitted_on"] = self.llm_clf._threshold_fitted_on
-        self._results["threshold_obj"] = (
-            self.llm_clf._threshold_obj
-            if self.llm_clf._threshold_fitted_on > 0
-            else None
-        )
+        self._results["threshold_obj"] = self.llm_clf._threshold_obj if self.llm_clf._threshold_fitted_on > 0 else None
         ## TODO: set to None by default, only change when fitting, then this check is no longer needed
 
         if self.task.sensitive_attribute is not None:
@@ -392,14 +360,21 @@ class Benchmark:
         # Save predictions save path
         self._results["predictions_path"] = test_predictions_save_path.as_posix()
 
+        # Add benchmark metadata
+        self._results["config"] = self.configs_dict
+        self._results["benchmark_hash"] = hash(self)
+        self._results["results_dir"] = self.results_dir.as_posix()
+        self._results["results_root_dir"] = self.results_root_dir.as_posix()
+        self._results["current_time"] = get_current_timestamp()
+
         # Log main results
         msg = (
             f"\n** Test results **\n"
             f"Model: {self.llm_clf.model_name};\n"
             f"\t ECE:       {self._results['ece']:.1%};\n"
-            f"\t ROC AUC :  {self.results['roc_auc']:.1%};\n"
-            f"\t Accuracy:  {self.results['accuracy']:.1%};\n"
-            f"\t Bal. acc.: {self.results['balanced_accuracy']:.1%};\n"
+            f"\t ROC AUC :  {self._results['roc_auc']:.1%};\n"
+            f"\t Accuracy:  {self._results['accuracy']:.1%};\n"
+            f"\t Bal. acc.: {self._results['balanced_accuracy']:.1%};\n"
         )
         logging.info(msg)
 
@@ -464,7 +439,7 @@ class Benchmark:
 
         return plots_paths
 
-    def save_results(self, results_root_dir: str | Path = None):
+    def save_results(self, results_root_dir: str | Path | None = None):
         """Save the benchmark results to disk.
 
         Parameters
@@ -478,7 +453,7 @@ class Benchmark:
 
         # Update results directory if provided
         if results_root_dir is not None:
-            self.results_root_dir = results_root_dir
+            self.results_root_dir = Path(results_root_dir)
 
         # Save results to disk
         results_file_name = f"results.bench-{hash(self)}.json"
@@ -558,9 +533,7 @@ class Benchmark:
             use_text_output_for_qa=config.use_generated_text,
         )
 
-        acs_dataset = ACSDataset.make_from_task(
-            task=acs_task, cache_dir=data_dir, **acs_dataset_configs
-        )
+        acs_dataset = ACSDataset.make_from_task(task=acs_task, cache_dir=data_dir, **acs_dataset_configs)
 
         return cls.make_benchmark(
             task=acs_task,
@@ -663,7 +636,7 @@ class Benchmark:
         config: BenchmarkConfig = BenchmarkConfig.default_config(),
         **kwargs,
     ) -> Benchmark:
-        """Create a standardized calibration benchmark on ACS data.
+        """Create a standardized calibration benchmark on SIPP data.
 
         Parameters
         ----------
@@ -713,9 +686,7 @@ class Benchmark:
             use_text_output_for_qa=config.use_generated_text,
         )
 
-        sipp_dataset = SIPPDataset.make_from_task(
-            task=sipp_task, cache_dir=data_dir, **sipp_dataset_configs
-        )
+        sipp_dataset = SIPPDataset.make_from_task(task=sipp_task, cache_dir=data_dir, **sipp_dataset_configs)
 
         return cls.make_benchmark(
             task=sipp_task,
@@ -770,12 +741,10 @@ class Benchmark:
         config = config.update(**kwargs)
 
         # Handle TaskMetadata object
-        task = TaskMetadata.get_task(task) if isinstance(task, str) else task
+        if isinstance(task, str):
+            task = TaskMetadata.get_task(task)
 
-        if (
-            config.use_generated_text
-            and config.use_generated_text != task.use_text_output_for_qa
-        ):
+        if config.use_generated_text and config.use_generated_text != task.use_text_output_for_qa:
             task.use_text_output_for_qa = config.use_generated_text
             if config.numeric_risk_prompting:
                 raise NotImplementedError  # TODO
@@ -787,42 +756,45 @@ class Benchmark:
             task = task.create_task_with_feature_subset(config.feature_subset)
             dataset.task = task
 
+        assert isinstance(task, TaskMetadata)
+
         # Check dataset is compatible with task
         if dataset.task is not task and dataset.task.name != task.name:
-            raise ValueError(
-                f"Dataset task '{dataset.task.name}' does not match the provided task '{task.name}'."
-            )
+            raise ValueError(f"Dataset task '{dataset.task.name}' does not match the provided task '{task.name}'.")
 
         if config.population_filter is not None:
             dataset = dataset.filter(config.population_filter)
 
+        # Build PromptConfig once from the variation dict.
+        prompt_config = PromptConfig.from_dict(
+            pv=config.prompt_variation or {},
+            task=task,
+            question=task.question,
+        )
+
         # Get prompting function
-        if config.few_shot:
-            print(f"Using few-shot prompting (n={config.few_shot})!")
+        if config.few_shot_config:
+            logging.info(f"Using few-shot prompting (n={config.few_shot_config.n_shots}).")
             encode_row_function = partial(
                 encode_row_prompt_few_shot,
                 task=task,
-                n_shots=config.few_shot,
                 dataset=dataset,
-                reuse_examples=config.reuse_few_shot_examples,
-                compose_few_shot_examples=config.compose_few_shot_examples,
-                prompt_variation=config.prompt_variation or {},
-                **kwargs,
+                few_shot_config=config.few_shot_config,
+                prompt_config=prompt_config,
             )
 
         else:
-            print("Using zero-shot prompting.")
+            logging.info("Using zero-shot prompting.")
             encode_row_function = partial(
                 encode_row_prompt,
                 task=task,
-                prompt_variation=config.prompt_variation or {},
-                **kwargs,
+                prompt_config=prompt_config,
             )
 
         # Parse LLMClassifier parameters
         llm_inference_kwargs = {
             "correct_order_bias": config.correct_order_bias,
-            "prompt_variation": config.prompt_variation or {},
+            "prompt_config": prompt_config,
             "reasoning": config.reasoning,
         }
         if config.batch_size is not None:

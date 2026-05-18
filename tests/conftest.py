@@ -27,7 +27,7 @@ def rng(random_seed: int) -> np.random.Generator:
     return np.random.default_rng(random_seed)
 
 
-@pytest.fixture(params=TEST_CAUSAL_LMS)
+@pytest.fixture(scope="module", params=TEST_CAUSAL_LMS)
 def causal_lm_name_or_path(request) -> str:
     """Name or path of the CausalLM used for testing."""
     return request.param

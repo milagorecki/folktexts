@@ -6,8 +6,8 @@ import re
 
 import pytest
 from folktexts.prompting import (
-    DEFAULT_PROMPT_STYLE,
     FeatureItem,
+    FewShotConfig,
     PromptBuilder,
     PromptConfig,
     VaryConnector,
@@ -134,15 +134,15 @@ class TestVaryConnector:
 
 class TestVaryFormat:
     @pytest.mark.parametrize(
-        "fmt,expected_start,expected_end",
+        "fmt,expected_start",
         [
-            ("bullet", "- ", "\n"),
-            ("comma", None, ", "),
-            ("text", "The ", ". "),
-            ("textbullet", "- The ", ".\n"),
+            ("bullet", "- "),
+            ("comma", None),
+            ("text", "The "),
+            ("textbullet", "- The "),
         ],
     )
-    def test_format(self, acs_income_task, acs_row, fmt, expected_start, expected_end):
+    def test_format(self, acs_income_task, acs_row, fmt, expected_start):
         items = _make_items(acs_income_task, acs_row)
         items = VaryValueMap(cols_to_text=acs_income_task.cols_to_text)(items)
         items = VaryConnector(connector="is")(items)
@@ -152,7 +152,7 @@ class TestVaryFormat:
             assert result.startswith(expected_start), (
                 f"format={fmt!r}: expected start {expected_start!r}, got beginning {result[:20]!r}"
             )
-        assert result.endswith(expected_end), f"format={fmt!r}: expected end {expected_end!r}, got end {result[-20:]!r}"
+        assert result[-1] not in {",", " ", "\n"}, f"format={fmt!r}: result ends with trailing {result[-1]!r}"
 
     def test_invalid_format_raises(self):
         with pytest.raises(ValueError):
@@ -165,36 +165,49 @@ class TestVarySystemPrompt:
         vsp = VarySystemPrompt(system_prompt=sp)
         assert vsp() == sp
 
-    def test_in_prompt_config(self, acs_income_task):
-        sp = "System instruction."
+    def test_default_derives_from_qa_type(self, acs_income_task):
+        """Default config derives system_prompt from question type; pass None to suppress."""
+        import dataclasses
+
+        from folktexts.qa_interface import DirectNumericQA, MultipleChoiceQA
+
         config = PromptConfig.default(acs_income_task)
-        assert config.system_prompt is None
-        config_with_sp = PromptConfig(
-            prefix=config.prefix,
-            value_map=config.value_map,
-            order=config.order,
-            connector=config.connector,
-            format=config.format,
-            suffix=config.suffix,
-            system_prompt=VarySystemPrompt(system_prompt=sp),
-        )
-        assert config_with_sp.system_prompt() == sp
+        if isinstance(acs_income_task.question, MultipleChoiceQA):
+            assert config.system_prompt is not None
+            assert "multiple-choice" in config.system_prompt().lower()
+
+        numeric_qa = DirectNumericQA(column="PINCP", text="What is this person's estimated yearly income?")
+        numeric_task = dataclasses.replace(acs_income_task, direct_numeric_qa=numeric_qa)
+        numeric_task.set_question(numeric_task.direct_numeric_qa)
+        numeric_config = PromptConfig.default(numeric_task)
+        assert numeric_config.system_prompt is not None
+        sp_text = numeric_config.system_prompt().lower()
+        assert "numeric" in sp_text or "probabilit" in sp_text
+
+    def test_suppress_default_system_prompt(self, acs_income_task):
+        config_no_sp = PromptConfig.from_dict({}, task=acs_income_task, system_prompt=None)
+        assert config_no_sp.system_prompt is None
+
+    def test_explicit_system_prompt_overrides_default(self, acs_income_task):
+        sp = "System instruction."
+        config = PromptConfig.from_dict({}, task=acs_income_task, system_prompt=sp)
+        assert config.system_prompt() == sp
 
 
 class TestVaryPrefix:
-    def test_contains_task_description(self, acs_income_task):
+    def test_contains_task_description(self):
         desc = "Custom task description.\n"
         vp = VaryPrefix(task_description=desc, add_task_description=True)
         result = vp()
         assert desc in result
 
-    def test_no_task_description(self, acs_income_task):
+    def test_no_task_description(self):
         vp = VaryPrefix(task_description="Some desc.\n", add_task_description=False)
         result = vp()
         assert "Information:" in result
         assert "Some desc." not in result
 
-    def test_custom_prefix_appended(self, acs_income_task):
+    def test_custom_prefix_appended(self):
         vp = VaryPrefix(task_description="Desc.\n", add_task_description=True, custom_prefix="Extra context.")
         result = vp()
         assert "Extra context." in result
@@ -217,6 +230,63 @@ class TestVarySuffix:
         vs = VarySuffix(question=acs_income_task.question, show_question=False, show_label=True, label="A")
         result = vs()
         assert " A" in result
+
+    def test_show_label_without_label_raises(self, acs_income_task):
+        with pytest.raises(ValueError, match="show_label=True requires label"):
+            VarySuffix(question=acs_income_task.question, show_label=True, label=None)
+
+
+class TestFewShotConfig:
+    def test_valid_construction(self):
+        cfg = FewShotConfig(n_shots=3)
+        assert cfg.n_shots == 3
+        assert cfg.compose == "random"
+
+    def test_n_shots_zero_raises(self):
+        with pytest.raises(ValueError, match="n_shots must be >= 1"):
+            FewShotConfig(n_shots=0)
+
+    def test_n_shots_negative_raises(self):
+        with pytest.raises(ValueError, match="n_shots must be >= 1"):
+            FewShotConfig(n_shots=-1)
+
+    def test_example_order_string_parsed(self):
+        cfg = FewShotConfig(n_shots=3, example_order="2,0,1")
+        assert cfg.example_order == [2, 0, 1]
+
+    def test_example_order_invalid_permutation_raises(self):
+        with pytest.raises(ValueError, match="permutation"):
+            FewShotConfig(n_shots=3, example_order=[0, 1, 3])
+
+    def test_example_order_wrong_length_raises(self):
+        with pytest.raises(ValueError, match="permutation"):
+            FewShotConfig(n_shots=3, example_order=[0, 1])
+
+    def test_compose_list_converted_to_tuple(self):
+        cfg = FewShotConfig(n_shots=3, compose=[2, 1])
+        assert isinstance(cfg.compose, tuple)
+        assert cfg.compose == (2, 1)
+
+    def test_compose_string_with_commas_converted_to_tuple(self):
+        cfg = FewShotConfig(n_shots=3, compose="2,1")
+        assert isinstance(cfg.compose, tuple)
+        assert cfg.compose == (2, 1)
+
+    def test_compose_tuple_wrong_sum_raises(self):
+        with pytest.raises(ValueError, match="sum"):
+            FewShotConfig(n_shots=3, compose=[1, 1])
+
+    def test_compose_tuple_negative_count_raises(self):
+        with pytest.raises(ValueError, match="non-negative"):
+            FewShotConfig(n_shots=3, compose=[-1, 4])
+
+    def test_compose_invalid_string_raises(self):
+        with pytest.raises(ValueError, match="compose"):
+            FewShotConfig(n_shots=2, compose="circular")
+
+    def test_compose_balanced_accepted(self):
+        cfg = FewShotConfig(n_shots=2, compose="balanced")
+        assert cfg.compose == "balanced"
 
 
 class TestPromptBuilder:
@@ -247,19 +317,19 @@ class TestEncodeRowPrompt:
         assert acs_income_task.question.get_question_prompt() in prompt
 
     def test_contains_task_description(self, acs_income_task, acs_row):
-        prompt = encode_row_prompt(acs_row, task=acs_income_task, add_task_description=True)
+        prompt = encode_row_prompt(acs_row, task=acs_income_task)
         assert "survey" in prompt.lower()
 
     def test_different_formats_produce_different_prompts(self, acs_income_task, acs_row):
         prompt_bullet = encode_row_prompt(
             acs_row,
             task=acs_income_task,
-            prompt_variation={**DEFAULT_PROMPT_STYLE, "format": "bullet"},
+            prompt_config=PromptConfig.from_dict({"format": "bullet"}, task=acs_income_task),
         )
         prompt_comma = encode_row_prompt(
             acs_row,
             task=acs_income_task,
-            prompt_variation={**DEFAULT_PROMPT_STYLE, "format": "comma"},
+            prompt_config=PromptConfig.from_dict({"format": "comma"}, task=acs_income_task),
         )
         print(f"\n--- bullet ---\n{prompt_bullet}")
         print(f"\n--- comma ---\n{prompt_comma}")
@@ -270,7 +340,7 @@ class TestEncodeRowPrompt:
         prompt = encode_row_prompt(
             acs_row,
             task=acs_income_task,
-            prompt_variation={**DEFAULT_PROMPT_STYLE, "connector": connector},
+            prompt_config=PromptConfig.from_dict({"connector": connector}, task=acs_income_task),
         )
         print(f"\n--- connector={connector!r} ---\n{prompt}")
         assert isinstance(prompt, str) and len(prompt) > 0
@@ -279,12 +349,12 @@ class TestEncodeRowPrompt:
         prompt_orig = encode_row_prompt(
             acs_row,
             task=acs_income_task,
-            prompt_variation={**DEFAULT_PROMPT_STYLE, "granularity": "original"},
+            prompt_config=PromptConfig.from_dict({"granularity": "original"}, task=acs_income_task),
         )
         prompt_low = encode_row_prompt(
             acs_row,
             task=acs_income_task,
-            prompt_variation={**DEFAULT_PROMPT_STYLE, "granularity": "low"},
+            prompt_config=PromptConfig.from_dict({"granularity": "low"}, task=acs_income_task),
         )
         print(f"\n--- granularity=original ---\n{prompt_orig}")
         print(f"\n--- granularity=low ---\n{prompt_low}")
@@ -298,7 +368,7 @@ class TestEncodeRowPrompt:
         prompt_reversed = encode_row_prompt(
             acs_row,
             task=acs_income_task,
-            prompt_variation={**DEFAULT_PROMPT_STYLE, "order": reversed_order},
+            prompt_config=PromptConfig.from_dict({"order": reversed_order}, task=acs_income_task),
         )
         print(f"\n--- order=default ---\n{prompt_default}")
         print(f"\n--- order=reversed ---\n{prompt_reversed}")
@@ -308,7 +378,7 @@ class TestEncodeRowPrompt:
         prompt = encode_row_prompt(
             acs_row,
             task=acs_income_task,
-            custom_prompt_prefix="Extra context here.",
+            prompt_config=PromptConfig.from_dict({"custom_prompt_prefix": "Extra context here."}, task=acs_income_task),
         )
         print(f"\n--- custom_prompt_prefix ---\n{prompt}")
         assert "Extra context here." in prompt
@@ -317,10 +387,14 @@ class TestEncodeRowPrompt:
         prompt = encode_row_prompt(
             acs_row,
             task=acs_income_task,
-            custom_prompt_suffix=" [end]",
+            prompt_config=PromptConfig.from_dict({"custom_prompt_suffix": " [end]"}, task=acs_income_task),
         )
         print(f"\n--- custom_prompt_suffix ---\n{prompt}")
         assert prompt.endswith(" [end]")
+
+    def test_unknown_variation_key_raises(self, acs_income_task):
+        with pytest.raises(ValueError, match="Unknown prompt_variation keys"):
+            PromptConfig.from_dict({"nonexistent_key": "value"}, task=acs_income_task)
 
 
 class TestEncodeRowPromptFewShot:
@@ -364,3 +438,64 @@ class TestEncodeRowPromptFewShot:
         question_text = acs_income_task.question.get_question_prompt()
         assert prompt.count(question_text) == 1
         assert prompt.endswith(question_text)
+
+
+class TestOrderBiasCorrection:
+    """Verify that a permuted question reaches the rendered prompt even when
+    a pre-built PromptConfig is provided (regression test for the bug where
+    `question` was silently dropped when `prompt_config` was not None)."""
+
+    def _get_permuted_question(self, task):
+        from folktexts.qa_interface import MultipleChoiceQA
+
+        q = task.question
+        assert isinstance(q, MultipleChoiceQA), "order-bias correction only applies to MultipleChoiceQA"
+        permutations = list(MultipleChoiceQA.create_answer_keys_permutations(q))
+        # Return the permutation whose choices differ from the original
+        for perm in permutations:
+            if perm.choices != q.choices:
+                return perm
+        pytest.skip("Only one permutation exists for this question; cannot test reordering.")
+
+    def test_zero_shot_question_override_with_prompt_config(self, acs_income_task, acs_row):
+        config = PromptConfig.from_dict({}, task=acs_income_task)
+        permuted_q = self._get_permuted_question(acs_income_task)
+
+        prompt_default = encode_row_prompt(acs_row, task=acs_income_task, prompt_config=config)
+        prompt_permuted = encode_row_prompt(acs_row, task=acs_income_task, prompt_config=config, question=permuted_q)
+
+        print(f"\n--- zero-shot default question ---\n{acs_income_task.question.get_question_prompt()}")
+        print(f"\n--- zero-shot permuted question ---\n{permuted_q.get_question_prompt()}")
+
+        assert prompt_default != prompt_permuted, (
+            "Permuted question had no effect on the prompt — question override was silently dropped"
+        )
+        assert permuted_q.get_question_prompt() in prompt_permuted
+
+    def test_few_shot_question_override_with_prompt_config(self, acs_income_task, acs_income_dataset, acs_row):
+        config = PromptConfig.from_dict({}, task=acs_income_task)
+        permuted_q = self._get_permuted_question(acs_income_task)
+
+        prompt_default = encode_row_prompt_few_shot(
+            acs_row,
+            task=acs_income_task,
+            dataset=acs_income_dataset,
+            prompt_config=config,
+            few_shot_config=FewShotConfig(n_shots=2, reuse_examples=True),
+        )
+        prompt_permuted = encode_row_prompt_few_shot(
+            acs_row,
+            task=acs_income_task,
+            dataset=acs_income_dataset,
+            prompt_config=config,
+            question=permuted_q,
+            few_shot_config=FewShotConfig(n_shots=2, reuse_examples=True),
+        )
+
+        print(f"\n--- few-shot default question ---\n{acs_income_task.question.get_question_prompt()}")
+        print(f"\n--- few-shot permuted question ---\n{permuted_q.get_question_prompt()}")
+
+        assert prompt_default != prompt_permuted, (
+            "Permuted question had no effect on few-shot prompt — question override was silently dropped"
+        )
+        assert permuted_q.get_question_prompt() in prompt_permuted
