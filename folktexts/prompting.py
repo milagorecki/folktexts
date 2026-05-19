@@ -446,7 +446,7 @@ class PromptConfig:
     @staticmethod
     def _get_simplified_value_maps(task: TaskMetadata) -> dict:
         if task.name.startswith("ACS"):
-            from folktexts.acs.acs_columns_alt import simplified_value_maps
+            from folktexts.acs.acs_columns_simplified import simplified_value_maps
 
             return simplified_value_maps
         raise NotImplementedError(f"Low-granularity value maps are not available for task '{task.name}'.")

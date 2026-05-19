@@ -54,7 +54,7 @@ class TestVaryValueMap:
         assert "-" not in wkhp.text_value.split("hours")[0]
 
     def test_low_returns_strings(self, acs_income_task, acs_row):
-        from folktexts.acs.acs_columns_alt import simplified_value_maps
+        from folktexts.acs.acs_columns_simplified import simplified_value_maps
 
         items = _make_items(acs_income_task, acs_row)
         vm = VaryValueMap.with_low_granularity(acs_income_task.cols_to_text, simplified_value_maps)
@@ -65,7 +65,7 @@ class TestVaryValueMap:
             )
 
     def test_low_age_is_range(self, acs_income_task, acs_row):
-        from folktexts.acs.acs_columns_alt import simplified_value_maps
+        from folktexts.acs.acs_columns_simplified import simplified_value_maps
 
         items = _make_items(acs_income_task, acs_row)
         vm = VaryValueMap.with_low_granularity(acs_income_task.cols_to_text, simplified_value_maps)
@@ -78,7 +78,7 @@ class TestVaryValueMap:
         assert is_range or is_edge, f"Expected age range, got {agep.text_value!r}"
 
     def test_low_wkhp_is_range(self, acs_income_task, acs_row):
-        from folktexts.acs.acs_columns_alt import simplified_value_maps
+        from folktexts.acs.acs_columns_simplified import simplified_value_maps
 
         items = _make_items(acs_income_task, acs_row)
         vm = VaryValueMap.with_low_granularity(acs_income_task.cols_to_text, simplified_value_maps)
@@ -89,7 +89,7 @@ class TestVaryValueMap:
         assert is_range or is_edge, f"Expected hours range, got {wkhp.text_value!r}"
 
     def test_with_low_granularity_does_not_mutate_task(self, acs_income_task, acs_row):
-        from folktexts.acs.acs_columns_alt import simplified_value_maps
+        from folktexts.acs.acs_columns_simplified import simplified_value_maps
 
         original_map = acs_income_task.cols_to_text["AGEP"]._value_map
         VaryValueMap.with_low_granularity(acs_income_task.cols_to_text, simplified_value_maps)
