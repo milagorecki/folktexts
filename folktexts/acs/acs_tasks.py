@@ -38,10 +38,8 @@ ACS_TASK_DESCRIPTION_DEFAULTS = {
 
 
 # Map of ACS column names to ColumnToText objects
-acs_columns_map: dict[str, object] = {
-    col_mapper.name: col_mapper
-    for col_mapper in acs_columns.__dict__.values()
-    if isinstance(col_mapper, _ColumnToText)
+acs_columns_map: dict[str, _ColumnToText] = {
+    col_mapper.name: col_mapper for col_mapper in acs_columns.__dict__.values() if isinstance(col_mapper, _ColumnToText)
 }
 
 
@@ -57,30 +55,29 @@ class ACSTaskMetadata(TaskMetadata):
         cls,
         name: str,
         features: list[str],
-        target: str = None,
-        sensitive_attribute: str = None,
-        target_threshold: Threshold = None,
-        multiple_choice_qa: MultipleChoiceQA = None,
-        direct_numeric_qa: DirectNumericQA = None,
-        description: str = None,
-        folktables_obj: BasicProblem = None,
+        target: str | None = None,
+        sensitive_attribute: str | None = None,
+        target_threshold: Threshold | None = None,
+        multiple_choice_qa: MultipleChoiceQA | None = None,
+        direct_numeric_qa: DirectNumericQA | None = None,
+        description: str | None = None,
+        folktables_obj: BasicProblem | None = None,
     ) -> ACSTaskMetadata:
         """Create an ACS task object from the given parameters."""
         # Resolve target column name
         target_col_name = (
             target_threshold.apply_to_column_name(target)
-            if target_threshold is not None
+            if target_threshold is not None and target is not None
             else target
         )
 
         # Get default Q&A interfaces for this task's target column
-        if multiple_choice_qa is None:
-            multiple_choice_qa = acs_questions.acs_multiple_choice_qa_map.get(
-                target_col_name
-            )
-        if direct_numeric_qa is None:
+        if multiple_choice_qa is None and target_col_name is not None:
+            multiple_choice_qa = acs_questions.acs_multiple_choice_qa_map.get(target_col_name)
+        if direct_numeric_qa is None and target_col_name is not None:
             direct_numeric_qa = acs_questions.acs_numeric_qa_map.get(target_col_name)
 
+        assert target is not None, "target must be provided"
         return cls(
             name=name,
             features=features,
@@ -98,8 +95,8 @@ class ACSTaskMetadata(TaskMetadata):
     def make_folktables_task(
         cls,
         name: str,
-        target_threshold: Threshold = None,
-        description: str = None,
+        target_threshold: Threshold | None = None,
+        description: str | None = None,
     ) -> ACSTaskMetadata:
 
         # Get the task object from the folktables package

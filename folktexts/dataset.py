@@ -59,9 +59,7 @@ class Dataset:
 
         # Validate task
         if not isinstance(self._task, TaskMetadata):
-            raise ValueError(
-                f"Invalid `task` type: {type(self._task)}. Expected `TaskMetadata`."
-            )
+            raise ValueError(f"Invalid `task` type: {type(self._task)}. Expected `TaskMetadata`.")
 
         # Validate data for this task
         task.check_task_columns_are_available(available_cols=data.columns.to_list())
@@ -75,14 +73,12 @@ class Dataset:
         self._rng = np.random.default_rng(self._seed)
 
         # Make train/test/val split
-        self._train_indices, self._test_indices, self._val_indices = (
-            self._make_train_test_val_split(
-                self._data, self.test_size, self.val_size, self._rng
-            )
+        self._train_indices, self._test_indices, self._val_indices = self._make_train_test_val_split(
+            self._data, self.test_size, self.val_size, self._rng
         )
 
         # Subsample the train/test/val data (if requested)
-        self._subsampling = None
+        self._subsampling: float | None = None
         if subsampling is not None:
             self.subsample(subsampling)
 
@@ -99,10 +95,8 @@ class Dataset:
         self._data = new_data
 
         # Reset train/test/val indices
-        self._train_indices, self._test_indices, self._val_indices = (
-            self._make_train_test_val_split(
-                self._data, self.test_size, self.val_size, self._rng
-            )
+        self._train_indices, self._test_indices, self._val_indices = self._make_train_test_val_split(
+            self._data, self.test_size, self.val_size, self._rng
         )
 
         # Set subsampling to None
@@ -134,7 +128,7 @@ class Dataset:
         return self._val_size
 
     @property
-    def subsampling(self) -> float:
+    def subsampling(self) -> float | None:
         return getattr(self, "_subsampling", None)
 
     @property
@@ -144,9 +138,7 @@ class Dataset:
     @property
     def name(self) -> str:
         """A unique name for this dataset."""
-        subsampling_str = (
-            f"subsampled-{self.subsampling:.3}" if self.subsampling else "full"
-        )
+        subsampling_str = f"subsampled-{self.subsampling:.3}" if self.subsampling else "full"
         seed_str = f"seed-{self._seed}"
         hash_str = f"hash-{hash(self)}"
         return f"{self.task.name}_{subsampling_str}_{seed_str}_{hash_str}"
@@ -157,16 +149,14 @@ class Dataset:
         test_size: float,
         val_size: float,
         rng: np.random.Generator,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
         # Permute indices
         indices = rng.permutation(len(data))
 
         # Split train/test
         train_size = 1 - test_size - val_size
         train_indices = indices[: int(len(indices) * train_size)]
-        test_indices = indices[
-            len(train_indices) : int(len(indices) * (train_size + test_size))
-        ]
+        test_indices = indices[len(train_indices) : int(len(indices) * (train_size + test_size))]
 
         # Split val if requested
         if val_size is not None and val_size > 0:
@@ -228,14 +218,10 @@ class Dataset:
         """Subset the dataset in-place: keep only samples with the given feature values."""
         # Check argument is of valid type
         if not isinstance(population_feature_values, dict):
-            raise ValueError(
-                f"Invalid `population_feature_values` type: {type(population_feature_values)}."
-            )
+            raise ValueError(f"Invalid `population_feature_values` type: {type(population_feature_values)}.")
 
         # Check argument keys are valid columns
-        if not all(
-            key in self.data.columns for key in population_feature_values.keys()
-        ):
+        if not all(key in self.data.columns for key in population_feature_values.keys()):
             raise ValueError(
                 f"Invalid `population_feature_values` keys; columns don't exist "
                 f"in the dataset: {list(population_feature_values.keys())}."
@@ -249,17 +235,11 @@ class Dataset:
         # Update train/test/val indices
         train_pop_filter = population_filter.iloc[self._train_indices]
         test_pop_filter = population_filter.iloc[self._test_indices]
-        val_pop_filter = (
-            population_filter.iloc[self._val_indices]
-            if self._val_indices is not None
-            else None
-        )
+        val_pop_filter = population_filter.iloc[self._val_indices] if self._val_indices is not None else None
 
         self._train_indices = self._train_indices[train_pop_filter]
         self._test_indices = self._test_indices[test_pop_filter]
-        self._val_indices = (
-            self._val_indices[val_pop_filter] if self._val_indices is not None else None
-        )
+        self._val_indices = self._val_indices[val_pop_filter] if self._val_indices is not None else None
 
         return self
 
@@ -325,9 +305,7 @@ class Dataset:
             if reuse_examples:
                 example_indices = self._train_indices[:n]
             else:
-                example_indices = self._rng.choice(
-                    self._train_indices, size=n, replace=False
-                )
+                example_indices = self._rng.choice(self._train_indices, size=n, replace=False)
         else:
             train_labels = self.get_target_data().iloc[self._train_indices]
             unique_labels, counts = np.unique(train_labels, return_counts=True)
@@ -353,22 +331,20 @@ class Dataset:
                 raise ValueError(
                     "Not enough samples to draw from:\n"
                     + "\n".join(
-                        f"- class {unique_labels[i]}: "
-                        f"{counts[i]} available, {per_label_counts[i]} requested"
+                        f"- class {unique_labels[i]}: {counts[i]} available, {per_label_counts[i]} requested"
                         for i in range(len(unique_labels))
                         if counts[i] < per_label_counts[i]
                     )
                 )
 
-            example_indices = []
+            example_indices_list: list = []
             for label, k in zip(unique_labels, per_label_counts):
                 class_indices = self._train_indices[train_labels == label]
                 selected = (
-                    class_indices[:k]
-                    if reuse_examples
-                    else self._rng.choice(class_indices, size=k, replace=False)
+                    class_indices[:k] if reuse_examples else self._rng.choice(class_indices, size=k, replace=False)
                 )
-                example_indices.extend(selected)
+                example_indices_list.extend(selected)
+            example_indices = np.array(example_indices_list)
 
             # shuffle indices to ensure classes are mixed
             example_indices = self._rng.permutation(example_indices)
@@ -418,30 +394,22 @@ class Dataset:
     def convert_split_to_text(
         self,
         split: str,
-        prompt_variation: dict = {
-            "connector": "is",
-            "format": "text",
-            "granularity": "original",
-        },
+        prompt_variation: dict | None = None,
     ) -> pd.DataFrame:
         from tqdm import tqdm
 
-        from folktexts.prompting import encode_row_prompt
+        from folktexts.prompting import PromptConfig, encode_row_prompt
 
         tqdm.pandas()
         assert split in ["test", "train"]
         X, y = self.get_data_split(split)
 
-        encode_row = partial(
-            encode_row_prompt, task=self._task, prompt_variation=prompt_variation
-        )
-        X_text = X.progress_apply(lambda row: encode_row(row), axis=1).to_frame(
-            name="text"
-        )
-        if not self._task._use_numeric_qa:
+        prompt_config = PromptConfig.from_dict(prompt_variation or {}, task=self._task)
+        encode_row = partial(encode_row_prompt, task=self._task, prompt_config=prompt_config)
+        X_text = X.progress_apply(lambda row: encode_row(row), axis=1).to_frame(name="text")
+        if not self._task._use_numeric_qa and self._task.multiple_choice_qa is not None:
             map_label_to_choice = {
-                choice.data_value: answer
-                for choice, answer in self._task.multiple_choice_qa.choice_to_key.items()
+                choice.data_value: answer for choice, answer in self._task.multiple_choice_qa.choice_to_key.items()
             }
             y_text = y.replace(map_label_to_choice)
             return X_text, y_text

@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from functools import partial, reduce
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -23,10 +24,7 @@ def is_valid_number(num) -> bool:
 def safe_division(a: float, b: float, *, worst_result: float):
     """Try to divide the given arguments and return `worst_result` if unsuccessful."""
     if b == 0 or not is_valid_number(a) or not is_valid_number(b):
-        logging.debug(
-            f"Using `worst_result={worst_result}` in place of the following "
-            f"division: {a} / {b}"
-        )
+        logging.debug(f"Using `worst_result={worst_result}` in place of the following division: {a} / {b}")
         return worst_result
     else:
         return a / b
@@ -107,7 +105,7 @@ def suppress_logging(new_level):
         logger.setLevel(previous_level)
 
 
-def is_float(element: any) -> bool:
+def is_float(element: Any) -> bool:
     # If you expect None to be passed:
     if element is None:
         return False
@@ -118,7 +116,7 @@ def is_float(element: any) -> bool:
         return False
 
 
-def is_int(element: any) -> bool:
+def is_int(element: Any) -> bool:
     # If you expect None to be passed:
     if element is None:
         return False
@@ -129,7 +127,7 @@ def is_int(element: any) -> bool:
         return False
 
 
-def is_str(element: any) -> bool:
+def is_str(element: Any) -> bool:
     try:
         str(element)
         return str(element) not in ["True", "False"]
@@ -137,7 +135,7 @@ def is_str(element: any) -> bool:
         return False
 
 
-def is_bool(element: any) -> bool:
+def is_bool(element: Any) -> bool:
     try:
         bool(element)
         return True

@@ -6,7 +6,12 @@ import logging
 import os
 import re
 from dataclasses import dataclass
-from typing import Callable
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from litellm import ModelResponse
+    from litellm.types.llms.openai import ResponsesAPIResponse
+
 
 import dotenv
 import numpy as np
@@ -25,7 +30,7 @@ class _ModelConfig:
     """Configuration for a single web-API model."""
 
     azure_api_version: str
-    deployment_name: str = None  # None = use model name as-is
+    deployment_name: str | None = None  # None = use model name as-is
     max_tpm: int = 0
     max_rpm: int = 0
     is_reasoning_model: bool = False
@@ -127,6 +132,10 @@ _MODEL_REGISTRY: dict[str, _ModelConfig] = {
 }
 
 
+_DEFAULT_MAX_RPM: int = min(cfg.max_rpm for cfg in _MODEL_REGISTRY.values() if cfg.max_rpm)
+_DEFAULT_MAX_TPM: int = min(cfg.max_tpm for cfg in _MODEL_REGISTRY.values() if cfg.max_tpm)
+
+
 class WebAPILLMClassifier(LLMClassifier):
     """Use an LLM through a web API to produce risk scores."""
 
@@ -139,8 +148,8 @@ class WebAPILLMClassifier(LLMClassifier):
         encode_row: Callable[[pd.Series], str] = None,
         threshold: float = 0.5,
         correct_order_bias: bool = True,
-        max_api_rpm: int = min(cfg.max_rpm for cfg in _MODEL_REGISTRY.values() if cfg.max_rpm),
-        max_api_tpm: int = min(cfg.max_tpm for cfg in _MODEL_REGISTRY.values() if cfg.max_tpm),
+        max_api_rpm: int = _DEFAULT_MAX_RPM,
+        max_api_tpm: int = _DEFAULT_MAX_TPM,
         seed: int = 42,
         token_tracker: TokenTracker | None = None,
         **inference_kwargs,
@@ -239,7 +248,7 @@ class WebAPILLMClassifier(LLMClassifier):
         if (
             get_model_developer(self.model_name) == "OpenAI"
             and reasoning is not None
-            and task.question.use_generated_text
+            and self.task.question.use_generated_text
         ):
             # log-probs not available via responses API, but then reasoning can only be a str!
             logging.debug(
@@ -260,7 +269,7 @@ class WebAPILLMClassifier(LLMClassifier):
             # merge lists of suppprted parameters (parameters for the completion API should get
             # mapped internally by the response API)
             supported_params = list(
-                set(supported_params) | set(config.get_supported_openai_params(model=self.deployment_name))
+                set(supported_params or []) | set(config.get_supported_openai_params(model=self.deployment_name) or [])
             )
 
         if supported_params is None:
@@ -323,7 +332,7 @@ class WebAPILLMClassifier(LLMClassifier):
         *,
         question: MultipleChoiceQA | DirectNumericQA,
         context_size: int = None,
-    ) -> list[dict]:
+    ) -> list[ModelResponse]:
         """Query the web API with a batch of prompts and returns the json response.
 
         Parameters
@@ -337,8 +346,8 @@ class WebAPILLMClassifier(LLMClassifier):
 
         Returns
         -------
-        responses_batch : list[dict]
-            The returned JSON responses for each prompt in the batch.
+        responses_batch : list[ModelResponse]
+            The returned API responses for each prompt in the batch.
         """
 
         # Adapt number of forward passes
@@ -454,14 +463,14 @@ class WebAPILLMClassifier(LLMClassifier):
 
     def _decode_risk_estimate_from_api_response(
         self,
-        response: dict,
+        response: ModelResponse | ResponsesAPIResponse,
         question: MultipleChoiceQA | DirectNumericQA,
-    ) -> float:
+    ) -> tuple[float, Any]:
         """Decode model output from API response to get risk estimate.
 
         Parameters
         ----------
-        response : dict
+        response : ModelResponse | ResponsesAPIResponse
             The response from the API call.
         question : MultipleChoiceQA | DirectNumericQA
             The question (`QAInterface`) object to use for querying the model.
@@ -470,6 +479,8 @@ class WebAPILLMClassifier(LLMClassifier):
         -------
         risk_estimate : float
             The risk estimate for the API query.
+        extra : Any
+            Additional output metadata (reasoning content, raw response, token probs, etc.).
         """
 
         if question.use_generated_text:
@@ -562,8 +573,10 @@ class WebAPILLMClassifier(LLMClassifier):
             # Sanity check numeric answers based on global model response:
             if isinstance(question, DirectNumericQA):
                 try:
-                    numeric_response = re.match(r"[-+]?\d*\.\d+|\d+", response_message).group()
-                    risk_estimate_full_text = float(numeric_response)
+                    _match = re.match(r"[-+]?\d*\.\d+|\d+", response_message)
+                    if _match is None:
+                        raise ValueError(f"No numeric token found in '{response_message}'")
+                    risk_estimate_full_text = float(_match.group())
 
                     if not np.isclose(risk_estimate, risk_estimate_full_text, atol=1e-2):
                         logging.info(
@@ -595,7 +608,7 @@ class WebAPILLMClassifier(LLMClassifier):
         *,
         question: MultipleChoiceQA | DirectNumericQA,
         context_size: int = None,
-    ) -> np.ndarray:
+    ) -> tuple[list[float], list[Any]]:
         """Query model with a batch of prompts and return risk estimates.
 
         Parameters
@@ -609,8 +622,10 @@ class WebAPILLMClassifier(LLMClassifier):
 
         Returns
         -------
-        risk_estimates : np.ndarray
+        risk_estimates : list[float]
             The risk estimates for each prompt in the batch.
+        outputs : list[Any]
+            Additional output metadata for each prompt.
 
         Raises
         ------

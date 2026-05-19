@@ -5,7 +5,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 from dataclasses import dataclass, field
-from typing import Callable, ClassVar, Iterable
+from typing import Callable, ClassVar, Iterable, Self
 
 import pandas as pd
 
@@ -31,27 +31,26 @@ class TaskMetadata:
     cols_to_text: dict[str, ColumnToText]
     """A mapping between column names and their textual descriptions."""
 
-    sensitive_attribute: str = None
+    sensitive_attribute: str | None = None
     """The name of the column used as the sensitive attribute data (if provided)."""
 
-    target_threshold: Threshold = None
+    target_threshold: Threshold | None = None
     """The threshold used to binarize the target column (if provided)."""
 
-    multiple_choice_qa: MultipleChoiceQA = None
+    multiple_choice_qa: MultipleChoiceQA | None = None
     """The multiple-choice question and answer interface for this task."""
 
-    direct_numeric_qa: DirectNumericQA = None
+    direct_numeric_qa: DirectNumericQA | None = None
     """The direct numeric question and answer interface for this task."""
 
-    description: str = None
+    description: str | None = None
     """A description of the task, including the population to which the task pertains to."""
 
     _use_numeric_qa: bool = False
     """Whether to use numeric Q&A instead of multiple-choice Q&A prompts. Default is False."""
 
-    _use_generated_text_for_qa: int = None
-    """Whether to use the text output of the model to extract answers and how many samples are considered. \
-    Default is None."""
+    _use_generated_text_for_qa: bool = False
+    """Whether to use the text output of the model to extract answers."""
 
     # _enable_thinking: bool = False
     # """Whether model is used in thinking mode."""
@@ -163,7 +162,7 @@ class TaskMetadata:
 
     @property
     def use_text_output_for_qa(self) -> bool:
-        """Getter for whether to use numeric Q&A instead of multiple-choice Q&A prompts."""
+        """Whether to use generated text to extract answers instead of token probabilities."""
         return self._use_generated_text_for_qa
 
     @use_text_output_for_qa.setter
@@ -190,7 +189,7 @@ class TaskMetadata:
         self._use_numeric_qa = use_numeric_qa
 
     @classmethod
-    def get_task(cls, name: str, use_numeric_qa: bool = False, use_text_output_for_qa: bool = False) -> TaskMetadata:
+    def get_task(cls, name: str, use_numeric_qa: bool = False, use_text_output_for_qa: bool = False) -> Self:
         """Fetches a previously created task by its name.
 
         Parameters
@@ -219,6 +218,7 @@ class TaskMetadata:
 
         # Retrieve the task object
         task = cls._tasks[name]
+        assert isinstance(task, cls), f"Task '{name}' is not an instance of {cls.__name__}."
 
         # Set Q&A interface type
         task.use_numeric_qa = use_numeric_qa
@@ -231,6 +231,7 @@ class TaskMetadata:
         """Getter for the Q&A interface for this task."""
 
         # Resolve direct numeric Q&A vs multiple-choice Q&A
+        q: QAInterface | None
         if self._use_numeric_qa:
             q = self.direct_numeric_qa
         else:
@@ -238,6 +239,7 @@ class TaskMetadata:
 
         if q is None:
             logging.critical(f"No Q&A interface provided for task {self.name}.")
+        assert q is not None
         return q
 
     def get_row_description(self, row: pd.Series) -> str:
@@ -245,14 +247,14 @@ class TaskMetadata:
         row = row[self.features]
         return "\n".join("- " + self.cols_to_text[col].get_text(val) for col, val in row.items())
 
-    def sensitive_attribute_value_map(self) -> Callable:
+    def sensitive_attribute_value_map(self) -> Callable | dict:
         """Returns a mapping between sensitive attribute values and their descriptions."""
         if self.sensitive_attribute is None:
             logging.warning("No sensitive attribute provided for this task.")
             return {}
         return self.cols_to_text[self.sensitive_attribute].value_map
 
-    def create_task_with_feature_subset(self, feature_subset: Iterable[str]):
+    def create_task_with_feature_subset(self, feature_subset: Iterable[str]) -> Self:
         """Creates a new task with a subset of the original features."""
         # Convert iterable to list
         feature_subset = list(feature_subset)

@@ -115,6 +115,8 @@ class TokenTracker:
 
     def _append_record(self, record: _BatchRecord) -> None:
         """Append *record* to the JSONL output file."""
+        if self.output_path is None:
+            return
         try:
             self.output_path.parent.mkdir(parents=True, exist_ok=True)
             with self.output_path.open("a", encoding="utf-8") as fh:

@@ -64,7 +64,7 @@ GEMMA_CHAT_PROMPT = """The provided information suggests that the answer is"""
 # space and may degrade calibration for low-probability cases).
 NUMERIC_CHAT_PROMPT = """Answer (between 0 and 1): 0."""
 
-DEFAULT_PROMPT_STYLE = {
+DEFAULT_PROMPT_STYLE: dict[str, Any] = {
     "format": "textbullet",
     "connector": "is",
     "granularity": "original",
@@ -145,7 +145,7 @@ class VarySuffix:
     label : Any, optional
         The label to include in the suffix if show_label is True. Ignored otherwise.
     custom_suffix : str | None, optional
-        A custom string to include in the suffix after the question. If None, no custom suffix is added. Default is None.
+        Custom string to include in the suffix after the question. If None, no custom suffix is added. Default is None.
     """
 
     def __post_init__(self):
@@ -366,7 +366,7 @@ class PromptConfig:
     @classmethod
     def from_dict(
         cls,
-        pv: dict,
+        pv: dict[str, Any],
         task: TaskMetadata,
         question: QAInterface | None = None,
         add_task_description: bool = True,
@@ -420,11 +420,11 @@ class PromptConfig:
             ),
             value_map=value_map,
             order=VaryOrder(order=order),
-            connector=VaryConnector(connector=pv.get("connector", DEFAULT_PROMPT_STYLE["connector"])),
-            format=VaryFormat(format=pv.get("format", DEFAULT_PROMPT_STYLE["format"])),
+            connector=VaryConnector(connector=pv.get("connector", str(DEFAULT_PROMPT_STYLE["connector"]))),
+            format=VaryFormat(format=pv.get("format", str(DEFAULT_PROMPT_STYLE["format"]))),
             suffix=VarySuffix(
                 question=question,
-                show_question=pv.get("show_question", DEFAULT_PROMPT_STYLE["show_question"]),
+                show_question=pv.get("show_question", bool(DEFAULT_PROMPT_STYLE["show_question"])),
                 custom_suffix=pv.get("custom_prompt_suffix", DEFAULT_PROMPT_STYLE["custom_prompt_suffix"]),
             ),
             system_prompt=VarySystemPrompt(system_prompt) if system_prompt is not None else None,
@@ -670,6 +670,7 @@ def encode_row_prompt_few_shot(
             reuse_examples=reuse_examples,
         )
 
+    assert few_shot_config.example_order is None or isinstance(few_shot_config.example_order, list)  # mypy
     logging.debug(f"Composition of few shot examples: {few_shot_config.compose}")
 
     # Take `n_shots` random samples from the train set
@@ -688,11 +689,14 @@ def encode_row_prompt_few_shot(
 
     examples = []
     for i in range(few_shot_config.n_shots):
-        label = (
-            question.get_answer_key_from_value(y_examples.iloc[i])
-            if isinstance(question, MultipleChoiceQA)
-            else y_examples.iloc[i]
-        )
+        if isinstance(question, MultipleChoiceQA):
+            label = question.get_answer_key_from_value(y_examples.iloc[i])
+            if label is None:
+                raise ValueError(
+                    f"Could not find answer key for few-shot label '{y_examples.iloc[i]}' in question choices."
+                )
+        else:
+            label = y_examples.iloc[i]
         logging.debug(f"shot {i}: label={label}\tindex={y_examples.index[i]}")
         examples.append((X_examples.iloc[i], label))
 
@@ -790,7 +794,7 @@ def apply_chat_template(
         raise ValueError(
             "apply_chat_template always returns a string (tokenize=False); pass tokenize=False or omit it."
         )
-    filled_prompt = tokenizer.apply_chat_template(
+    filled_prompt = tokenizer.apply_chat_template(  # ignore[attr-defined]
         conversation=conversation,
         tokenize=False,
         **kwargs,

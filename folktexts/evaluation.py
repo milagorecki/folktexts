@@ -16,7 +16,7 @@ import numpy as np
 from netcal.metrics import ECE
 from sklearn.metrics import brier_score_loss, confusion_matrix, log_loss, roc_auc_score, roc_curve
 
-from ._utils import is_valid_number, join_dictionaries, safe_division
+from ._utils import join_dictionaries, safe_division
 
 
 def evaluate_binary_predictions(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
@@ -124,7 +124,7 @@ def evaluate_binary_predictions_fairness(
 
     results = {}
     groupwise_metrics = {}
-    unique_metrics = set()
+    unique_metrics: set[str] = set()
 
     # Helper to compute key/name of a group-wise metric
     def group_metric_name(metric_name, group_name):
@@ -280,7 +280,7 @@ def evaluate_predictions(
     # Compute threshold if necessary
     if threshold == "best":
         threshold = compute_best_threshold(y_true, y_pred_scores)
-    assert is_valid_number(threshold) and 0 <= threshold <= 1, f"Invalid threshold: {threshold}"
+    assert isinstance(threshold, (int, float)) and 0 <= threshold <= 1, f"Invalid threshold: {threshold}"
 
     # Save initial results' statistics
     results = {
@@ -332,7 +332,7 @@ def evaluate_predictions(
 
 
 def bootstrap_estimate(
-    eval_func: Callable[[np.ndarray, np.ndarray, np.ndarray], dict[str, float]],
+    eval_func: Callable[[np.ndarray, np.ndarray, np.ndarray | None], dict[str, float]],
     *,
     y_true: np.ndarray,
     y_pred_scores: np.ndarray,
@@ -452,13 +452,17 @@ def evaluate_predictions_bootstrap(
     results : dict[str, float]
         A dictionary containing bootstrap estimates for a variety of metrics.
     """
-    return bootstrap_estimate(
-        eval_func=lambda labels, scores, sens_attr=None: evaluate_predictions(
+
+    def _eval(labels: np.ndarray, scores: np.ndarray, sens_attr: np.ndarray | None = None) -> dict[str, float]:
+        return evaluate_predictions(
             y_true=labels,
             y_pred_scores=scores,
             sensitive_attribute=sens_attr,
             threshold=threshold,
-        ),
+        )
+
+    return bootstrap_estimate(
+        eval_func=_eval,
         y_true=y_true,
         y_pred_scores=y_pred_scores,
         sensitive_attribute=sensitive_attribute,

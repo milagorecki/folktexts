@@ -5,6 +5,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from sklearn.inspection import permutation_importance
+from sklearn.utils import Bunch
 
 from folktexts._io import save_json, save_pickle
 from folktexts.classifier import LLMClassifier
@@ -108,7 +109,7 @@ def setup_arg_parser() -> ArgumentParser:
     ]
 
     for arg in cli_args:
-        parser.add_argument(
+        parser.add_argument(  # type: ignore[arg-type]
             arg[0],
             type=arg[1],
             help=arg[2],
@@ -118,9 +119,9 @@ def setup_arg_parser() -> ArgumentParser:
     return parser
 
 
-def parse_feature_importance(results: dict, columns: list[str]) -> dict:
+def parse_feature_importance(results: Bunch, columns: list[str]) -> dict:
     """Parse the results dictionary of sklearn's permutation_importance."""
-    parsed_r = defaultdict(dict)
+    parsed_r: dict[str, dict[str, float]] = defaultdict(dict)
     for idx, col in enumerate(columns):
         parsed_r[col]["imp_mean"] = results.importances_mean[idx]
         parsed_r[col]["imp_std"] = results.importances_std[idx]
@@ -135,7 +136,7 @@ def compute_feature_importance(
     results_dir: Path,
     fit_threshold=None,
     seed=DEFAULT_SEED,
-) -> dict:
+) -> None:
 
     # Get train and test data
     X_test, y_test = dataset.get_test()

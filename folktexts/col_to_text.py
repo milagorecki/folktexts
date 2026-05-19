@@ -15,8 +15,8 @@ class ColumnToText:
         self,
         name: str,
         short_description: str,
-        value_map: dict[object, str] | Callable = None,
-        question: QAInterface = None,
+        value_map: dict[object, str] | Callable | None = None,
+        question: QAInterface | None = None,
         connector_verb: str = "is",
         verbalize: Callable = None,  # template sentence, function of value
         missing_value_fill: str = "N/A",
@@ -81,11 +81,12 @@ class ColumnToText:
 
         # Else, warn if both were provided (as they may use inconsistent value maps)
         elif self._value_map is not None and self._question is not None:
+            q_text = self._question.choices if isinstance(self._question, MultipleChoiceQA) else self._question
             logging.debug(
                 f"Got both `value_map` and `question` for column '{self.name}'. "
                 f"Please make sure value mappings are consistent:"
                 f"\n- `value_map`: {self._value_map}"
-                f"\n- `question`: {self._question.choices}"
+                f"\n- `question`: {q_text}"
             )
 
         # Else, log critical error -- ColumnToText object is incomplete
@@ -103,7 +104,7 @@ class ColumnToText:
         return self._short_description
 
     @property
-    def question(self) -> QAInterface:
+    def question(self) -> QAInterface | None:
         if self._question is None:
             logging.error(f"No question provided for column '{self.name}'.")
         return self._question
@@ -114,11 +115,12 @@ class ColumnToText:
         if callable(self._value_map):
             return self._value_map
         elif isinstance(self._value_map, dict):
+            vm: dict[object, str] = self._value_map
 
             def _helper_func(value: object) -> str:
-                if value not in self._value_map:
+                if value not in vm:
                     logging.error(f"Could not find value '{value}' in value map for column '{self.name}'.")
-                return self._value_map.get(value, self._missing_value_fill)
+                return vm.get(value, self._missing_value_fill)
 
             return _helper_func
         else:

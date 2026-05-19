@@ -10,6 +10,7 @@ from pathlib import Path
 import pandas as pd
 
 from ..dataset import Dataset
+from ..task import TaskMetadata
 from .load_sipp import download_sipp, load_sipp, preprocess_sipp
 from .sipp_tasks import (
     SIPPTaskMetadata,
@@ -23,6 +24,8 @@ DEFAULT_SEED = 42
 
 class SIPPDataset(Dataset):
     """Wrapper for tableshift BRFSS datasets."""
+
+    _task: SIPPTaskMetadata
 
     def __init__(
         self,
@@ -48,8 +51,8 @@ class SIPPDataset(Dataset):
     def make_from_task(
         cls,
         task: str | SIPPTaskMetadata,
-        cache_dir: str | Path = None,
-        survey_year: str = None,
+        cache_dir: str | Path | None = None,
+        survey_year: str | None = None,
         seed: int = DEFAULT_SEED,
         load_dataset_if_not_cached=True,  # add 'extra control' before downloading dataset
         **kwargs,
@@ -112,9 +115,10 @@ class SIPPDataset(Dataset):
         return self._task
 
     @task.setter
-    def task(self, new_task: SIPPTaskMetadata):
-        # Parse data rows for new Tableshift BRFSS task
-        self._data = self._parse_task_data(self._full_acs_data, new_task)
+    def task(self, new_task: TaskMetadata):
+        assert isinstance(new_task, SIPPTaskMetadata)
+        # Parse data rows for new SIPP task
+        self._data = self._parse_task_data(self.full_sipp_data, new_task)
 
         # Re-make train/test/val split
         self._train_indices, self._test_indices, self._val_indices = self._make_train_test_val_split(

@@ -58,21 +58,13 @@ class QAInterface(ABC):
     ):
         if not self.use_generated_text:
             if last_token_probs is None:
-                raise ValueError(
-                    "last_token_probs must be provided when use_generated_text is False"
-                )
+                raise ValueError("last_token_probs must be provided when use_generated_text is False")
             if tokenizer_vocab is None:
-                raise ValueError(
-                    "tokenizer_vocab must be provided when use_generated_text is False"
-                )
-            return self.get_answer_from_token_probs(
-                last_token_probs=last_token_probs, tokenizer_vocab=tokenizer_vocab
-            )
+                raise ValueError("tokenizer_vocab must be provided when use_generated_text is False")
+            return self.get_answer_from_token_probs(last_token_probs=last_token_probs, tokenizer_vocab=tokenizer_vocab)
         else:
             if text is None:
-                raise ValueError(
-                    "text must be provided when use_generated_text is True"
-                )
+                raise ValueError("text must be provided when use_generated_text is True")
             # check conistency if using multiple text samples: assert(len(text) == self.use_generated_text)
             return self.get_answer_from_generated_text(text=text)
 
@@ -182,9 +174,7 @@ class DirectNumericQA(QAInterface):
             ``token_id < vocab_dim``.
         """
         numeric_tokens = {
-            key: token_id
-            for key, token_id in tokenizer_vocab.items()
-            if key.isdigit() and token_id < vocab_dim
+            key: token_id for key, token_id in tokenizer_vocab.items() if key.isdigit() and token_id < vocab_dim
         }
 
         if "." in tokenizer_vocab and tokenizer_vocab["."] < vocab_dim:
@@ -225,28 +215,21 @@ class DirectNumericQA(QAInterface):
         )
 
         if len(last_token_probs) < self.num_forward_passes:
-            logging.info(
-                f"Expected {self.num_forward_passes} forward passes, got "
-                f"{len(last_token_probs)}."
-            )
+            logging.info(f"Expected {self.num_forward_passes} forward passes, got {len(last_token_probs)}.")
 
         answer_text = ""
         for ltp in last_token_probs:
             # Get the probability of each numeric token
             num_tokens_probs = {
-                num_token: ltp[token_id]
-                if isinstance(ltp[token_id], float)
-                else ltp[token_id].item()
+                num_token: ltp[token_id] if isinstance(ltp[token_id], float) else ltp[token_id].item()
                 for num_token, token_id in numeric_tokens_vocab.items()
             }
 
             # Get the most likely numeric token
-            most_likely_numeric_token = max(num_tokens_probs, key=num_tokens_probs.get)
+            most_likely_numeric_token = max(num_tokens_probs, key=lambda k: num_tokens_probs[k])
             answer_text += str(most_likely_numeric_token)
 
-            logging.debug(
-                f"Total prob. assigned to numeric tokens: {sum(num_tokens_probs.values()):.2%}"
-            )
+            logging.debug(f"Total prob. assigned to numeric tokens: {sum(num_tokens_probs.values()):.2%}")
 
         # Filter out any non-numeric characters
         match_ = re.match(r"[-+]?\d*\.\d+|\d+", answer_text)
@@ -278,15 +261,11 @@ class Choice:
 
     text: str
     data_value: object
-    numeric_value: float = None
+    numeric_value: float | None = None
 
     def get_numeric_value(self) -> float:
         """Returns the numeric value of the choice."""
-        return (
-            self.numeric_value
-            if self.numeric_value is not None
-            else float(self.data_value)
-        )
+        return self.numeric_value if self.numeric_value is not None else float(str(self.data_value))
 
 
 @dataclass(frozen=True, eq=True)  # NOTE: kw_only=True requires Python 3.10
@@ -294,18 +273,14 @@ class MultipleChoiceQA(QAInterface):
     """Represents a multiple-choice question and its answer keys."""
 
     num_forward_passes: int = 1  # NOTE: overrides superclass default
-    choices: tuple[Choice] = dataclasses.field(default_factory=tuple)
-    _answer_keys_source: tuple[str] = dataclasses.field(
-        default_factory=lambda: tuple(_ALPHABET)
-    )
+    choices: tuple[Choice, ...] = dataclasses.field(default_factory=tuple)
+    _answer_keys_source: tuple[str, ...] = dataclasses.field(default_factory=lambda: tuple(_ALPHABET))
 
     def __post_init__(self):
         if not self.choices:
             raise ValueError("Choices must be provided.")
         if len(self.choices) > len(self._answer_keys_source):
-            raise ValueError(
-                "Number of choices must be less than or equal to the number of answer keys."
-            )
+            raise ValueError("Number of choices must be less than or equal to the number of answer keys.")
 
     def __hash__(self) -> int:
         return int(hash_dict(dataclasses.asdict(self)), 16)
@@ -314,7 +289,7 @@ class MultipleChoiceQA(QAInterface):
     def create_question_from_value_map(
         cls,
         column: str,
-        value_map: dict[str, str],
+        value_map: dict[object, str],
         attribute: str,
         **kwargs,
     ) -> "MultipleChoiceQA":
@@ -331,9 +306,7 @@ class MultipleChoiceQA(QAInterface):
         )
 
     @classmethod
-    def create_answer_keys_permutations(
-        cls, question: "MultipleChoiceQA"
-    ) -> Iterator["MultipleChoiceQA"]:
+    def create_answer_keys_permutations(cls, question: "MultipleChoiceQA") -> Iterator["MultipleChoiceQA"]:
         """Yield questions with all permutations of answer keys.
 
         Parameters
@@ -365,7 +338,7 @@ class MultipleChoiceQA(QAInterface):
         """Returns the map from choice data value to choice textual representation."""
         return {choice.data_value: choice.text for choice in self.choices}
 
-    def get_answer_key_from_value(self, value: object) -> str:
+    def get_answer_key_from_value(self, value: object) -> str | None:
         """Returns the answer key corresponding to the given data value."""
         for choice in self.choices:
             if choice.data_value == value:
@@ -374,7 +347,7 @@ class MultipleChoiceQA(QAInterface):
         logging.error(f"Could not find choice for value: {value}")
         return None
 
-    def get_choice_from_answer_key(self, text: str) -> Choice:
+    def get_choice_from_answer_key(self, text: str) -> Choice | None:
         """Returns the choice object corresponding to the answer key (letter)."""
         text = text.strip().upper()
         if text in self.key_to_choice:
@@ -387,9 +360,7 @@ class MultipleChoiceQA(QAInterface):
         return "Answer:"
 
     def get_question_prompt(self) -> str:
-        choice_str = "\n".join(
-            f"{key}. {choice.text}." for key, choice in self.key_to_choice.items()
-        )
+        choice_str = "\n".join(f"{key}. {choice.text}." for key, choice in self.key_to_choice.items())
 
         prompt = f"Question: {self.text}\n{choice_str}"
         if not self.use_generated_text:
@@ -423,7 +394,7 @@ class MultipleChoiceQA(QAInterface):
         both "A" and " A" templates.
         """
 
-        def _get_choice_token_id(choice: Choice, prefix: str = " ") -> int:
+        def _get_choice_token_id(choice: Choice, prefix: str = " ") -> int | None:
             choice_answer_text = f"{prefix}{self.choice_to_key[choice]}"
             if choice_answer_text in tokenizer_vocab:
                 return tokenizer_vocab[choice_answer_text]
@@ -439,23 +410,18 @@ class MultipleChoiceQA(QAInterface):
             prf: {
                 choice: last_token_probs[choice_token_id].item()
                 for choice in self.choices
-                if (choice_token_id := _get_choice_token_id(choice, prefix=prf))
-                is not None
+                if (choice_token_id := _get_choice_token_id(choice, prefix=prf)) is not None
             }
             for prf in prefixes
         }
 
         # Choose the prefix with the highest probability density
-        best_prefix = max(
-            answers_per_prefix, key=lambda prf: sum(answers_per_prefix[prf].values())
-        )
+        best_prefix = max(answers_per_prefix, key=lambda prf: sum(answers_per_prefix[prf].values()))
         answers = answers_per_prefix[best_prefix]
 
         # Log prefix information in debug mode
         for prefix, choice_probs in answers_per_prefix.items():
-            logging.debug(
-                f"prefix='{prefix}' has density {sum(choice_probs.values()):.2%}"
-            )
+            logging.debug(f"prefix='{prefix}' has density {sum(choice_probs.values()):.2%}")
 
         # Normalize probabilities to sum to 1
         answers_sum_prob = sum(answers.values())
@@ -527,9 +493,7 @@ class MultipleChoiceQA(QAInterface):
             return answers[positive_choice]
 
         # Compute risk estimate by summing weighted choices
-        risk_estimate = sum(
-            choice.get_numeric_value() * prob for choice, prob in answers.items()
-        )
+        risk_estimate = sum(choice.get_numeric_value() * prob for choice, prob in answers.items())
 
         logging.debug(f"Risk estimate: {risk_estimate:.2f}")
         return risk_estimate
@@ -567,14 +531,12 @@ class MultipleChoiceQA(QAInterface):
             return choices[positive_choice]
 
         # Compute risk estimate by summing weighted choices
-        risk_estimate = sum(
-            choice.get_numeric_value() * prob for choice, prob in choices.items()
-        )
+        risk_estimate = sum(choice.get_numeric_value() * prob for choice, prob in choices.items())
 
         logging.debug(f"Risk estimate: {risk_estimate:.2f}")
         return risk_estimate
 
-    def _extract_answer_key_from_generated_text(self, text: str) -> str:
+    def _extract_answer_key_from_generated_text(self, text: str) -> str | None:
         """Extract anser key from a single model output using regex patterns."""
         matched_answer_index = 0
         for answer_indicator in _ANSWER_PATTERNS:
@@ -591,7 +553,10 @@ class MultipleChoiceQA(QAInterface):
 
         # TODO: use last matched key?
         for key in self.answer_keys:
-            choice_text = re.escape(self.get_choice_from_answer_key(key).text)
+            _choice = self.get_choice_from_answer_key(key)
+            if _choice is None:
+                continue
+            choice_text = re.escape(_choice.text)
 
             # patterns to check sorted by priority (most specific first)
             no_alphanumeric_before = "(?<![A-Za-z0-9])"
@@ -627,9 +592,7 @@ class MultipleChoiceQA(QAInterface):
         self,
         text: str,
     ) -> dict[Choice, float]:
-        logging.debug(
-            "Based on single text answer, so answer probabilities are either 0. or 1. when identifiable."
-        )
+        logging.debug("Based on single text answer, so answer probabilities are either 0. or 1. when identifiable.")
         answer_key = self._extract_answer_key_from_generated_text(text)
         if answer_key is None:
             p = 1.0 / len(self.choices)
@@ -640,7 +603,8 @@ class MultipleChoiceQA(QAInterface):
             return {c: p for c in self.choices}
         else:
             choice = self.get_choice_from_answer_key(answer_key)
-            logging.debug(f"Successfully extracted answer {choice.text}")
+            if choice is not None:
+                logging.debug(f"Successfully extracted answer {choice.text}")
             return {c: float(c == choice) for c in self.choices}
 
     # Assumes multiple text samples
@@ -652,14 +616,12 @@ class MultipleChoiceQA(QAInterface):
         counts = Counter(
             answer_key
             for output in text_samples
-            if (answer_key := self._extract_answer_key_from_generated_text(output))
-            is not None
+            if (answer_key := self._extract_answer_key_from_generated_text(output)) is not None
         )  # dict
 
         # Compute relative frequencies
         answer_dist = {
-            self.key_to_choice[answer_key]: count / num_model_outputs
-            for answer_key, count in counts.items()
+            self.key_to_choice[answer_key]: count / num_model_outputs for answer_key, count in counts.items()
         }
 
         # total prob
@@ -668,7 +630,7 @@ class MultipleChoiceQA(QAInterface):
         # Log total probability density assigned to answers
         msg = f"Answers have {answers_sum_prob:.2%} probability assigned."
         if answers_sum_prob < ANSWER_PROB_THRESHOLD:
-            max_choice = max(answer_dist, key=answer_dist.get)
+            max_choice = max(answer_dist, key=lambda k: answer_dist[k])
             logging.warning(msg + f" Argmax choice: '{max_choice}'.")
         else:
             logging.debug(msg)

@@ -245,11 +245,11 @@ variables_dicts_list = [
 ]
 
 # create two lists, one with the original SIPP variable names and another one with the names I'll be assigning them
-sipp_variables_names = [list(vars_dict.values()) for vars_dict in variables_dicts_list]
-sipp_variables_names = list(chain.from_iterable(sipp_variables_names))
+_sipp_names_nested = [list(vars_dict.values()) for vars_dict in variables_dicts_list]
+sipp_variables_names: list[str] = list(chain.from_iterable(_sipp_names_nested))
 
-my_variables_names = [chain.from_iterable(list(vars_dict.keys())) for vars_dict in variables_dicts_list]
-my_variables_names = list(chain.from_iterable(my_variables_names))
+_my_names_nested = [chain.from_iterable(list(vars_dict.keys())) for vars_dict in variables_dicts_list]
+my_variables_names: list[str] = list(chain.from_iterable(_my_names_nested))
 
 
 def download_sipp(
@@ -257,7 +257,7 @@ def download_sipp(
         "https://www2.census.gov/programs-surveys/sipp/data/datasets/2014/w1/pu2014w1_v13.dta.gz",
         "https://www2.census.gov/programs-surveys/sipp/data/datasets/2014/w2/pu2014w2_v13.dta.gz",
     ),
-    save_path: str = "./data/sipp/",
+    save_path: str | Path = "./data/sipp/",
     overwrite_download: bool = False,
 ):
     if isinstance(data_source, str):
@@ -301,8 +301,8 @@ def download_sipp_zip(
         else:
             response = requests.get(url=data_source + zip_file)
             response.raise_for_status()  # Raise an error on bad status
-            zip_file = zipfile.ZipFile(io.BytesIO(response.content))
-            zip_file.extractall(save_path.as_posix())
+            zip_archive = zipfile.ZipFile(io.BytesIO(response.content))
+            zip_archive.extractall(save_path.as_posix())
             print("Successfully downloaded SIPP data.")
 
 

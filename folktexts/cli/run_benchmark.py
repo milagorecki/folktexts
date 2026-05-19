@@ -9,6 +9,7 @@ import logging
 import sys
 from argparse import ArgumentParser
 from pathlib import Path
+from typing import Any
 
 import dotenv
 
@@ -47,7 +48,7 @@ def setup_arg_parser() -> ArgumentParser:
         return arg.split(",")
 
     # List of command-line arguments, with type and helper string
-    cli_args = [
+    cli_args: list[Any] = [
         ("--model", str, "[str] Model name or path to model saved on disk"),
         ("--results-dir", str, "[str] Directory under which this experiment's results will be saved"),
         ("--data-dir", str, "[str] Root folder to find datasets on"),
@@ -61,7 +62,7 @@ def setup_arg_parser() -> ArgumentParser:
     ]
 
     for arg in cli_args:
-        parser.add_argument(
+        parser.add_argument(  # type: ignore[arg-type]
             arg[0],
             type=arg[1],
             help=arg[2],
@@ -107,17 +108,28 @@ def setup_arg_parser() -> ArgumentParser:
         default=False,
     )
 
+    def _int_or_float_or_str(value: str) -> int | float | str:
+        try:
+            return int(value)
+        except ValueError:
+            pass
+        try:
+            return float(value)
+        except ValueError:
+            pass
+        return value
+
     parser.add_argument(
         "--reasoning",
         help=(
-            "[str] Reasoning/thinking effort for reasoning models. "
+            "[str|int] Reasoning/thinking effort for reasoning models. "
             "Use '0' for Qwen3 to explicitly disable thinking (omit to use model default). "
             "Use 'low', 'medium', or 'high' for OpenAI reasoning models (sets reasoning_effort). "
             "Use a float in (0, 1] (fraction of max_new_tokens) or a positive integer "
             "(literal budget_tokens, min 1024) for Claude reasoning models. "
             "Ignored for non-reasoning models. Required for known reasoning models."
         ),
-        type=str,
+        type=_int_or_float_or_str,
         required=False,
         default=None,
     )

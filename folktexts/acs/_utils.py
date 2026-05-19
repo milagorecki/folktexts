@@ -30,9 +30,7 @@ def parse_pums_code(
                     continue
 
                 code, description = m.group("code"), m.group("description")
-                file_cache[int(code)] = (
-                    description  # raw; postprocess applied at lookup
-                )
+                file_cache[int(code)] = description  # raw; postprocess applied at lookup
 
         CACHE_PUMS_CODES[file] = file_cache
 

@@ -6,7 +6,7 @@ import dataclasses
 import logging
 from functools import partial
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -131,7 +131,7 @@ class Benchmark:
     """
     Standardized configurations for the ACS data to use for benchmarking.
     """
-    ACS_DATASET_CONFIGS = {
+    ACS_DATASET_CONFIGS: dict[str, Any] = {
         # ACS survey configs
         "survey_year": "2018",
         "horizon": "1-Year",
@@ -144,7 +144,7 @@ class Benchmark:
         "seed": 42,
     }
 
-    DATASET_CONFIGS = {
+    DATASET_CONFIGS: dict[str, Any] = {
         # survey configs should be defined in task
         # Data split configs
         "test_size": 0.1,
@@ -402,7 +402,7 @@ class Benchmark:
         plots_paths : dict[str, str]
             The paths to the saved plots.
         """
-        if self._results is None:
+        if self._results is None or self._y_test_scores is None:
             raise ValueError("No results to plot. Run the benchmark first.")
 
         imgs_dir = Path(self.results_dir) / "imgs"
@@ -477,9 +477,9 @@ class Benchmark:
         task_name: str,
         *,
         model: AutoModelForCausalLM | str,
-        tokenizer: AutoTokenizer = None,
-        data_dir: str | Path = None,
-        max_api_rpm: int = None,
+        tokenizer: AutoTokenizer | None = None,
+        data_dir: str | Path | None = None,
+        max_api_rpm: int | None = None,
         config: BenchmarkConfig = BenchmarkConfig.default_config(),
         **kwargs,
     ) -> Benchmark:
@@ -550,9 +550,9 @@ class Benchmark:
         task_name: str,
         *,
         model: AutoModelForCausalLM | str,
-        tokenizer: AutoTokenizer = None,
-        data_dir: str | Path = None,
-        max_api_rpm: int = None,
+        tokenizer: AutoTokenizer | None = None,
+        data_dir: str | Path | None = None,
+        max_api_rpm: int | None = None,
         config: BenchmarkConfig = BenchmarkConfig.default_config(),
         **kwargs,
     ) -> Benchmark:
@@ -630,9 +630,9 @@ class Benchmark:
         task_name: str,
         *,
         model: AutoModelForCausalLM | str,
-        tokenizer: AutoTokenizer = None,
-        data_dir: str | Path = None,
-        max_api_rpm: int = None,
+        tokenizer: AutoTokenizer | None = None,
+        data_dir: str | Path | None = None,
+        max_api_rpm: int | None = None,
         config: BenchmarkConfig = BenchmarkConfig.default_config(),
         **kwargs,
     ) -> Benchmark:
@@ -704,8 +704,8 @@ class Benchmark:
         task: TaskMetadata | str,
         dataset: Dataset,
         model: AutoModelForCausalLM | str,
-        tokenizer: AutoTokenizer = None,  # WebAPI models have no local tokenizer
-        max_api_rpm: int = None,
+        tokenizer: AutoTokenizer | None = None,  # WebAPI models have no local tokenizer
+        max_api_rpm: int | None = None,
         config: BenchmarkConfig = BenchmarkConfig.default_config(),
         **kwargs,
     ) -> Benchmark:
@@ -792,7 +792,7 @@ class Benchmark:
             )
 
         # Parse LLMClassifier parameters
-        llm_inference_kwargs = {
+        llm_inference_kwargs: dict[str, Any] = {
             "correct_order_bias": config.correct_order_bias,
             "prompt_config": prompt_config,
             "reasoning": config.reasoning,
@@ -815,6 +815,7 @@ class Benchmark:
             logging.info(f"Using webAPI model: {model}")
 
         else:
+            assert tokenizer is not None, "Tokenizer must be provided for local transformers models."
             llm_clf = TransformersLLMClassifier(
                 model=model,
                 tokenizer=tokenizer,

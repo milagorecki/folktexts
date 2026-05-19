@@ -36,23 +36,28 @@ class SIPPTaskMetadata(TaskMetadata):
         cls,
         name: str,
         features: list[str],
-        target: str = None,
-        sensitive_attribute: str = None,
-        target_threshold: Threshold = None,
-        multiple_choice_qa: MultipleChoiceQA = None,
-        direct_numeric_qa: DirectNumericQA = None,
-        description: str = None,
+        target: str | None = None,
+        sensitive_attribute: str | None = None,
+        target_threshold: Threshold | None = None,
+        multiple_choice_qa: MultipleChoiceQA | None = None,
+        direct_numeric_qa: DirectNumericQA | None = None,
+        description: str | None = None,
     ) -> SIPPTaskMetadata:
-        """Create an Tableshift task object from the given parameters."""
+        """Create an SIPP task object from the given parameters."""
         # Resolve target column name
-        target_col_name = target_threshold.apply_to_column_name(target) if target_threshold is not None else target
+        target_col_name = (
+            target_threshold.apply_to_column_name(target)
+            if target_threshold is not None and target is not None
+            else target
+        )
 
         # Get default Q&A interfaces for this task's target column
-        if multiple_choice_qa is None:
+        if multiple_choice_qa is None and target_col_name is not None:
             multiple_choice_qa = sipp_questions.sipp_multiple_choice_qa_map.get(target_col_name)
-        if direct_numeric_qa is None:
+        if direct_numeric_qa is None and target_col_name is not None:
             direct_numeric_qa = sipp_questions.sipp_numeric_qa_map.get(target_col_name)
 
+        assert target is not None, "target must be provided"
         return cls(
             name=name,
             features=features,
@@ -69,8 +74,8 @@ class SIPPTaskMetadata(TaskMetadata):
     def make_sipp_task(
         cls,
         name: str,
-        target_threshold: Threshold = None,
-        description: str = None,
+        target_threshold: Threshold | None = None,
+        description: str | None = None,
     ) -> SIPPTaskMetadata:
 
         target_col = "OPM_RATIO"

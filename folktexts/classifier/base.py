@@ -8,7 +8,7 @@ from abc import ABC, abstractmethod
 from functools import partial
 from os import remove
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 import numpy as np
 import pandas as pd
@@ -46,7 +46,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         self,
         model_name: str,
         task: TaskMetadata | str,
-        encode_row: Callable[[pd.Series], str] = None,
+        encode_row: Callable[..., str] | None = None,
         threshold: float = 0.5,
         correct_order_bias: bool = True,
         seed: int = 42,
@@ -87,7 +87,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
 
         self._prompt_config = prompt_config or PromptConfig.from_dict(pv={}, task=self.task)
 
-        self._encode_row = encode_row or partial(
+        self._encode_row: Callable[..., str] = encode_row or partial(
             default_encode_row_prompt,
             task=self.task,
             prompt_config=self._prompt_config,
@@ -135,7 +135,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         return self._prompt_config
 
     @property
-    def encode_row(self) -> Callable[[pd.Series], str]:
+    def encode_row(self) -> Callable[..., str]:
         return self._encode_row
 
     @property
@@ -342,7 +342,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         *,
         question: MultipleChoiceQA | DirectNumericQA,
         context_size: int = None,
-    ) -> np.ndarray:
+    ) -> tuple[list[float], list[Any]]:
         """Query model with a batch of prompts and return risk estimates."""
         raise NotImplementedError("Calling an abstract method :: Use one of the subclasses of LLMClassifier.")
 

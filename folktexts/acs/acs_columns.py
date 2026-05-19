@@ -75,9 +75,7 @@ acs_schooling = ColumnToText(
         23: "Professional degree beyond a bachelor's degree",
         24: "Doctorate degree",
     },
-    verbalize=lambda x: (
-        f"The person is {'the' if x.startswith('Owner') else ''} {x.lower()}."
-    ),
+    verbalize=lambda x: f"The person is {'the' if x.startswith('Owner') else ''} {x.lower()}.",
 )
 
 # MAR: Marital Status
@@ -91,9 +89,7 @@ acs_marital_status = ColumnToText(
         4: "Separated",
         5: "Never married",
     },
-    verbalize=lambda x: (
-        f"The person {'was' if x.startswith('Never') else 'is'} {x.lower()}."
-    ),
+    verbalize=lambda x: f"The person {'was' if x.startswith('Never') else 'is'} {x.lower()}.",
 )
 
 # OCCP: Occupation
@@ -103,9 +99,7 @@ acs_occupation = ColumnToText(
     value_map=partial(
         parse_pums_code,
         file=ACS_CODEBOOK_DIR / "OCCP.txt",
-        postprocess=lambda x: (
-            x.split("-", 1)[1] if len(x.split("-", 1)) == 2 else x.split("-", 1)[0]
-        ),
+        postprocess=lambda x: x.split("-", 1)[1] if len(x.split("-", 1)) == 2 else x.split("-", 1)[0],
     ),
     verbalize=lambda x: f"The person's occupation is '{x}'.",
 )
@@ -207,9 +201,7 @@ acs_race_native_hawaiian = ColumnToText(
         0: "No",
         1: "Yes",
     },
-    verbalize=lambda x: (
-        f"The person {'identifies' if x == 'Yes' else 'does not indetify'} as Native Hawaiian."
-    ),
+    verbalize=lambda x: f"The person {'identifies' if x == 'Yes' else 'does not indetify'} as Native Hawaiian.",
 )
 
 acs_race_black = ColumnToText(
@@ -231,9 +223,7 @@ acs_race_asian = ColumnToText(
         0: "No",
         1: "Yes",
     },
-    verbalize=lambda x: (
-        f"The person {'identifies' if x == 'Yes' else 'does not indetify'} as Asian."
-    ),
+    verbalize=lambda x: f"The person {'identifies' if x == 'Yes' else 'does not indetify'} as Asian.",
 )
 
 acs_race_white = ColumnToText(
@@ -243,9 +233,7 @@ acs_race_white = ColumnToText(
         0: "No",
         1: "Yes",
     },
-    verbalize=lambda x: (
-        f"The person {'identifies' if x == 'Yes' else 'does not indetify'} as White."
-    ),
+    verbalize=lambda x: f"The person {'identifies' if x == 'Yes' else 'does not indetify'} as White.",
 )
 
 acs_race_pi = ColumnToText(
@@ -268,9 +256,7 @@ acs_race_other = ColumnToText(
         0: "No",
         1: "Yes",
     },
-    verbalize=lambda x: (
-        f"The person {'identifies' if x == 'Yes' else 'does not indetify'} with some other race."
-    ),
+    verbalize=lambda x: f"The person {'identifies' if x == 'Yes' else 'does not indetify'} with some other race.",
 )
 
 acs_race_aian = ColumnToText(
@@ -310,9 +296,7 @@ acs_income_qa = MultipleChoiceQA(
 
 acs_income_numeric_qa = DirectNumericQA(
     column=acs_income_threshold.apply_to_column_name("PINCP"),
-    text=(
-        "What is the probability that this person's estimated yearly income is above $50,000 ?"
-    ),
+    text=("What is the probability that this person's estimated yearly income is above $50,000 ?"),
 )
 
 acs_income_target_col = ColumnToText(
@@ -333,9 +317,7 @@ acs_pubcov_og_qa = MultipleChoiceQA(
     text="Does this person have public health insurance coverage?",
     choices=(
         Choice("Yes, person is covered by public health insurance", 1),
-        Choice(
-            "No, person is not covered by public health insurance", 2
-        ),  # NOTE: value=2 for no public coverage!
+        Choice("No, person is not covered by public health insurance", 2),  # NOTE: value=2 for no public coverage!
     ),
 )
 
@@ -356,9 +338,7 @@ acs_pubcov_qa = MultipleChoiceQA(
     text="Does this person have public health insurance coverage?",
     choices=(
         Choice("Yes, person is covered by public health insurance", 1),
-        Choice(
-            "No, person is not covered by public health insurance", 0
-        ),  # NOTE: value=0 for no public coverage!
+        Choice("No, person is not covered by public health insurance", 0),  # NOTE: value=0 for no public coverage!
     ),
 )
 
@@ -385,9 +365,7 @@ acs_disability = ColumnToText(
         1: "With a disability",
         2: "No disability",
     },
-    verbalize=lambda x: (
-        f"The person has {'a' if x.startswith('With') else 'no'} disability."
-    ),
+    verbalize=lambda x: f"The person has {'a' if x.startswith('With') else 'no'} disability.",
 )
 
 # ESP: Employment Status of Parents
@@ -435,16 +413,12 @@ acs_mobility = ColumnToText(
         2: "Lived in a different house, outside the United States and Puerto Rico, one year ago",
         3: "Lived in a different house in the United States one year ago",
     },
-    verbalize=lambda x: (
-        f"Considering the mobility status over the last year, the person {x[0].lower() + x[1:]}."
-    ),
+    verbalize=lambda x: f"Considering the mobility status over the last year, the person {x[0].lower() + x[1:]}.",
 )
 
 # MIG: Mobility Status (Thresholded)
 acs_mobility_qa = MultipleChoiceQA(
-    column=acs_mobility_threshold.apply_to_column_name(
-        "MIG"
-    ),  # NOTE: Thresholded by MIG!=1
+    column=acs_mobility_threshold.apply_to_column_name("MIG"),  # NOTE: Thresholded by MIG!=1
     text="Has this person moved in the last year?",
     choices=(
         Choice("No, person has lived in the same house for the last year", 0),
@@ -453,9 +427,7 @@ acs_mobility_qa = MultipleChoiceQA(
 )
 
 acs_mobility_numeric_qa = DirectNumericQA(
-    column=acs_mobility_threshold.apply_to_column_name(
-        "MIG"
-    ),  # NOTE: Thresholded by MIG!=1
+    column=acs_mobility_threshold.apply_to_column_name("MIG"),  # NOTE: Thresholded by MIG!=1
     text=(
         "What is the probability that this person has moved in the last year?"
     ),  # NOTE: Question should relate to probability of MIG!=1
@@ -466,9 +438,7 @@ acs_mobility_target_col = ColumnToText(
     short_description="mobility status over the last year",
     question=acs_mobility_qa,
     use_value_map_only=True,
-    verbalize=lambda x: (
-        f"Considering the mobility status over the last year, the person {x[0].lower() + x[1:]}."
-    ),
+    verbalize=lambda x: f"Considering the mobility status over the last year, the person {x[0].lower() + x[1:]}.",
 )
 
 # MIL: Military Service Status
@@ -501,9 +471,7 @@ acs_ancestry = ColumnToText(
         4: "Not reported",
         8: "N/A (information suppressed for certain area codes)",
     },
-    verbalize=lambda x: (
-        f"The person's ancenstry is {x.lower() if not x.startswith('N/A') else 'not available'}."
-    ),
+    verbalize=lambda x: f"The person's ancenstry is {x.lower() if not x.startswith('N/A') else 'not available'}.",
 )
 
 # ANC1P: Detailed Ancestry
@@ -515,9 +483,7 @@ acs_detailed_ancestry = ColumnToText(
         file=ACS_CODEBOOK_DIR / "ANC1P.txt",
         postprocess=lambda x: x.strip(),
     ),
-    verbalize=lambda x: (
-        f"The person's ancenstry is {x.lower() if not x.startswith('N/A') else 'not available'}."
-    ),
+    verbalize=lambda x: f"The person's ancenstry is {x.lower() if not x.startswith('N/A') else 'not available'}.",
 )
 
 # NATIVITY: Nativity
@@ -541,9 +507,7 @@ acs_lanx = ColumnToText(
     },
     use_value_map_only=True,
     missing_value_fill="N/A (less than 5 years old)",
-    verbalize=lambda x: (
-        f"The person {x[0].lower() + x[1:] if not x.startswith('N/A') else 'only English'}."
-    ),
+    verbalize=lambda x: f"The person {x[0].lower() + x[1:] if not x.startswith('N/A') else 'only English'}.",
 )
 
 # LANP: Language spoken at home
@@ -556,9 +520,7 @@ acs_lanp = ColumnToText(
         postprocess=lambda x: x.strip(),
     ),
     missing_value_fill="N/A (speaks only English at home)",
-    verbalize=lambda x: (
-        f"The person' speaks {x if not x.startswith('N/A') else 'only English'} at home."
-    ),
+    verbalize=lambda x: f"The person' speaks {x if not x.startswith('N/A') else 'only English'} at home.",
 )
 
 # ENG: Ability to Speak English
@@ -572,9 +534,7 @@ acs_eng = ColumnToText(
         4: "Not at all",
     },
     missing_value_fill="Native (speaks only English)",
-    verbalize=lambda x: (
-        f"The person speaks English {x.lower() if not x.startswith('N/A') else 'natively'}."
-    ),
+    verbalize=lambda x: f"The person speaks English {x.lower() if not x.startswith('N/A') else 'natively'}.",
 )
 
 # NOP: Nativity of Parents
@@ -608,9 +568,7 @@ acs_hearing = ColumnToText(
         1: "With hearing difficulty",
         2: "No hearing difficulty",
     },
-    verbalize=lambda x: (
-        f"The person has {'a' if x.startswith('With') else 'no'} hearing difficulty."
-    ),
+    verbalize=lambda x: f"The person has {'a' if x.startswith('With') else 'no'} hearing difficulty.",
 )
 
 # DEYE: Vision Status
@@ -621,9 +579,7 @@ acs_vision = ColumnToText(
         1: "With vision difficulty",
         2: "No vision difficulty",
     },
-    verbalize=lambda x: (
-        f"The person has {'a' if x.startswith('With') else 'no'} vision difficulty."
-    ),
+    verbalize=lambda x: f"The person has {'a' if x.startswith('With') else 'no'} vision difficulty.",
 )
 
 # DREM: Cognitive Status
@@ -798,9 +754,7 @@ acs_commute_method = ColumnToText(
     },
     verbalize=lambda x: (
         f"The person's means of transportation to work is a {x.lower()}."
-        if not (
-            x.startswith("Other") or x.startswith("Walked") or x.startswith("Worked")
-        )
+        if not (x.startswith("Other") or x.startswith("Walked") or x.startswith("Worked"))
         else (
             "The person uses other means of transportation to work."
             if x.startswith("Other")
@@ -837,7 +791,7 @@ acs_poverty_ratio_qa = MultipleChoiceQA(
     column=acs_poverty_ratio_threshold.apply_to_column_name("POVPIP"),
     text=(
         "Is this person's income-to-poverty ratio below 2.5 ? "
-        "That is, is this person's annual income below 2.5 times the poverty line income?",
+        "That is, is this person's annual income below 2.5 times the poverty line income?"
     ),
     choices=(
         Choice("Yes, this person earns below 2.5 times the poverty line income", 1),
@@ -887,9 +841,7 @@ acs_powpuma_col = ColumnToText(
     "POWPUMA",
     short_description="place of work PUMA",
     use_value_map_only=True,
-    value_map=lambda x: (
-        f"Public Use Microdata Area (PUMA) code for the place of work: {int(x)}."
-    ),
+    value_map=lambda x: f"Public Use Microdata Area (PUMA) code for the place of work: {int(x)}.",
     # missing_value_fill="N/A (not a worker, or worker who worked at home)",
     verbalize=lambda x: f"The person's {x}.".replace(":", " is"),
 )
@@ -903,7 +855,7 @@ acs_health_ins_2_col = ColumnToText(
         1: "Person has purchased insurance directly from an insurance company",
         2: (
             "Person has not purchased insurance directly from an insurance "
-            "company (is either uninsured or insured through another source)",
+            "company (is either uninsured or insured through another source)"
         ),
     },
     verbalize=lambda x: f"The {x[0].lower() + x[1:]}.",

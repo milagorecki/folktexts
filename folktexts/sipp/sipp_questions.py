@@ -9,25 +9,25 @@ from folktexts.qa_interface import MultipleChoiceQA as _MultipleChoiceQA
 from . import sipp_columns
 
 # Map of SIPP column names to ColumnToText objects
-sipp_columns_map: dict[str, object] = {
+sipp_columns_map: dict[str, ColumnToText] = {
     col_mapper.name: col_mapper for col_mapper in sipp_columns.__dict__.values() if isinstance(col_mapper, ColumnToText)
 }
 
 # Map of numeric SIPP questions
-sipp_numeric_qa_map: dict[str, object] = {
+sipp_numeric_qa_map: dict[str, _DirectNumericQA] = {
     question.column: question for question in sipp_columns.__dict__.values() if isinstance(question, _DirectNumericQA)
 }
 
 # Map of multiple-choice SIPP questions
-sipp_multiple_choice_qa_map: dict[str, object] = {
+sipp_multiple_choice_qa_map: dict[str, _MultipleChoiceQA] = {
     question.column: question for question in sipp_columns.__dict__.values() if isinstance(question, _MultipleChoiceQA)
 }
 
 # ... include all multiple-choice questions defined in the column descriptions
 sipp_multiple_choice_qa_map.update(
     {
-        col_to_text.name: col_to_text.question
+        col_to_text.name: q
         for col_to_text in sipp_columns_map.values()
-        if (isinstance(col_to_text, ColumnToText) and col_to_text._question is not None)
+        if isinstance(col_to_text, ColumnToText) and isinstance(q := col_to_text._question, _MultipleChoiceQA)
     }
 )

@@ -130,7 +130,7 @@ def make_llm_clf_experiment(
 ) -> Experiment:
     """Create an experiment object to run."""
     # Get model size
-    model_size_B = get_model_size_B(model_name, default=8)
+    model_size_B: float | int = get_model_size_B(model_name, default=8) or 8
 
     # Get model path
     model_path = get_model_folder_path(model_name, root_dir=models_dir)

@@ -7,20 +7,6 @@ import logging
 from dataclasses import asdict, dataclass
 from string import Template
 
-try:
-    from tableshift.configs.benchmark_configs import BENCHMARK_CONFIGS, PreprocessorConfig
-    from tableshift.configs.experiment_config import ExperimentConfig
-    from tableshift.core.splitter import RandomSplitter
-    from tableshift.core.tasks import _TASK_REGISTRY, TaskConfig
-    _TABLESHIFT_AVAILABLE = True
-except ImportError:
-    PreprocessorConfig = None
-    class TaskConfig:  # noqa: E701
-        pass
-    class ExperimentConfig:  # noqa: E701
-        pass
-    _TABLESHIFT_AVAILABLE = False
-
 from .._utils import hash_dict
 from ..col_to_text import ColumnToText as _ColumnToText
 from ..dataset import DEFAULT_TEST_SIZE, DEFAULT_VAL_SIZE
@@ -29,6 +15,29 @@ from ..task import TaskMetadata
 from ..threshold import Threshold
 from . import brfss_columns, brfss_questions
 from .tableshift_thresholds import brfss_diabetes_threshold, brfss_hypertension_threshold
+
+
+class _TaskConfigStub:
+    pass
+
+
+class _ExperimentConfigStub:
+    pass
+
+
+try:
+    from tableshift.configs.benchmark_configs import BENCHMARK_CONFIGS, PreprocessorConfig
+    from tableshift.configs.experiment_config import ExperimentConfig
+    from tableshift.core.splitter import RandomSplitter
+    from tableshift.core.tasks import _TASK_REGISTRY, TaskConfig
+
+    _TABLESHIFT_AVAILABLE = True
+except ImportError:
+    PreprocessorConfig = None
+    TaskConfig = _TaskConfigStub
+    ExperimentConfig = _ExperimentConfigStub
+    _TABLESHIFT_AVAILABLE = False
+
 
 TABLESHIFT_TASK_DESCRIPTION = Template("""\
 The following data corresponds to $respondent. \
@@ -43,23 +52,27 @@ TABLESHIFT_TASK_DESCRIPTION_DEFAULTS = {
 }
 
 # custom preprocessor to avoid normalization and one-hot encoding
-passthrough_preprocessor_config = PreprocessorConfig(
-    categorical_features="passthrough",  # Options: one_hot (default), map_values, label_encode, passthrough.
-    numeric_features="passthrough",  # Options: normalize (default), passthrough, map_values.
-    domain_labels="label_encode",  # default
-    passthrough_columns=["IYEAR"],
-    dropna="rows",  # default
-    use_extended_names=False,  # default
-    map_targets=False,  # default
-    cast_targets_to_default_type=False,  # default
-    min_frequency=None,  # default
-    max_categories=None,  # default
-    n_bins=5,  # default
-    sub_illegal_chars=True,  # default
-) if _TABLESHIFT_AVAILABLE else None
+passthrough_preprocessor_config = (
+    PreprocessorConfig(
+        categorical_features="passthrough",  # Options: one_hot (default), map_values, label_encode, passthrough.
+        numeric_features="passthrough",  # Options: normalize (default), passthrough, map_values.
+        domain_labels="label_encode",  # default
+        passthrough_columns=["IYEAR"],
+        dropna="rows",  # default
+        use_extended_names=False,  # default
+        map_targets=False,  # default
+        cast_targets_to_default_type=False,  # default
+        min_frequency=None,  # default
+        max_categories=None,  # default
+        n_bins=5,  # default
+        sub_illegal_chars=True,  # default
+    )
+    if _TABLESHIFT_AVAILABLE
+    else None
+)
 
 # Map of BRFSS column names to ColumnToText objects
-brfss_columns_map: dict[str, object] = {
+brfss_columns_map: dict[str, _ColumnToText] = {
     col_mapper.name: col_mapper
     for col_mapper in brfss_columns.__dict__.values()
     if isinstance(col_mapper, _ColumnToText)
@@ -81,31 +94,36 @@ class TableshiftBRFSSTaskMetadata(TaskMetadata):
     """A class to hold information on an Tableshift BRFSS prediction task."""
 
     # The tableshift task object from the folktables package
-    tableshift_obj: TableshiftTask = None
+    tableshift_obj: TableshiftTask | None = None
 
     @classmethod
     def make_task(
         cls,
         name: str,
         features: list[str],
-        target: str = None,
-        sensitive_attribute: str = None,
-        target_threshold: Threshold = None,
-        multiple_choice_qa: MultipleChoiceQA = None,
-        direct_numeric_qa: DirectNumericQA = None,
-        description: str = None,
-        tableshift_obj: TableshiftTask = None,
+        target: str | None = None,
+        sensitive_attribute: str | None = None,
+        target_threshold: Threshold | None = None,
+        multiple_choice_qa: MultipleChoiceQA | None = None,
+        direct_numeric_qa: DirectNumericQA | None = None,
+        description: str | None = None,
+        tableshift_obj: TableshiftTask | None = None,
     ) -> TableshiftBRFSSTaskMetadata:
         """Create an Tableshift task object from the given parameters."""
         # Resolve target column name
-        target_col_name = target_threshold.apply_to_column_name(target) if target_threshold is not None else target
+        target_col_name = (
+            target_threshold.apply_to_column_name(target)
+            if target_threshold is not None and target is not None
+            else target
+        )
 
         # Get default Q&A interfaces for this task's target column
-        if multiple_choice_qa is None:
+        if multiple_choice_qa is None and target_col_name is not None:
             multiple_choice_qa = brfss_questions.brfss_multiple_choice_qa_map.get(target_col_name)
-        if direct_numeric_qa is None:
+        if direct_numeric_qa is None and target_col_name is not None:
             direct_numeric_qa = brfss_questions.brfss_numeric_qa_map.get(target_col_name)
 
+        assert target is not None, "target must be provided"
         return cls(
             name=name,
             features=features,
@@ -123,8 +141,8 @@ class TableshiftBRFSSTaskMetadata(TaskMetadata):
     def make_tableshift_task(
         cls,
         name: str,
-        target_threshold: Threshold = None,
-        description: str = None,
+        target_threshold: Threshold | None = None,
+        description: str | None = None,
         val_size: float = DEFAULT_VAL_SIZE,  # default in getter
         test_size: float = DEFAULT_TEST_SIZE,  # default in getter
     ) -> TableshiftBRFSSTaskMetadata:
@@ -156,7 +174,7 @@ class TableshiftBRFSSTaskMetadata(TaskMetadata):
             raise ValueError(f"Could not find task '{name.lower()}' in tableshift package.")
 
         logging.debug("Using only first sensitive attribute for task.")
-        tableshift_task = cls.make_task(
+        brfss_task = cls.make_task(
             name=name,
             features=[
                 f for f in tableshift_task.feature_list.names if f != tableshift_task.feature_list.target
@@ -168,7 +186,7 @@ class TableshiftBRFSSTaskMetadata(TaskMetadata):
             tableshift_obj=tableshift_task,
         )
 
-        return tableshift_task
+        return brfss_task
 
     def __hash__(self) -> int:
         hashable_params = asdict(self)
