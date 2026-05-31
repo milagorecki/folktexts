@@ -14,7 +14,7 @@ import re
 from abc import ABC
 from collections import Counter
 from dataclasses import dataclass
-from typing import Iterator
+from typing import ClassVar, Iterator
 
 import numpy as np
 
@@ -32,6 +32,34 @@ _ANSWER_PATTERNS = [
     r"[Aa]nswer:?\s*"
 ]
 
+# ---------------------------------------------------------------------------
+# Default system / chat prompts — owned here so each QAInterface subclass can
+# declare its own defaults without importing from prompting.py (which imports
+# from this module, which would create a circular dependency).
+# ---------------------------------------------------------------------------
+
+SYSTEM_PROMPT = """\
+You are a helpful assistant. You answer multiple-choice questions \
+based on the information provided. Respond with a single answer choice.
+"""
+
+NUMERIC_SYSTEM_PROMPT = """\
+You are a helpful assistant. You provide numeric probability \
+estimates based on the information provided.
+"""
+ANTHROPIC_CHAT_PROMPT = "If had to select one of the options, my answer would be"
+GEMMA_CHAT_PROMPT = "The provided information suggests that the answer is"
+
+
+# NOTE: The leading `0.` is part of the prefill, so the model only generates
+# the digits after the decimal point. This caps the expressible probability
+# at the open interval [0, 1) — true posteriors at or near 1.0 cannot be
+# emitted exactly. If you need full [0, 1] coverage, override `chat_prompt`
+# with e.g. `"Answer (between 0 and 1): "` and let the model produce the
+# leading digit itself (note that this also widens the digit-scoring search
+# space and may degrade calibration for low-probability cases).
+NUMERIC_CHAT_PROMPT = "Answer (between 0 and 1): 0."
+
 
 @dataclass(frozen=True)
 class QAInterface(ABC):
@@ -42,12 +70,25 @@ class QAInterface(ABC):
     num_forward_passes: int
     use_generated_text: bool = False
 
+    # Subclasses override these to declare their mode-appropriate defaults.
+    # `None` means "no default" (i.e. no system prompt / no chat prefill).
+    default_system_prompt: ClassVar[str | None] = SYSTEM_PROMPT
+    default_chat_prompt: ClassVar[str | None] = ANTHROPIC_CHAT_PROMPT
+
     def get_answer_prefix(self) -> str:
         """Returns the answer label that follows the question (e.g. 'Answer:')."""
         raise NotImplementedError
 
-    def get_question_prompt(self) -> str:
-        """Returns a question and answer key."""
+    def get_question_prompt(self, with_answer_prefill: bool = True) -> str:
+        """Returns the question text.
+
+        `with_answer_prefill=True` (the default) bakes the answer prefill into
+        the returned string — required by the zero-shot / few-shot last-token
+        scoring path, which reads probabilities from the very next token after
+        the prefill. Set to `False` for chat-template prompting, where the
+        prefill is supplied separately as the assistant turn (otherwise the
+        same string ends up emitted twice and silently degrades scoring).
+        """
         raise NotImplementedError
 
     def get_answer_from_model_output(
@@ -140,13 +181,20 @@ class DirectNumericQA(QAInterface):
     num_forward_passes: int = 2  # NOTE: overrides superclass default
     answer_probability: bool = True
 
+    default_system_prompt: ClassVar[str] = NUMERIC_SYSTEM_PROMPT
+    default_chat_prompt: ClassVar[str] = NUMERIC_CHAT_PROMPT
+
     def get_answer_prefix(self) -> str:
         if self.answer_probability:
             return "Answer (between 0 and 1): 0."
         return "Answer: "
 
-    def get_question_prompt(self) -> str:
-        return f"Question: {self.text}\n{self.get_answer_prefix()}"
+    def get_question_prompt(self, with_answer_prefill: bool = True) -> str:
+        question_prompt = f"Question: {self.text}"
+        if with_answer_prefill:
+            question_prompt += f"\n{self.get_answer_prefix()}"
+
+        return question_prompt
 
     def _get_numeric_tokens(
         self,
@@ -157,6 +205,10 @@ class DirectNumericQA(QAInterface):
 
         This can include digits ("0"-"9"), multi-digit tokens (e.g., "100"), and
         the decimal point (".").
+
+        Token ids are filtered to `< vocab_dim` (the model's logits axis); some
+        tokenizer families place added/special tokens beyond the base vocab,
+        and the caller indexes `last_token_probs` by these ids.
 
         Parameters
         ----------
@@ -173,9 +225,7 @@ class DirectNumericQA(QAInterface):
             Mapping from numeric token string to token ID, filtered to
             ``token_id < vocab_dim``.
         """
-        numeric_tokens = {
-            key: token_id for key, token_id in tokenizer_vocab.items() if key.isdigit() and token_id < vocab_dim
-        }
+        numeric_tokens = {key: token_id for key, token_id in tokenizer_vocab.items() if key.isdigit() and token_id < vocab_dim}
 
         if "." in tokenizer_vocab and tokenizer_vocab["."] < vocab_dim:
             numeric_tokens["."] = tokenizer_vocab["."]
@@ -359,11 +409,11 @@ class MultipleChoiceQA(QAInterface):
     def get_answer_prefix(self) -> str:
         return "Answer:"
 
-    def get_question_prompt(self) -> str:
+    def get_question_prompt(self, with_answer_prefill: bool = True) -> str:
         choice_str = "\n".join(f"{key}. {choice.text}." for key, choice in self.key_to_choice.items())
 
         prompt = f"Question: {self.text}\n{choice_str}"
-        if not self.use_generated_text:
+        if not self.use_generated_text and with_answer_prefill:
             prompt += f"\n{self.get_answer_prefix()}"
         return prompt
 
@@ -469,9 +519,7 @@ class MultipleChoiceQA(QAInterface):
         """
         if last_token_probs.ndim > 1:
             if last_token_probs.shape[0] > 1:
-                logging.warning(
-                    f"Multiple ({last_token_probs.shape[0]}) forward passes detected: using only the first pass."
-                )
+                logging.warning(f"Multiple ({last_token_probs.shape[0]}) forward passes detected: using only the first pass.")
 
             # Using only 1st forward pass results
             last_token_probs = last_token_probs[0]
@@ -596,9 +644,7 @@ class MultipleChoiceQA(QAInterface):
         answer_key = self._extract_answer_key_from_generated_text(text)
         if answer_key is None:
             p = 1.0 / len(self.choices)
-            logging.debug(
-                f"No or multiple answers were found, use uniform prior: {p} for all {len(self.choices)} choices"
-            )
+            logging.debug(f"No or multiple answers were found, use uniform prior: {p} for all {len(self.choices)} choices")
             # uniform prior over answers
             return {c: p for c in self.choices}
         else:
@@ -620,9 +666,7 @@ class MultipleChoiceQA(QAInterface):
         )  # dict
 
         # Compute relative frequencies
-        answer_dist = {
-            self.key_to_choice[answer_key]: count / num_model_outputs for answer_key, count in counts.items()
-        }
+        answer_dist = {self.key_to_choice[answer_key]: count / num_model_outputs for answer_key, count in counts.items()}
 
         # total prob
         answers_sum_prob = sum(answer_dist.values())
@@ -636,3 +680,20 @@ class MultipleChoiceQA(QAInterface):
             logging.debug(msg)
 
         return {choice: prob / answers_sum_prob for choice, prob in answer_dist.items()}
+
+
+# Regex patterns for extracting probability from generated text
+# Matches formats like: "Probability: 80%", "Probability: 0.80", "probability: 80 percent"
+# Patterns are ordered by specificity - more specific patterns first
+_PROBABILITY_PATTERNS = [
+    # Match "Probability: X%" or "probability: X%" (with optional "is", "of", etc.)
+    r"[Pp]robability(?:\s+(?:is|of|estimate)?)?[:\s]+(\d+(?:\.\d+)?)\s*%",
+    # Match "Probability: 0.XX" or "probability: 0.XX" or "Probability: 1.0"
+    r"[Pp]robability(?:\s+(?:is|of|estimate)?)?[:\s]+(\d*\.?\d+)(?![%\d])",
+    # Match "X%" anywhere in text (prefer later matches in fallback)
+    r"(\d+(?:\.\d+)?)\s*%",
+    # Match "X percent" pattern
+    r"(\d+(?:\.\d+)?)\s+percent",
+    # Match standalone decimal (0.XX or .XX) that looks like probability
+    r"(?<![.\d])(0?\.\d+)(?![.\d])",
+]

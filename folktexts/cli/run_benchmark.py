@@ -6,6 +6,7 @@ Exemplary Usage:
 
 import json
 import logging
+import os
 import sys
 from argparse import ArgumentParser
 from pathlib import Path
@@ -36,6 +37,11 @@ SIPP_TASKS = ("SIPP",)
 DEFAULT_BATCH_SIZE = 16
 DEFAULT_CONTEXT_SIZE = 600
 DEFAULT_SEED = 42
+
+DEFAULT_INFERENCE_BACKEND = "transformers"
+DEFAULT_GPU_MEM_UTIL = 0.85
+DEFAULT_VLLM_DTYPE = "auto"
+DEFAULT_TENSOR_PARALLEL_SIZE = 1
 
 
 def setup_arg_parser() -> ArgumentParser:
@@ -83,6 +89,49 @@ def setup_arg_parser() -> ArgumentParser:
         type=str,
         help="[string] Directory under which models are saved.",
         required=False,
+    )
+    parser.add_argument(
+        "--inference-backend",
+        type=str,
+        choices=["transformers", "vllm"],
+        default=DEFAULT_INFERENCE_BACKEND,
+        help=(
+            "[str] Local inference backend to use; default is 'vllm'. "
+            "Pass 'transformers' to fall back to the HuggingFace path. "
+            "Ignored when --use-web-api-model is set."
+        ),
+    )
+
+    parser.add_argument(
+        "--gpu-memory-utilization",
+        type=float,
+        default=DEFAULT_GPU_MEM_UTIL,
+        help="[float] vLLM gpu_memory_utilization (default 0.85). Lower if vLLM OOMs at startup.",
+    )
+
+    parser.add_argument(
+        "--max-model-len",
+        type=int,
+        default=None,
+        help=(
+            "[int] vLLM max_model_len (input + output tokens). If unset, derived "
+            "from --context-size + ReasoningQA.max_new_tokens for the prompting "
+            "mode (currently 8000 for reasoning/thinking, 1 otherwise)."
+        ),
+    )
+
+    parser.add_argument(
+        "--vllm-dtype",
+        type=str,
+        default=DEFAULT_VLLM_DTYPE,
+        help="[str] vLLM compute dtype (auto/bfloat16/float16/float32).",
+    )
+
+    parser.add_argument(
+        "--tensor-parallel-size",
+        type=int,
+        default=None,
+        help=("[int] vLLM tensor_parallel_size. If unset, auto-detected from CUDA_VISIBLE_DEVICES (1 if unset)."),
     )
 
     parser.add_argument(
@@ -155,9 +204,31 @@ def setup_arg_parser() -> ArgumentParser:
         "--example-order",
         type=str,
         help=(
-            "[str] Comma-separated permutation of few-shot example indices, e.g. '2,0,1'. "
-            "Only used when --few-shot is set."
+            "[str] Comma-separated permutation of few-shot example indices, e.g. '2,0,1'. Only used when --few-shot is set."
         ),
+        required=False,
+        default=None,
+    )
+
+    parser.add_argument(
+        "--use-chat-template",
+        help="[bool] Whether to format prompts using the tokenizer's chat template (for instruct/chat models)",
+        action="store_true",
+        default=False,
+    )
+
+    parser.add_argument(
+        "--chat-prompt",
+        type=str,
+        help="[str] Custom assistant prefill text to use with chat templates",
+        required=False,
+        default=None,
+    )
+
+    parser.add_argument(
+        "--system-prompt",
+        type=str,
+        help="[str] Custom system prompt text to use with chat templates",
         required=False,
         default=None,
     )
@@ -244,16 +315,43 @@ def main():
         # update with args.variation
         prompt_variation_dict = {**prompt_variation_dict, **args.variation}
 
-    # Load model and tokenizer
-    # > Web-hosted LLM
     # Reasoning requires text-based answer extraction
     if args.reasoning is not None and not args.use_generated_text:
         parser.error("--use-generated-text must be set when --reasoning is specified.")
 
+    # Load model and tokenizer
+    backend = None  # webapi when --use-web-api-model; otherwise the local choice
+    # Web-hosted LLM
     if args.use_web_api_model:
         model = args.model
         tokenizer = None
-    # > Local LLM
+        backend = "webapi"
+
+    # Local LLM via vLLM
+    elif args.inference_backend == "vllm":
+        from folktexts.llm_utils import load_vllm_model
+
+        tensor_parallel_size = args.tensor_parallel_size
+        if tensor_parallel_size is None:
+            cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+            tensor_parallel_size = max(1, len([d for d in cuda_visible.split(",") if d.strip()]))
+
+        max_model_len = args.context_size + (
+            8000 if args.reasoning is not None else 1
+        )  # reasoning models may need more context for the generate intermediate tokens
+        # TODO: Define default max as global constant
+
+        model, tokenizer = load_vllm_model(
+            args.model,
+            dtype=args.vllm_dtype,
+            gpu_memory_utilization=args.gpu_memory_utilization,
+            max_model_len=max_model_len,
+            tensor_parallel_size=tensor_parallel_size,
+            seed=args.seed,
+        )
+        backend = "vllm"
+
+    # Local LLM via HuggingFace transformers (default)
     else:
         from folktexts.llm_utils import load_model_tokenizer
 
@@ -267,6 +365,8 @@ def main():
             model, tokenizer = load_model_tokenizer(args.model, padding_side="left")
         else:
             model, tokenizer = load_model_tokenizer(args.model)
+
+        backend = "transformers"
 
     # Build FewShotConfig if few-shot prompting is requested
     from folktexts.benchmark import BenchmarkConfig
@@ -285,7 +385,11 @@ def main():
     config = BenchmarkConfig(
         few_shot_config=few_shot_config,
         use_generated_text=args.use_generated_text,
+        prompt_variation=prompt_variation_dict,
         numeric_risk_prompting=args.numeric_risk_prompting,
+        use_chat_template=args.use_chat_template,
+        chat_prompt=args.chat_prompt,
+        system_prompt=args.system_prompt,
         reasoning=args.reasoning,
         batch_size=args.batch_size,
         context_size=args.context_size,
@@ -293,7 +397,6 @@ def main():
         feature_subset=args.use_feature_subset or None,
         population_filter=population_filter_dict,
         seed=args.seed,
-        prompt_variation=prompt_variation_dict,
     )
 
     # Create Benchmark object
@@ -321,6 +424,8 @@ def main():
         config=config,
         subsampling=args.subsampling,
         max_api_rpm=args.max_api_rpm,
+        backend=backend,
+        model_name_or_path=args.model if backend == "vllm" else None,
     )
 
     # Set-up results directory

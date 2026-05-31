@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
@@ -12,6 +14,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from .prompting import apply_chat_template
 
+if TYPE_CHECKING:
+    from folktexts.qa_interface import DirectNumericQA, MultipleChoiceQA
 # Will warn if the sum of digit probabilities is below this threshold
 PROB_WARN_THR = 0.5
 
@@ -74,7 +78,7 @@ def query_model_batch_multiple_passes(
     context_size: int,
     n_passes: int,
     digits_only: bool = False,
-) -> np.ndarray:
+) -> np.array:
     """Queries an LM for multiple forward passes.
 
     Greedy token search over multiple forward passes: Each forward pass takes
@@ -103,13 +107,26 @@ def query_model_batch_multiple_passes(
         Last token *linear* probabilities for each forward pass, for each text
         in the input batch. The output has shape (batch_size, n_passes, vocab_size).
     """
-    # If `digits_only`, get token IDs for digit tokens
-    allowed_tokens_filter = np.ones(len(tokenizer.vocab), dtype=np.bool_)
-    vocab_mismatch = False
+    # Mask is sized to the model's logits dim, not the tokenizer's vocab dict:
+    # neither `len(tokenizer.vocab)` nor `tokenizer.vocab_size` is reliable
+    # (Gemma-3 has `len(vocab) == vocab_size + 1`; Llama-3.2 has
+    # `len(vocab) == vocab_size + 256`). Only `model.config.vocab_size` matches
+    # the actual logits axis we're masking. Multimodal Gemma-3 puts vocab_size
+    # under `config.text_config` instead of the top-level config.
+    vocab_dim = getattr(model.config, "vocab_size", None)
+    if vocab_dim is None:
+        vocab_dim = getattr(getattr(model.config, "text_config", None), "vocab_size", None)
+    if vocab_dim is None:
+        raise AttributeError(
+            f"Could not resolve vocab_size from {type(model.config).__name__} (checked top-level and text_config)."
+        )
+    allowed_tokens_filter = np.ones(vocab_dim, dtype=bool)
     if digits_only:
-        allowed_token_ids = np.array([tok_id for token, tok_id in tokenizer.vocab.items() if token.isdecimal()])
+        allowed_token_ids = np.array(
+            [tok_id for token, tok_id in tokenizer.vocab.items() if token.isdecimal() and tok_id < vocab_dim]
+        )
 
-        allowed_tokens_filter = np.zeros(len(tokenizer.vocab), dtype=np.bool_)
+        allowed_tokens_filter = np.zeros(vocab_dim, dtype=bool)
         allowed_tokens_filter[allowed_token_ids] = True
 
     # Current text batch
@@ -126,9 +143,7 @@ def query_model_batch_multiple_passes(
             # Filter out probabilities for tokens that are not allowed
             current_probs[:, ~allowed_tokens_filter] = 0
         except IndexError:
-            logging.error(
-                "Size of tokenizer.vocab and model output don't match. Fix by recreating allowd_token_filter."
-            )
+            logging.error("Size of tokenizer.vocab and model output don't match. Fix by recreating allowd_token_filter.")
             vocab_mismatch = True
             actual_vocab_size = current_probs.shape[1]
             allowed_tokens_filter = np.ones(actual_vocab_size, dtype=np.bool_)
@@ -155,12 +170,65 @@ def query_model_batch_multiple_passes(
     # Cast output to np.array with correct shape
     last_token_probs_array: np.ndarray = np.array(last_token_probs)
     last_token_probs_array = np.moveaxis(last_token_probs_array, 0, 1)
-    assert last_token_probs_array.shape == (
-        len(text_inputs),
-        n_passes,
-        len(tokenizer.vocab) if not vocab_mismatch else actual_vocab_size,
-    )
+    assert last_token_probs_array.shape == (len(text_inputs), n_passes, vocab_dim)
     return last_token_probs_array
+
+
+def decode_topk_logprobs_to_risk_estimate(
+    per_pass_topk: list[dict[int, float]],
+    *,
+    tokenizer_vocab: dict[str, int],
+    vocab_dim: int,
+    question: "MultipleChoiceQA | DirectNumericQA",
+) -> float:
+    """Convert top-K log-probabilities into a single risk-estimate float.
+
+    Parameters
+    ----------
+    per_pass_topk : list[dict[int, float]]
+        One dict per generated token position, mapping token_id -> log-prob. The
+        token_ids must match the values in `tokenizer_vocab`. Tokens absent from
+        the top-K are assumed to have probability ~0.
+    tokenizer_vocab : dict[str, int]
+        Token string -> token_id map used by the QA decoder for prefix-variant
+        lookup (MultipleChoiceQA) or digit/decimal lookup (DirectNumericQA).
+    vocab_dim : int
+        Size of the linear-probability array's vocab axis. For local backends
+        this is `model.config.vocab_size` (the logits axis); for the synthetic
+        WebAPI path it is the size of the synthesised vocab.
+    question : MultipleChoiceQA | DirectNumericQA
+        The QA interface used to interpret the probabilities.
+
+    Returns
+    -------
+    risk_estimate : float
+        Risk score in [0, 1] from `question.get_answer_from_model_output`.
+
+    Notes
+    -----
+    Both the WebAPI backend (top_logprobs=20 from OpenAI-style responses) and
+    the vLLM backend (top-K logprobs from `SamplingParams(logprobs=K)`) call
+    this helper. The transformers backend reads the full softmax directly and
+    bypasses this path; see `query_model_batch_multiple_passes`.
+    """
+    n_passes = len(per_pass_topk)
+    probs = np.zeros((n_passes, vocab_dim), dtype=np.float64)
+    for i, pass_dict in enumerate(per_pass_topk):
+        for tok_id, logprob in pass_dict.items():
+            if 0 <= tok_id < vocab_dim:
+                probs[i, tok_id] = float(np.exp(logprob))
+
+    # Drop tokenizer-vocab entries that point past the array. MultipleChoiceQA's
+    # decoder does an unchecked `last_token_probs[choice_token_id]` lookup; on
+    # tokenizers where added tokens sit beyond `model.config.vocab_size`
+    # (Llama-3.2, Gemma-3) those ids would IndexError. DirectNumericQA already
+    # filters the same way internally — this keeps both modes consistent.
+    in_range_vocab = {tok: tok_id for tok, tok_id in tokenizer_vocab.items() if 0 <= tok_id < vocab_dim}
+
+    return question.get_answer_from_model_output(
+        probs,
+        tokenizer_vocab=in_range_vocab,
+    )
 
 
 def query_model_text_batch(
@@ -272,9 +340,7 @@ def query_model_text_batch(
             if not thinking_end_token_id:
                 thinking_end_token_id = get_thinking_end_token_id(tokenizer=tokenizer)
             if thinking_end_token_id is None:
-                logging.warning(
-                    "Could not identify </think> token ID. Thinking content will not be separated from response."
-                )
+                logging.warning("Could not identify </think> token ID. Thinking content will not be separated from response.")
                 generated_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
                 generated_texts.append({"response": generated_text})
                 continue
@@ -390,6 +456,105 @@ def load_model_tokenizer(
     return model, tokenizer
 
 
+def load_vllm_model(
+    model_name_or_path: str | Path,
+    *,
+    dtype: str = "auto",
+    gpu_memory_utilization: float = 0.85,
+    max_model_len: int | None = None,
+    tensor_parallel_size: int = 1,
+    trust_remote_code: bool = True,
+    seed: int = 42,
+    max_logprobs: int = 50,
+    **kwargs,
+):
+    """Load a vLLM `LLM` engine and its tokenizer.
+
+    Mirrors `load_model_tokenizer` for the vLLM backend. vLLM allocates the KV
+    cache statically at startup based on `gpu_memory_utilization` and
+    `max_model_len`; tune these per-GPU. `vllm` is an optional install — if it
+    is not importable, this function raises a pointed error.
+
+    Parameters
+    ----------
+    model_name_or_path : str | Path
+        Model name or local path to the model folder. Pre-cached snapshots
+        under `/fast/groups/sf/huggingface-models/` work without download.
+    dtype : str, optional
+        Compute dtype: ``"auto"`` (default; vLLM picks bf16/fp16 from the
+        config), ``"bfloat16"``, ``"float16"``, or ``"float32"``.
+    gpu_memory_utilization : float, optional
+        Fraction of GPU VRAM vLLM may use for weights + KV cache. Default 0.85
+        (vLLM's own default is 0.9, which is aggressive on shared cluster
+        nodes). vLLM fails fast at startup if this isn't enough — bump down
+        if you hit OOM at LLM().
+    max_model_len : int, optional
+        Maximum number of tokens (input + output) per request. If ``None``,
+        vLLM reads it from the model config — which on some Llama checkpoints
+        is 131072 and will allocate enormous KV cache. Pass an explicit value
+        sized as ``context_size + max_new_tokens + buffer`` for the workload.
+    tensor_parallel_size : int, optional
+        Number of GPUs to shard the model across; default 1. Set higher when
+        the cluster job grants multiple GPUs and the model fits with
+        tensor-parallel sharding.
+    trust_remote_code : bool, optional
+        Forwarded to vLLM (mirrors `load_model_tokenizer`).
+    seed : int, optional
+        Random seed for vLLM. Doesn't affect greedy (`temperature=0`) decoding
+        but pinned for safety.
+    max_logprobs : int, optional
+        Engine-level cap on top-K logprobs SamplingParams may request.
+        Default 50 — must be ≥ ``VLLMClassifier._TOPK_LOGPROBS`` or the engine
+        rejects the request at predict time (`VLLMValidationError: Requested
+        sample logprobs of K, which is greater than max allowed`).
+    **kwargs
+        Additional keyword arguments forwarded verbatim to ``vllm.LLM(...)``.
+
+    Returns
+    -------
+    tuple[vllm.LLM, AutoTokenizer]
+        Loaded engine and its tokenizer. The tokenizer has had `add_pad_token`
+        applied so it matches the transformers path's tokenizer state.
+    """
+    try:
+        from vllm import LLM
+    except ImportError as exc:  # pragma: no cover - exercised in user-facing CLI
+        raise ImportError(
+            "vLLM is not installed. Install the optional extra with "
+            "`pip install 'folktexts[vllm]'`, or run with "
+            "`--inference-backend transformers` to use the HuggingFace path."
+        ) from exc
+
+    # vLLM is extremely chatty during model loading; quieten it unless the
+    # caller has explicitly opted into verbose logs.
+    os.environ.setdefault("VLLM_LOGGING_LEVEL", "WARNING")
+
+    # `processed_logprobs` returns top-K logprobs computed AFTER `allowed_token_ids`
+    # masking. The default `raw_logprobs` would return top-K from the unmasked
+    # distribution — which on `DirectNumericQA` causes the decoder to see non-digit
+    # tokens (e.g., '.', '\n') as high-probability "numeric tokens" and pick them
+    # over the only-allowed digit, collapsing Llama-3 base numeric output to 0.5
+    # (answer text "5." → regex "5" → 0.5). MC has no `allowed_token_ids` so this
+    # defaults to the raw distribution either way; numeric is the only mode this
+    # affects.
+    kwargs.setdefault("logprobs_mode", "processed_logprobs")
+    logging.info(f"Loading vLLM model '{model_name_or_path}'")
+    llm = LLM(
+        model=str(model_name_or_path),
+        dtype=dtype,
+        gpu_memory_utilization=gpu_memory_utilization,
+        max_model_len=max_model_len,
+        tensor_parallel_size=tensor_parallel_size,
+        trust_remote_code=trust_remote_code,
+        seed=seed,
+        max_logprobs=max_logprobs,
+        **kwargs,
+    )
+    tokenizer = llm.get_tokenizer()
+    add_pad_token(tokenizer)
+    return llm, tokenizer
+
+
 def get_model_folder_path(model_name: str, root_dir="/tmp") -> str:
     """Returns the folder where the model is saved."""
     folder_name = model_name.replace("/", "--")
@@ -472,6 +637,4 @@ def get_model_developer(model_name: str):
         if substring in model_part:
             return developer
 
-    raise ValueError(
-        "Model name couldn't be matched. Please update the model-developer mapping in get_model_developer()."
-    )
+    raise ValueError("Model name couldn't be matched. Please update the model-developer mapping in get_model_developer().")

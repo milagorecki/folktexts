@@ -17,7 +17,7 @@ import dotenv
 import numpy as np
 import pandas as pd
 
-from folktexts.llm_utils import get_model_developer
+from folktexts.llm_utils import decode_topk_logprobs_to_risk_estimate, get_model_developer
 from folktexts.qa_interface import DirectNumericQA, MultipleChoiceQA
 from folktexts.task import TaskMetadata
 from folktexts.token_tracker import TokenTracker
@@ -237,8 +237,7 @@ class WebAPILLMClassifier(LLMClassifier):
         reasoning = self.inference_kwargs.get("reasoning")
         if (model_cfg and model_cfg.is_reasoning_model) and reasoning is None:
             raise ValueError(
-                f"Model '{self.model_name}' is a reasoning model — "
-                "please specify --reasoning (e.g. 'medium', '0.25', '0')."
+                f"Model '{self.model_name}' is a reasoning model — please specify --reasoning (e.g. 'medium', '0.25', '0')."
             )
 
         # Set API type
@@ -296,8 +295,7 @@ class WebAPILLMClassifier(LLMClassifier):
             import llm_api_client  # noqa: F401
         except ImportError:
             logging.critical(
-                "Please install extra API dependencies with `pip install 'folktexts[apis]'` "
-                "to use the WebAPILLMClassifier."
+                "Please install extra API dependencies with `pip install 'folktexts[apis]'` to use the WebAPILLMClassifier."
             )
             return False
         return True
@@ -402,8 +400,7 @@ class WebAPILLMClassifier(LLMClassifier):
                 # https://docs.litellm.ai/docs/providers/openai
                 if reasoning not in _OPENAI_EFFORT_LEVELS:
                     raise ValueError(
-                        f"Invalid reasoning effort '{reasoning}' for OpenAI model. "
-                        f"Must be one of: {_OPENAI_EFFORT_LEVELS}"
+                        f"Invalid reasoning effort '{reasoning}' for OpenAI model. Must be one of: {_OPENAI_EFFORT_LEVELS}"
                     )
                 logging.warning(f"Thinking enabled for OpenAI model with reasoning_effort='{reasoning}'.")
                 if self.api_type == "responses":
@@ -535,39 +532,29 @@ class WebAPILLMClassifier(LLMClassifier):
             response_message = choice.message.content
             logging.debug(f"Received response_message: {response_message}")
 
-            # Get top token choices for each forward pass
+            # Get top-K logprobs per forward pass (keyed by decoded token string).
+            # OpenAI-style API returns string keys; we synthesise an integer ID per
+            # unique string so we can share the same scatter/decode helper as the
+            # vLLM backend (which provides real token IDs directly).
             token_choices_all_passes = choice.logprobs.content
-            # print(token_choices_all_passes)
 
-            # Construct dictionary of token to linear token probability for each forward pass
-            token_probs_all_passes = [
-                {
-                    token_metadata.token: np.exp(token_metadata.logprob)
-                    for token_metadata in top_token_logprobs.top_logprobs
-                }
+            token_logprobs_per_pass = [
+                {token_metadata.token: token_metadata.logprob for token_metadata in top_token_logprobs.top_logprobs}
                 for top_token_logprobs in token_choices_all_passes
             ]
 
-            # Decode model output into risk estimates
-            # 1. Construct vocabulary dict for this response
-            vocab_tokens = {tok for forward_pass in token_probs_all_passes for tok in forward_pass}
+            all_tokens = sorted({tok for d in token_logprobs_per_pass for tok in d})
+            synthetic_vocab = {tok: idx for idx, tok in enumerate(all_tokens)}
 
-            token_to_id = {tok: i for i, tok in enumerate(vocab_tokens)}
-            id_to_token = {i: tok for i, tok in enumerate(vocab_tokens)}
+            per_pass_topk = [
+                {synthetic_vocab[tok]: lp for tok, lp in pass_logprobs.items()} for pass_logprobs in token_logprobs_per_pass
+            ]
 
-            # 2. Parse `token_probs_all_passes` into an array of shape (num_passes, vocab_size)
-            token_probs_array = np.array(
-                [
-                    [forward_pass.get(id_to_token[i], 0) for i in range(len(vocab_tokens))]
-                    for forward_pass in token_probs_all_passes
-                ]
-            )
-            # NOTE: token_probs.shape = (num_passes, vocab_size)
-
-            # Get risk estimate
-            risk_estimate = question.get_answer_from_model_output(
-                token_probs_array,
-                tokenizer_vocab=token_to_id,
+            risk_estimate = decode_topk_logprobs_to_risk_estimate(
+                per_pass_topk,
+                tokenizer_vocab=synthetic_vocab,
+                vocab_dim=len(synthetic_vocab),
+                question=question,
             )
 
             # Sanity check numeric answers based on global model response:

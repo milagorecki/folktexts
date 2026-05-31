@@ -14,11 +14,25 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from ._io import load_json, save_json
 from ._utils import get_current_timestamp, hash_dict, is_valid_number
 from .acs import ACSDataset, ACSTaskMetadata
-from .classifier import LLMClassifier, TransformersLLMClassifier, WebAPILLMClassifier
+from .classifier import (
+    LLMClassifier,
+    TransformersLLMClassifier,
+    VLLMClassifier,
+    WebAPILLMClassifier,
+)
 from .dataset import Dataset
 from .evaluation import evaluate_predictions
 from .plotting import render_evaluation_plots, render_fairness_plots
-from .prompting import FewShotConfig, PromptConfig, encode_row_prompt, encode_row_prompt_few_shot
+from .prompting import (
+    PROMPT_DEFAULT,
+    FewShotConfig,
+    PromptConfig,
+    encode_row_prompt,
+    encode_row_prompt_chat,
+    encode_row_prompt_few_shot,
+    resolve_chat_defaults,
+    tokenizer_supports_system_prompt,
+)
 from .sipp import SIPPDataset, SIPPTaskMetadata
 from .task import TaskMetadata
 
@@ -47,6 +61,21 @@ class BenchmarkConfig:
     few_shot_config : FewShotConfig | None, optional
         Few-shot prompting configuration (number of shots, composition, example
         order, reuse). ``None`` means zero-shot prompting.
+    use_chat_template : bool, optional
+        Whether to format prompts using the tokenizer's chat template, by
+        default False. Only supported for local transformers models.
+    chat_prompt : str | None, optional
+        The assistant prefill text to use with chat templates. Defaults to
+        ``PROMPT_DEFAULT``, which selects the appropriate default from the QA
+        subclass (``ANTHROPIC_CHAT_PROMPT`` for MC, ``NUMERIC_CHAT_PROMPT`` for
+        numeric, ``None`` for CoT). Pass ``None`` explicitly to disable the
+        assistant prefill entirely.
+    system_prompt : str | None, optional
+        System prompt text to use with chat templates. Defaults to
+        ``PROMPT_DEFAULT``, which selects the appropriate default from the QA
+        subclass (``SYSTEM_PROMPT`` for MC, ``NUMERIC_SYSTEM_PROMPT`` for
+        numeric, ``None`` for CoT). Pass ``None`` explicitly to disable the
+        system role (e.g. for Gemma-style tokenizers that reject it).
     batch_size : int | None, optional
         The batch size to use for inference.
     context_size : int | None, optional
@@ -71,6 +100,9 @@ class BenchmarkConfig:
     use_generated_text: bool = False
     reasoning: str | None = None
     few_shot_config: FewShotConfig | None = None
+    use_chat_template: bool = False
+    chat_prompt: str | None = PROMPT_DEFAULT  # type: ignore[assignment]
+    system_prompt: str | None = PROMPT_DEFAULT  # type: ignore[assignment]
     batch_size: int | None = None
     context_size: int | None = None
     correct_order_bias: bool = True
@@ -107,17 +139,28 @@ class BenchmarkConfig:
         if isinstance(obj, dict):
             if isinstance(obj.get("few_shot_config"), dict):
                 obj["few_shot_config"] = FewShotConfig(**obj["few_shot_config"])
+            # Restore PROMPT_DEFAULT sentinel from its serialized form.
+            for key in ("system_prompt", "chat_prompt"):
+                if obj.get(key) == "default":
+                    obj[key] = PROMPT_DEFAULT
             return cls(**obj)
         else:
             raise ValueError(f"Invalid configuration file '{path}'.")
 
     def save_to_disk(self, path: str | Path):
         """Save the configuration to disk."""
-        save_json(dataclasses.asdict(self), path)
+        d = dataclasses.asdict(self)
+        for key in ("system_prompt", "chat_prompt"):
+            if getattr(self, key) is PROMPT_DEFAULT:
+                d[key] = "default"
+        save_json(d, path)
 
     def __hash__(self) -> int:
         """Generates a unique hash for the configuration."""
         cfg = dataclasses.asdict(self)
+        for key in ("system_prompt", "chat_prompt"):
+            if getattr(self, key) is PROMPT_DEFAULT:
+                cfg[key] = "default"
         cfg["feature_subset"] = tuple(cfg["feature_subset"]) if cfg["feature_subset"] else None
         cfg["population_filter_hash"] = hash_dict(cfg["population_filter"]) if cfg["population_filter"] else None
         cfg["prompt_variation"] = hash_dict(cfg["prompt_variation"]) if cfg["prompt_variation"] else None
@@ -185,17 +228,17 @@ class Benchmark:
         self._plots: Optional[dict] = None
 
         # Log initialization
-        msg = (
-            f"\n** Benchmark initialization **\n"
-            f"Model: {self.model_name};\n"
-            f"Task: {self.task.name};\n"
-            f"Hash: {hash(self)};\n"
-        )
+        msg = f"\n** Benchmark initialization **\nModel: {self.model_name};\nTask: {self.task.name};\nHash: {hash(self)};\n"
         logging.info(msg)
 
     @property
     def configs_dict(self) -> dict:
         cnf = dataclasses.asdict(self.config)
+        q = self.task.question
+        if getattr(self.config, "system_prompt") is PROMPT_DEFAULT:
+            cnf["system_prompt"] = q.default_system_prompt
+        if getattr(self.config, "chat_prompt") is PROMPT_DEFAULT:
+            cnf["chat_prompt"] = q.default_chat_prompt
 
         # Add info on model, task, and dataset
         cnf["model_name"] = self.model_name
@@ -481,6 +524,8 @@ class Benchmark:
         data_dir: str | Path | None = None,
         max_api_rpm: int | None = None,
         config: BenchmarkConfig = BenchmarkConfig.default_config(),
+        backend: str | None = None,
+        model_name_or_path: str | Path | None = None,
         **kwargs,
     ) -> Benchmark:
         """Create a standardized calibration benchmark on ACS data.
@@ -542,6 +587,8 @@ class Benchmark:
             tokenizer=tokenizer,
             max_api_rpm=max_api_rpm,
             config=config,
+            backend=backend,
+            model_name_or_path=model_name_or_path,
         )
 
     @classmethod
@@ -554,6 +601,8 @@ class Benchmark:
         data_dir: str | Path | None = None,
         max_api_rpm: int | None = None,
         config: BenchmarkConfig = BenchmarkConfig.default_config(),
+        backend: str | None = None,
+        model_name_or_path: str | Path | None = None,
         **kwargs,
     ) -> Benchmark:
         """Create a standardized calibration benchmark on TableShift BRFSS data.
@@ -634,6 +683,8 @@ class Benchmark:
         data_dir: str | Path | None = None,
         max_api_rpm: int | None = None,
         config: BenchmarkConfig = BenchmarkConfig.default_config(),
+        backend: str | None = None,
+        model_name_or_path: str | Path | None = None,
         **kwargs,
     ) -> Benchmark:
         """Create a standardized calibration benchmark on SIPP data.
@@ -697,6 +748,169 @@ class Benchmark:
             config=config,
         )
 
+    @staticmethod
+    def _resolve_backend(*, backend: str | None, model) -> str:
+        """Pick the inference backend for this benchmark run.
+
+        Explicit `backend` overrides autodetection. Autodetection rules:
+        - `model` is a string -> "webapi" (model ID for litellm).
+        - `model` is a `vllm.LLM`-like object (has `.generate` and `.get_tokenizer`) -> "vllm".
+        - Otherwise -> "transformers".
+        """
+        if backend is not None:
+            backend = backend.lower()
+            if backend not in {"transformers", "vllm", "webapi"}:
+                raise ValueError(f"Unknown inference backend '{backend}'. Expected one of: 'transformers', 'vllm', 'webapi'.")
+            return backend
+
+        if isinstance(model, str):
+            return "webapi"
+        if hasattr(model, "generate") and hasattr(model, "get_tokenizer"):
+            # Duck-typed vLLM `LLM`. transformers models also expose `.generate`,
+            # but not `.get_tokenizer` — that's the discriminator.
+            return "vllm"
+        return "transformers"
+
+    @staticmethod
+    def _configure_task_question(task: TaskMetadata, config: BenchmarkConfig) -> None:
+        """Pick the Q&A interface (CoT / numeric / multiple-choice) on `task`.
+
+        `TaskMetadata.get_task` returns a cached singleton, so this method must
+        also *clear* prior Q&A state when switching to plain MC: without an
+        explicit reset, a chat_mcq config (none of cot/enable_thinking/numeric
+        set) leaves whatever a previous CoT or numeric cell wrote on the task,
+        and `task.question` keeps returning the stale interface — silently
+        dispatching `ChainOfThoughtQA` (max_new_tokens=8000) for what should be
+        a 1-token MC prediction.
+        """
+        if config.numeric_risk_prompting:
+            task.use_numeric_qa = True
+        else:
+            # Plain multiple-choice
+            task.use_numeric_qa = False
+
+    @staticmethod
+    def _validate_config(config: BenchmarkConfig) -> None:
+        """Reject incompatible config combinations and warn on no-op overrides."""
+        if config.few_shot_config and config.use_chat_template:
+            raise ValueError(
+                "Cannot use both few-shot prompting and chat template formatting. Please choose one or the other."
+            )
+
+        if config.use_chat_template:
+            raise ValueError(
+                "Cannot combine `use_chat_template=True` with `cot_prompting` "
+                "or `enable_thinking`: the CoT path applies the tokenizer's "
+                "chat template internally inside `generate_text_batch`, so an "
+                "outer `encode_row_prompt_chat` would double-wrap the prompt. "
+                "Drop `--use-chat-template` when running with chain-of-thought."
+            )
+
+        if not config.use_chat_template and (config.system_prompt is not None or config.chat_prompt is not None):
+            # Warn loudly: chat-only knobs are silently ignored on the
+            # zero-shot / few-shot paths, which is rarely what the user wants.
+            logging.warning(
+                "`system_prompt` / `chat_prompt` were provided but "
+                "`use_chat_template=False`; these arguments are only used by "
+                "the chat-template path and will be ignored."
+            )
+
+    @staticmethod
+    def _build_chat_encode_row_function(
+        task: TaskMetadata,
+        tokenizer: AutoTokenizer,
+        config: BenchmarkConfig,
+        prompt_config: PromptConfig,
+    ) -> tuple:
+        """Build the chat-template `encode_row_prompt_chat` partial, honoring tokenizer quirks.
+
+        Returns
+        -------
+        tuple[Callable, PromptConfig]
+            The encode function and the (possibly patched) prompt_config actually used.
+        """
+        if tokenizer is None:
+            raise ValueError("Chat template formatting requires a local tokenizer. It is not supported for web API models.")
+        print("Using chat template prompting.")
+
+        system_prompt, chat_prompt = resolve_chat_defaults(
+            question=task.question,
+            system_prompt=config.system_prompt,
+            chat_prompt=config.chat_prompt,
+        )
+        # Drop the system prompt if the tokenizer's template doesn't accept
+        # one (e.g. Gemma). Warn loudly when this discards a user-supplied
+        # value so it isn't silently lost.
+        if not tokenizer_supports_system_prompt(tokenizer):
+            if config.system_prompt is not PROMPT_DEFAULT and config.system_prompt is not None:
+                logging.warning(
+                    "Tokenizer's chat template rejects the `system` role; "
+                    "the user-supplied `system_prompt` will be discarded. "
+                    "Consider folding the instruction into `custom_prompt_prefix` "
+                    "or the user message instead."
+                )
+            else:
+                logging.info("Tokenizer's chat template rejects the `system` role; running without a system prompt.")
+            system_prompt = None
+            # patch prompt config so the caller also gets the updated version
+            prompt_config = dataclasses.replace(prompt_config, system_prompt=system_prompt)
+
+        return partial(
+            encode_row_prompt_chat,
+            task=task,
+            tokenizer=tokenizer,
+            chat_prompt=chat_prompt,
+            prompt_config=prompt_config,
+        ), prompt_config
+
+    @classmethod
+    def _build_encode_row_function(
+        cls,
+        *,
+        task: TaskMetadata,
+        dataset: Dataset,
+        tokenizer: AutoTokenizer,
+        config: BenchmarkConfig,
+        prompt_config: PromptConfig | None = None,
+    ) -> tuple:
+        """Pick the prompting function based on config (few-shot, chat-template, or zero-shot).
+
+        Returns
+        -------
+        tuple[Callable, PromptConfig]
+            The encode function and the prompt_config actually used (may differ from
+            the input when the Gemma path drops the system prompt).
+        """
+        # Build PromptConfig once from the variation dict.
+        if prompt_config is None:
+            prompt_config = PromptConfig.from_dict(
+                pv=config.prompt_variation or {},
+                task=task,
+                question=task.question,
+            )
+
+        if config.few_shot_config:
+            logging.info(f"Using few-shot prompting (n={config.few_shot_config.n_shots}).")
+            return partial(
+                encode_row_prompt_few_shot,
+                task=task,
+                dataset=dataset,
+                few_shot_config=config.few_shot_config,
+                prompt_config=prompt_config,
+            ), prompt_config
+
+        if config.use_chat_template:
+            # _build_chat_encode_row_function already returns (encode_fn, prompt_config)
+            return cls._build_chat_encode_row_function(
+                task=task,
+                tokenizer=tokenizer,
+                config=config,
+                prompt_config=prompt_config,
+            )
+
+        logging.info("Using zero-shot prompting.")
+        return partial(encode_row_prompt, task=task, prompt_config=prompt_config), prompt_config
+
     @classmethod
     def make_benchmark(
         cls,
@@ -707,6 +921,8 @@ class Benchmark:
         tokenizer: AutoTokenizer | None = None,  # WebAPI models have no local tokenizer
         max_api_rpm: int | None = None,
         config: BenchmarkConfig = BenchmarkConfig.default_config(),
+        backend: str | None = None,
+        model_name_or_path: str | Path | None = None,
         **kwargs,
     ) -> Benchmark:
         """Create a calibration benchmark from a given configuration.
@@ -749,8 +965,7 @@ class Benchmark:
             if config.numeric_risk_prompting:
                 raise NotImplementedError  # TODO
 
-        if config.numeric_risk_prompting:
-            task.use_numeric_qa = True
+        cls._configure_task_question(task, config)
 
         if config.feature_subset is not None and len(config.feature_subset) > 0:
             task = task.create_task_with_feature_subset(config.feature_subset)
@@ -765,7 +980,9 @@ class Benchmark:
         if config.population_filter is not None:
             dataset = dataset.filter(config.population_filter)
 
-        # Build PromptConfig once from the variation dict.
+        cls._validate_config(config)
+
+        # Build PromptConfig once from the variation dict. Uses updated question type.
         prompt_config = PromptConfig.from_dict(
             pv=config.prompt_variation or {},
             task=task,
@@ -773,29 +990,19 @@ class Benchmark:
         )
 
         # Get prompting function
-        if config.few_shot_config:
-            logging.info(f"Using few-shot prompting (n={config.few_shot_config.n_shots}).")
-            encode_row_function = partial(
-                encode_row_prompt_few_shot,
-                task=task,
-                dataset=dataset,
-                few_shot_config=config.few_shot_config,
-                prompt_config=prompt_config,
-            )
-
-        else:
-            logging.info("Using zero-shot prompting.")
-            encode_row_function = partial(
-                encode_row_prompt,
-                task=task,
-                prompt_config=prompt_config,
-            )
+        encode_row_function, prompt_config = cls._build_encode_row_function(
+            task=task,
+            dataset=dataset,
+            tokenizer=tokenizer,
+            config=config,
+            prompt_config=prompt_config,
+        )
 
         # Parse LLMClassifier parameters
         llm_inference_kwargs: dict[str, Any] = {
             "correct_order_bias": config.correct_order_bias,
-            "prompt_config": prompt_config,
             "reasoning": config.reasoning,
+            "prompt_config": prompt_config,  # may be patched (e.g. Gemma drops system_prompt)
         }
         if config.batch_size is not None:
             llm_inference_kwargs["batch_size"] = config.batch_size
@@ -805,7 +1012,8 @@ class Benchmark:
             llm_inference_kwargs["max_api_rpm"] = max_api_rpm
 
         # Create LLMClassifier object
-        if isinstance(model, str):
+        resolved_backend = cls._resolve_backend(backend=backend, model=model)
+        if resolved_backend == "webapi":
             llm_clf = WebAPILLMClassifier(
                 model_name=model,
                 task=task,
@@ -814,7 +1022,18 @@ class Benchmark:
             )
             logging.info(f"Using webAPI model: {model}")
 
-        else:
+        elif resolved_backend == "vllm":
+            llm_clf = VLLMClassifier(
+                llm=model,
+                tokenizer=tokenizer,
+                task=task,
+                model_name_or_path=model_name_or_path,
+                encode_row=encode_row_function,
+                **llm_inference_kwargs,
+            )
+            logging.info(f"Using local vLLM model: {llm_clf.model_name}")
+
+        else:  # transformers
             assert tokenizer is not None, "Tokenizer must be provided for local transformers models."
             llm_clf = TransformersLLMClassifier(
                 model=model,

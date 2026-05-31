@@ -1,17 +1,29 @@
-"""Module for prompt construction and variation.
+"""Prompt construction utilities for risk-estimation tasks.
 
-A prompt for a tabular row has three parts:
-  [PREFIX]  task description / system context  (same for all rows)
-  [INFO]    serialized feature-value pairs     (row-specific)
-  [SUFFIX]  question text
+This module maps risk-estimation questions to different prompting techniques
+and supports systematic prompt variations for benchmarking and evaluation.
 
-Within INFO the pipeline is fixed by semantics:
-  VaryValueMap → VaryOrder → VaryConnector → VaryFormat
 
-Return types enforce the order: per-item stages share list→list; VaryFormat
-collapses the list to str, making it impossible to apply a per-item stage after it.
+Each prompt (corresponding to a tabular data row) is represented
+as composition of three parts:
 
-Allows for zero-shot, few-shot, and chat-template prompting styles.
+    [PREFIX]  Shared task description and/or system context.
+              This section is constant across all rows.
+    [INFO]    Row-specific serialized feature-value pairs.
+    [SUFFIX]  Question text defining the prediction task.
+
+Within INFO the prompt variation pipeline is fixed by semantics:
+VaryValueMap → VaryOrder → VaryConnector → VaryFormat
+Return types enforce the order: per-item stages share list→list;
+VaryFormat collapses the list to str, making it impossible to apply
+a per-item stage after it.
+
+
+The module implements multiple prompting strategies, including:
+
+    - Multiple-choice Q&A vs direct numeric Q&A
+    - Zero-shot prompting
+    - Few-shot prompting
 """
 
 from __future__ import annotations
@@ -24,6 +36,7 @@ from string import Template
 from typing import Any, ClassVar
 
 import pandas as pd
+from jinja2 import TemplateError
 from transformers import AutoTokenizer
 
 from folktexts.acs import ACS_TASK_DESCRIPTION, ACS_TASK_DESCRIPTION_DEFAULTS
@@ -40,29 +53,7 @@ from .qa_interface import MultipleChoiceQA, QAInterface
 from .task import TaskMetadata
 
 # Sentinel distinguishing "use the mode-appropriate default" from `None`
-# ("explicitly disable the role"). Module-private; not part of the public API.
-_DEFAULT = object()
-
-SYSTEM_PROMPT = """\
-You are a helpful assistant. You answer multiple-choice questions \
-based on the information provided. Respond with a single answer choice.
-"""
-
-NUMERIC_SYSTEM_PROMPT = """\
-You are a helpful assistant. You provide numeric probability \
-estimates based on the information provided.
-"""
-
-ANTHROPIC_CHAT_PROMPT = """If had to select one of the options, my answer would be"""
-GEMMA_CHAT_PROMPT = """The provided information suggests that the answer is"""
-# NOTE: The leading `0.` is part of the prefill, so the model only generates
-# the digits after the decimal point. This caps the expressible probability
-# at the open interval [0, 1) — true posteriors at or near 1.0 cannot be
-# emitted exactly. If you need full [0, 1] coverage, override `chat_prompt`
-# with e.g. `"Answer (between 0 and 1): "` and let the model produce the
-# leading digit itself (note that this also widens the digit-scoring search
-# space and may degrade calibration for low-probability cases).
-NUMERIC_CHAT_PROMPT = """Answer (between 0 and 1): 0."""
+PROMPT_DEFAULT = object()
 
 DEFAULT_PROMPT_STYLE: dict[str, Any] = {
     "format": "textbullet",
@@ -128,6 +119,7 @@ class VaryPrefix:
 class VarySuffix:
     question: QAInterface
     show_question: bool = True
+    with_answer_prefill: bool = True  # set False for chat mode (prefill is assistant turn)
     show_label: bool = False
     label: Any = None  # only used when show_label=True
     custom_suffix: str | None = None
@@ -140,6 +132,8 @@ class VarySuffix:
         The question interface to use for generating the question prompt or answer prefix.
     show_question : bool, optional
         Whether to include the full question prompt (True) or just the answer prefix (False). Default is True.
+    with_answer_prefill : bool, optional
+       Whether to include the answer prefill in the question prompt. Default is True. Ignored if show_question is False.     
     show_label : bool, optional
         Whether to include the label in the suffix. Default is False.
     label : Any, optional
@@ -153,7 +147,11 @@ class VarySuffix:
             raise ValueError("show_label=True requires label to be set.")
 
     def __call__(self) -> str:
-        base = self.question.get_question_prompt() if self.show_question else self.question.get_answer_prefix()
+        base = (
+            self.question.get_question_prompt(with_answer_prefill=self.with_answer_prefill)
+            if self.show_question
+            else self.question.get_answer_prefix()
+        )
         label_part = f" {self.label}\n\n" if self.show_label else ""
         return f"\n{base}{label_part}{self.custom_suffix or ''}"
 
@@ -370,7 +368,7 @@ class PromptConfig:
         task: TaskMetadata,
         question: QAInterface | None = None,
         add_task_description: bool = True,
-        system_prompt: str | None = _DEFAULT,  # type: ignore[assignment]
+        system_prompt: str | None = PROMPT_DEFAULT,  # type: ignore[assignment]
     ) -> "PromptConfig":
         """Build a PromptConfig from a prompt-variation dict and a task.
 
@@ -386,15 +384,13 @@ class PromptConfig:
             Whether to include the task description in the prefix.
         system_prompt : str | None, optional
             System prompt string; wrapped in ``VarySystemPrompt`` when provided.
-            Defaults to ``NUMERIC_SYSTEM_PROMPT`` for ``DirectNumericQA`` and
-            ``SYSTEM_PROMPT`` for ``MultipleChoiceQA``. Pass ``None`` explicitly
-            to disable the system role (e.g. for Gemma-style templates).
+            Defaults to ``question.default_system_prompt`` (set per QA subclass).
+            Pass ``None`` explicitly to disable the system role (e.g. for
+            Gemma-style templates).
         """
         unknown = set(pv) - set(DEFAULT_PROMPT_STYLE)
         if unknown:
-            raise ValueError(
-                f"Unknown prompt_variation keys: {sorted(unknown)}. Valid keys: {sorted(DEFAULT_PROMPT_STYLE)}."
-            )
+            raise ValueError(f"Unknown prompt_variation keys: {sorted(unknown)}. Valid keys: {sorted(DEFAULT_PROMPT_STYLE)}.")
 
         granularity = pv.get("granularity", DEFAULT_PROMPT_STYLE["granularity"])
         if granularity not in ("original", "low"):
@@ -405,8 +401,8 @@ class PromptConfig:
             order = [col.strip() for col in order.split(",")]
 
         question = question or task.question
-        if system_prompt is _DEFAULT:
-            system_prompt = SYSTEM_PROMPT if isinstance(question, MultipleChoiceQA) else NUMERIC_SYSTEM_PROMPT
+        if system_prompt is PROMPT_DEFAULT:
+            system_prompt = question.default_system_prompt
         value_map = (
             VaryValueMap.with_low_granularity(task.cols_to_text, cls._get_simplified_value_maps(task))
             if granularity == "low"
@@ -549,15 +545,23 @@ class PromptBuilder:
         config: PromptConfig,
         tokenizer: AutoTokenizer,
         question: QAInterface | None = None,
-        chat_prompt: str | None = _DEFAULT,  # type: ignore[assignment]
+        chat_prompt: str | None = PROMPT_DEFAULT,  # type: ignore[assignment]
         **kwargs,
     ) -> str:
         resolved_question = question or config.suffix.question
-        if chat_prompt is _DEFAULT:
-            chat_prompt = (
-                ANTHROPIC_CHAT_PROMPT if isinstance(resolved_question, MultipleChoiceQA) else NUMERIC_CHAT_PROMPT
-            )
-        user_content = self.build(row, config, question=resolved_question)
+        if chat_prompt is PROMPT_DEFAULT:
+            chat_prompt = resolved_question.default_chat_prompt
+        # Always strip the answer prefill from the user turn: the chat template
+        # supplies it as a separate assistant turn (chat_prompt).
+        chat_config = dataclasses.replace(
+            config,
+            suffix=dataclasses.replace(
+                config.suffix,
+                with_answer_prefill=False,
+                question=resolved_question,
+            ),
+        )
+        user_content = self.build(row, chat_config)
         system_content = config.system_prompt() if config.system_prompt else None
         return apply_chat_template(
             tokenizer,
@@ -579,7 +583,8 @@ def encode_row_prompt(
     question: QAInterface = None,
     prompt_config: PromptConfig | None = None,
 ) -> str:
-    """Encode a question regarding a given row into a natural-language prompt.
+    """
+    Encode a question regarding a given row into a natural-language prompt.
 
     Parameters
     ----------
@@ -687,14 +692,13 @@ def encode_row_prompt_few_shot(
     # Get the question to ask
     question = question or task.question
 
+    # Collect `n_shots` example rows with respective labels
     examples = []
     for i in range(few_shot_config.n_shots):
         if isinstance(question, MultipleChoiceQA):
             label = question.get_answer_key_from_value(y_examples.iloc[i])
             if label is None:
-                raise ValueError(
-                    f"Could not find answer key for few-shot label '{y_examples.iloc[i]}' in question choices."
-                )
+                raise ValueError(f"Could not find answer key for few-shot label '{y_examples.iloc[i]}' in question choices.")
         else:
             label = y_examples.iloc[i]
         logging.debug(f"shot {i}: label={label}\tindex={y_examples.index[i]}")
@@ -713,10 +717,57 @@ def encode_row_prompt_few_shot(
     return prompt
 
 
+def tokenizer_supports_system_prompt(tokenizer: AutoTokenizer) -> bool:
+    """Check whether the tokenizer's chat template supports system messages.
+
+    Some models (e.g. Gemma) raise a TemplateError when a system role is used.
+    Other templates surface this with different exception types depending on
+    transformers / Jinja versions (e.g. `RuntimeError`, `KeyError`, or a
+    template-defined exception macro), so we treat any failure of the probe
+    as "system role not supported" rather than letting it propagate and
+    crash the benchmark.
+    """
+    test_conversation = [
+        {"role": "system", "content": "test"},
+        {"role": "user", "content": "test"},
+    ]
+    try:
+        tokenizer.apply_chat_template(test_conversation, tokenize=False)
+        return True
+    except (TemplateError, ValueError):
+        return False
+    except Exception:
+        # Defensive fallback for unexpected template-rendering failures —
+        # safer to skip the system prompt than to hard-fail the benchmark.
+        return False
+
+
+def resolve_chat_defaults(
+    question: QAInterface,
+    system_prompt: str | None = PROMPT_DEFAULT,  # type: ignore[assignment]
+    chat_prompt: str | None = PROMPT_DEFAULT,  # type: ignore[assignment]
+) -> tuple[str | None, str | None]:
+    """Resolve default system_prompt / chat_prompt for chat-template prompting.
+
+    Defaults are read from ``question.default_system_prompt`` and
+    ``question.default_chat_prompt`` (``ClassVar``s defined on each
+    ``QAInterface`` subclass). Pass ``PROMPT_DEFAULT`` (or omit the argument)
+    to use the question's ClassVar default. Pass ``None`` explicitly to disable
+    a role entirely (e.g. for Gemma-style tokenizers that reject the system role).
+    """
+    if system_prompt is PROMPT_DEFAULT:
+        system_prompt = question.default_system_prompt
+    if chat_prompt is PROMPT_DEFAULT:
+        chat_prompt = question.default_chat_prompt
+    return system_prompt, chat_prompt
+
+
 def encode_row_prompt_chat(
     row: pd.Series,
     task: TaskMetadata,
     tokenizer: AutoTokenizer,
+    system_prompt: str | None = PROMPT_DEFAULT,  # type: ignore[assignment]
+    chat_prompt: str | None = PROMPT_DEFAULT,  # type: ignore[assignment]
     question: QAInterface | None = None,
     prompt_config: PromptConfig | None = None,
 ) -> str:
@@ -730,6 +781,20 @@ def encode_row_prompt_chat(
         The task metadata object.
     tokenizer : AutoTokenizer
         The tokenizer whose chat template will be applied.
+    system_prompt : str | None, optional
+        System prompt text. Only used when ``prompt_config`` is not provided;
+        passed straight to ``PromptConfig.from_dict`` which selects the
+        mode-appropriate default when omitted. Pass ``None`` explicitly to
+        disable the system role (e.g. for Gemma-style templates that reject
+        it). When ``prompt_config`` is provided, system_prompt is ignored —
+        patch the config directly instead.
+    chat_prompt : str | None, optional
+        Assistant prefill text. If omitted, the mode-appropriate default is
+        selected from the question type. Pass ``None`` explicitly to skip the
+        assistant prefill — note that this routes inference through
+        ``add_generation_prompt=True`` and breaks the last-token scoring
+        assumption used by ``LLMClassifier``, so it is not appropriate for the
+        benchmark path.
     question : QAInterface, optional
         The question interface to use. When ``prompt_config`` is provided this
         overrides only the suffix question (used for order-bias correction).
@@ -743,9 +808,25 @@ def encode_row_prompt_chat(
         The fully formatted chat-template prompt.
     """
     if prompt_config is not None:
-        return PromptBuilder(task).build_chat(row[task.features], prompt_config, tokenizer, question=question)
-    config = PromptConfig.from_dict({}, task=task, question=question)
-    return PromptBuilder(task).build_chat(row[task.features], config, tokenizer)
+        return PromptBuilder(task).build_chat(
+            row[task.features],
+            prompt_config,
+            tokenizer,
+            question=question,
+            chat_prompt=chat_prompt,
+        )
+    config = PromptConfig.from_dict(
+        {},
+        task=task,
+        question=question,
+        system_prompt=system_prompt,
+    )
+    return PromptBuilder(task).build_chat(
+        row[task.features],
+        config,
+        tokenizer,
+        chat_prompt=chat_prompt,
+    )
 
 
 def apply_chat_template(
@@ -790,10 +871,9 @@ def apply_chat_template(
         # No assistant prefill; let the model generate freely
         kwargs.setdefault("add_generation_prompt", True)
 
+    # Apply prompt template
     if kwargs.pop("tokenize", False):
-        raise ValueError(
-            "apply_chat_template always returns a string (tokenize=False); pass tokenize=False or omit it."
-        )
+        raise ValueError("apply_chat_template always returns a string (tokenize=False); pass tokenize=False or omit it.")
     filled_prompt = tokenizer.apply_chat_template(  # ignore[attr-defined]
         conversation=conversation,
         tokenize=False,
