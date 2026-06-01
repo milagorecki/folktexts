@@ -887,6 +887,7 @@ class Benchmark:
                 pv=config.prompt_variation or {},
                 task=task,
                 question=task.question,
+                system_prompt=config.system_prompt,
             )
 
         if config.few_shot_config:
@@ -987,6 +988,7 @@ class Benchmark:
             pv=config.prompt_variation or {},
             task=task,
             question=task.question,
+            system_prompt=config.system_prompt,
         )
 
         # Get prompting function
@@ -1045,7 +1047,7 @@ class Benchmark:
             logging.info(f"Using local transformers model: {llm_clf.model_name}")
 
         logging.info("Exemplary row encoding")
-        logging.info(llm_clf.encode_row(dataset.sample_n_train_examples(n=1)[0]))
+        logging.info(llm_clf.encode_row(dataset.sample_n_train_examples(n=1)[0].iloc[0]))
 
         return cls(
             llm_clf=llm_clf,

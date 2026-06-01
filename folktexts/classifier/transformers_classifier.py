@@ -132,16 +132,18 @@ class TransformersLLMClassifier(LLMClassifier):
             try:
                 # try to apply chat
                 # Query model
-                system_prompt = (
-                    "Please respond with a single letter."
-                    if isinstance(question, MultipleChoiceQA)
-                    else (
-                        """Your response MUST end with your probability estimate in the following format:
-                        Probability: X%
-                        where X is a number between 0 and 100.
-                        """
+                # Use the system prompt from PromptConfig if available (may be None
+                # to explicitly disable the role, e.g. for Gemma-style templates);
+                # fall back to the QA subclass ClassVar default otherwise.
+                if self.prompt_config is not None:
+                    system_prompt = (
+                        self.prompt_config.system_prompt() if self.prompt_config.system_prompt is not None else None
                     )
-                )
+                else:
+                    system_prompt = question.default_system_prompt
+
+                logging.debug(f"System prompt: {system_prompt}")
+
                 generated_text_batch = query_model_text_batch(
                     text_inputs=prompts_batch,
                     model=self.model,

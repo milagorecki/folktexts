@@ -16,7 +16,7 @@ import dotenv
 
 from folktexts._utils import ParseDict
 from folktexts.llm_utils import get_model_folder_path
-from folktexts.prompting import DEFAULT_PROMPT_STYLE
+from folktexts.prompting import DEFAULT_PROMPT_STYLE, PROMPT_DEFAULT
 
 DEFAULT_ACS_TASK = "ACSIncome"
 ACS_TASKS = (
@@ -222,7 +222,7 @@ def setup_arg_parser() -> ArgumentParser:
         type=str,
         help="[str] Custom assistant prefill text to use with chat templates",
         required=False,
-        default=None,
+        default=PROMPT_DEFAULT,
     )
 
     parser.add_argument(
@@ -230,7 +230,7 @@ def setup_arg_parser() -> ArgumentParser:
         type=str,
         help="[str] Custom system prompt text to use with chat templates",
         required=False,
-        default=None,
+        default=PROMPT_DEFAULT,
     )
 
     # Optionally, receive a list of features to use (subset of original list)
@@ -296,7 +296,10 @@ def main():
     args = parser.parse_args()
 
     logging.getLogger().setLevel(level=args.logger_level)
-    pretty_args_str = json.dumps(vars(args), indent=4, sort_keys=True)
+    pretty_args_str = json.dumps(
+        {k: ("default" if v is PROMPT_DEFAULT else v) for k, v in vars(args).items()},
+        indent=4, sort_keys=True,
+    )
     logging.info(f"Current python executable: '{sys.executable}'")
     logging.info(f"Received the following cmd-line args: {pretty_args_str}")
 
