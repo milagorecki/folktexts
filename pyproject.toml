@@ -56,6 +56,7 @@ optional-dependencies.docs = {file = "requirements/docs.txt"}
 optional-dependencies.cluster = {file = "requirements/cluster.txt"}
 optional-dependencies.apis = {file = "requirements/apis.txt"}
 optional-dependencies.tableshift = {file = "requirements/tableshift.txt"}
+optional-dependencies.vllm = {file = "requirements/vllm.txt"}
 
 [project.urls]
 homepage = "https://github.com/socialfoundations/folktexts"
@@ -68,7 +69,7 @@ download_models = "folktexts.cli.download_models:main"
 
 # ruff
 [tool.ruff]
-line-length = 120
+line-length = 127
 src = ["folktexts", "tests"]
 exclude = ["docs/", ".tox/"]
 
