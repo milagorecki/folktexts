@@ -418,17 +418,20 @@ class WebAPILLMClassifier(LLMClassifier):
                 f"{set(api_call_params.keys()) - self.supported_params}"
             )
 
-        # Get system prompt depending on Q&A type
-        if isinstance(question, DirectNumericQA):
+        # Get system prompt: use the one from PromptConfig if set, otherwise fall back
+        # to the QA subclass default (None disables the system role entirely).
+        if self.prompt_config is not None and self.prompt_config.system_prompt is not None:
+            system_prompt = self.prompt_config.system_prompt()
+        elif isinstance(question, DirectNumericQA):
             system_prompt = """Your response MUST end with your probability estimate in the following format:
                         Probability: X%
                         where X is a number between 0 and 100.
                         """
-            # system_prompt = "Your response must start with a number representing the estimated probability."
         elif isinstance(question, MultipleChoiceQA):
             system_prompt = "Your response MUST be a single letter."
         else:
             raise ValueError(f"Unknown question type '{type(question)}'.")
+        logging.debug(f"System prompt: {system_prompt}")
 
         # Query model for each prompt in the batch
         requests_data = [
@@ -507,8 +510,11 @@ class WebAPILLMClassifier(LLMClassifier):
                                 reasoning_content += summary.text + "\n"
 
                 response_message = "\n".join(output_texts) if len(output_texts) > 0 else ""
-                if self.inference_kwargs.get("reasoning") not in (None, "0") and len(reasoning_content) == 0:
-                    logging.debug("Reasoning enabled, but no summary returned.")
+                if self.inference_kwargs.get("reasoning") not in (None, "0"):
+                    if len(reasoning_content) == 0:
+                        logging.debug("Reasoning enabled, but no summary returned.")
+                    else:
+                        logging.debug(f"Received reasoning summary (length={len(reasoning_content)}).")
                 elif len(reasoning_content) > 0:
                     logging.debug(f"Reasoning not enabled, but received reasoning content: {reasoning_content}")
 

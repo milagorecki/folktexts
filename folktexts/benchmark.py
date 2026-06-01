@@ -890,6 +890,7 @@ class Benchmark:
                 system_prompt=config.system_prompt,
             )
 
+        logging.info(f"System prompt: {prompt_config.system_prompt() if prompt_config.system_prompt is not None else '(default)'}")
         if config.few_shot_config:
             logging.info(f"Using few-shot prompting (n={config.few_shot_config.n_shots}).")
             return partial(

@@ -4,6 +4,7 @@ Exemplary Usage:
     run_benchmark --model gpt2 --results-dir './results/test/' --data-dir '../llm_fairness/folktexts/data' --task ACSIncome --subsampling 0.01 --variation "format=bullet,connector=is" --logger-level ERROR
 """  # noqa: E501
 
+import base64
 import json
 import logging
 import os
@@ -294,6 +295,12 @@ def main():
     # Setup parser and process cmd-line args
     parser = setup_arg_parser()
     args = parser.parse_args()
+
+    # Decode any base64-encoded argument values (produced by experiments.py when a
+    # string value contains spaces, which HTCondor's Submit class cannot pass directly).
+    for _key, _val in list(vars(args).items()):
+        if isinstance(_val, str) and _val.startswith("b64:"):
+            setattr(args, _key, base64.b64decode(_val[4:]).decode())
 
     logging.getLogger().setLevel(level=args.logger_level)
     pretty_args_str = json.dumps(
