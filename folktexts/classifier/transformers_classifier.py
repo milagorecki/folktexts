@@ -179,7 +179,7 @@ class TransformersLLMClassifier(LLMClassifier):
                 return risk_estimates_batch, generated_text_batch
             except Exception as error:
                 logging.error(f"Error occurred while querying model: {error}")
-                raise NotImplementedError
+                raise
 
         else:
             # TODO: Add support for any unicode character used as a prefix to " A".

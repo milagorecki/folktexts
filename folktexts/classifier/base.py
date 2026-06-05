@@ -219,6 +219,13 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         # Compute risk estimates for the data
         y_pred_scores = self._get_positive_class_scores(self.predict_proba(X, **kwargs))
 
+        # Drop NaN scores (e.g. from failed API calls) before threshold fitting
+        nan_mask = ~np.isnan(y_pred_scores)
+        if not nan_mask.all():
+            logging.warning(f"fit: dropping {(~nan_mask).sum()} NaN score(s) out of {len(y_pred_scores)}.")
+            y = y[nan_mask]
+            y_pred_scores = y_pred_scores[nan_mask]
+
         # Compute the best threshold for the given data
         self.threshold = compute_best_threshold(
             y,
