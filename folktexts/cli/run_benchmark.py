@@ -136,6 +136,15 @@ def setup_arg_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
+        "--attn-implementation",
+        type=str,
+        help="[str] Attention implementation to use for local models (e.g. 'eager' to work around cuDNN issues)",
+        choices=["eager", "sdpa", "flash_attention_2"],
+        required=False,
+        default=None,
+    )
+
+    parser.add_argument(
         "--dont-correct-order-bias",
         help="[bool] Whether to avoid correcting ordering bias, by default will correct it",
         action="store_true",
@@ -370,11 +379,14 @@ def main():
             model_path = get_model_folder_path(args.model, root_dir=args.models_dir)
             if not Path(model_path).exists():
                 raise FileNotFoundError(f"Model folder not found at '{model_path}'.")
+        model_load_kwargs = {}
+        if args.attn_implementation:
+            model_load_kwargs["attn_implementation"] = args.attn_implementation
         if args.use_generated_text:
             logging.info("Tokenizer padding_side set to 'left'.")
-            model, tokenizer = load_model_tokenizer(args.model, padding_side="left")
+            model, tokenizer = load_model_tokenizer(args.model, padding_side="left", **model_load_kwargs)
         else:
-            model, tokenizer = load_model_tokenizer(args.model)
+            model, tokenizer = load_model_tokenizer(args.model, **model_load_kwargs)
 
         backend = "transformers"
 
