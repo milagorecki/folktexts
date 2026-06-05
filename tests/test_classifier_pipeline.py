@@ -403,3 +403,50 @@ class TestBenchmarkRun:
         bench1 = self._make_bench(model, tokenizer, acs_income_task, acs_income_dataset, seed=1)
         bench2 = self._make_bench(model, tokenizer, acs_income_task, acs_income_dataset, seed=2)
         assert hash(bench1) != hash(bench2)
+
+    def test_benchmark_hash_stable_across_processes(self, causal_lm_name_or_path, acs_income_task, acs_income_dataset):
+        """Hash must be identical across Python processes with different PYTHONHASHSEED.
+
+        Tests within a single process always share the same seed, so they cannot
+        catch hash randomization bugs.  This test spawns subprocesses with
+        explicitly different seeds and compares their outputs.
+
+        Covers the full hash chain: Benchmark → LLMClassifier → PromptConfig →
+        VaryValueMap → ColumnToText, which is where PYTHONHASHSEED bugs actually live.
+        """
+        import subprocess
+        import sys
+
+        repo = str(__file__).rsplit("/tests/", 1)[0]
+
+        # Hash the full LLMClassifier (includes PromptConfig → VaryValueMap → ColumnToText)
+        # using the tiny model so it's fast.
+        clf_script = """
+        import sys
+        sys.path.insert(0, {repo!r})
+        from folktexts.llm_utils import load_model_tokenizer
+        from folktexts.classifier import TransformersLLMClassifier
+        from folktexts.acs import ACSTaskMetadata
+
+        model, tokenizer = load_model_tokenizer({model!r})
+        task = ACSTaskMetadata.get_task("ACSIncome", use_numeric_qa=False)
+        clf = TransformersLLMClassifier(model=model, tokenizer=tokenizer, task=task)
+        print(hash(clf))
+        """.format(repo=repo, model=causal_lm_name_or_path)
+
+        def run(seed: int) -> str:
+            env = {**__import__("os").environ, "PYTHONHASHSEED": str(seed)}
+            result = subprocess.run(
+                [sys.executable, "-c", clf_script],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            assert result.returncode == 0, result.stderr
+            return result.stdout.strip()
+
+        h0, h1, h999 = run(0), run(1), run(999)
+        assert h0 == h1 == h999, (
+            f"LLMClassifier hash (incl. PromptConfig/ColumnToText) is not stable across processes: "
+            f"seed=0 → {h0}, seed=1 → {h1}, seed=999 → {h999}"
+        )

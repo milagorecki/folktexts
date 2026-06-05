@@ -35,6 +35,8 @@ from dataclasses import dataclass, field
 from string import Template
 from typing import Any, ClassVar
 
+from folktexts._utils import hash_dict
+
 import pandas as pd
 from jinja2 import TemplateError
 from transformers import AutoTokenizer
@@ -104,6 +106,9 @@ class VaryPrefix:
         the encoded features. If None, no custom prefix is added. Default is None.
     """
 
+    def __hash__(self) -> int:
+        return int(hash_dict(dataclasses.asdict(self)), 16)
+
     def __call__(self) -> str:
         parts = []
         if self.add_task_description:
@@ -142,6 +147,9 @@ class VarySuffix:
         Custom string to include in the suffix after the question. If None, no custom suffix is added. Default is None.
     """
 
+    def __hash__(self) -> int:
+        return int(hash_dict(dataclasses.asdict(self)), 16)
+
     def __post_init__(self):
         if self.show_label and self.label is None:
             raise ValueError("show_label=True requires label to be set.")
@@ -159,6 +167,7 @@ class VarySuffix:
 @dataclass(frozen=True)
 class VaryValueMap:
     cols_to_text: dict = field(hash=False, compare=False)
+    granularity: str = "original"
 
     """
     A stage for mapping raw feature values to human-readable text.
@@ -166,7 +175,17 @@ class VaryValueMap:
     ----------
     cols_to_text : dict
         A mapping from column names to ColumnToText objects, which provide the logic for converting raw values to text.
+    granularity : str, optional
+        Tag identifying the value-map variant; used for hashing only.
+        ``"original"`` (default) uses the full value maps; ``"low"`` uses
+        simplified maps (set by ``with_low_granularity``).
     """
+
+    def __hash__(self) -> int:
+        # Hash the column names (which identify the task) and the granularity
+        # tag (which identifies the value-map variant).  This is cross-run
+        # stable and avoids inspecting value-map contents entirely.
+        return int(hash_dict({"cols": sorted(self.cols_to_text), "granularity": self.granularity}), 16)
 
     def __call__(self, items: list[FeatureItem]) -> list[FeatureItem]:
         return [dataclasses.replace(item, text_value=self.cols_to_text[item.col][item.raw_value]) for item in items]
@@ -186,7 +205,7 @@ class VaryValueMap:
                 modified[col] = c2t_copy
             else:
                 modified[col] = c2t
-        return cls(cols_to_text=modified)
+        return cls(cols_to_text=modified, granularity="low")
 
 
 @dataclass(frozen=True)
@@ -201,6 +220,9 @@ class VaryOrder:
         A list of column names specifying the desired order of features in the prompt. 
         If None, the original order is preserved. Default is None.
     """
+
+    def __hash__(self) -> int:
+        return int(hash_dict(dataclasses.asdict(self)), 16)
 
     def __call__(self, items: list[FeatureItem]) -> list[FeatureItem]:
         if not self.order:
@@ -224,6 +246,9 @@ class VaryConnector:
         The string to use for connecting feature labels to their values. 
         For example, "is" would produce prompts like "Age is 30", while ":" would produce "Age: 30". Default is "is".
     """
+
+    def __hash__(self) -> int:
+        return int(hash_dict(dataclasses.asdict(self)), 16)
 
     def __call__(self, items: list[FeatureItem]) -> list[FeatureItem]:
         sep = ": " if self.connector == ":" else f" {self.connector} "
@@ -258,6 +283,9 @@ class VaryFormat:
         "textbullet": lambda s: f"- The {s}.\n",
     }
 
+    def __hash__(self) -> int:
+        return int(hash_dict(dataclasses.asdict(self)), 16)
+
     def __post_init__(self):
         if self.format not in self._TEMPLATES:
             raise ValueError(f"Unknown format {self.format!r}. Choose from {list(self._TEMPLATES)}")
@@ -278,6 +306,9 @@ class VarySystemPrompt:
     system_prompt : str
         The system prompt string to include in the chat context. This provides instructions or 
         context to the model before the user prompt. """
+
+    def __hash__(self) -> int:
+        return int(hash_dict(dataclasses.asdict(self)), 16)
 
     def __call__(self) -> str:
         return self.system_prompt
@@ -341,6 +372,9 @@ class FewShotConfig:
         elif self.compose not in ("random", "balanced"):
             raise ValueError(f"compose must be 'random', 'balanced', or a list of counts; got {self.compose!r}.")
 
+    def __hash__(self) -> int:
+        return int(hash_dict(dataclasses.asdict(self)), 16)
+
 
 # ---------------------------------------------------------------------------
 # PromptConfig
@@ -356,6 +390,17 @@ class PromptConfig:
     format: VaryFormat
     suffix: VarySuffix
     system_prompt: VarySystemPrompt | None = None
+
+    def __hash__(self) -> int:
+        return int(hash_dict({
+            "prefix": hash(self.prefix),
+            "value_map": hash(self.value_map),
+            "order": hash(self.order),
+            "connector": hash(self.connector),
+            "format": hash(self.format),
+            "suffix": hash(self.suffix),
+            "system_prompt": hash(self.system_prompt) if self.system_prompt is not None else None,
+        }), 16)
 
     @classmethod
     def default(cls, task: TaskMetadata) -> "PromptConfig":
