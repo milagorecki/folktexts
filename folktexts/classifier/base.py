@@ -436,6 +436,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
                                     "reasoning": resp.get("reasoning", ""),
                                     "response": resp.get("response", ""),
                                     "extracted_answer": extracted_answer or "",
+                                    "reasoning_tokens": resp.get("reasoning_tokens"),
                                 }
                             )
                         else:
@@ -447,6 +448,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
                                     "reasoning": "",
                                     "response": "",
                                     "extracted_answer": "",
+                                    "reasoning_tokens": None,
                                 }
                             )
 

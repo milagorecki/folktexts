@@ -461,6 +461,28 @@ class WebAPILLMClassifier(LLMClassifier):
 
         return responses_batch
 
+    @staticmethod
+    def _extract_reasoning_tokens(response: ModelResponse | ResponsesAPIResponse) -> int | None:
+        """Extract the number of reasoning tokens used from an API response.
+
+        The field lives under a different attribute depending on the backend:
+        the responses API (OpenAI reasoning models) exposes
+        ``usage.output_tokens_details.reasoning_tokens`` while the completion API
+        (Claude, DeepSeek, Kimi, etc.) exposes
+        ``usage.completion_tokens_details.reasoning_tokens``. Returns ``None`` if
+        the information is not available.
+        """
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return None
+        for details_attr in ("output_tokens_details", "completion_tokens_details"):
+            details = getattr(usage, details_attr, None)
+            if details is not None:
+                reasoning_tokens = getattr(details, "reasoning_tokens", None)
+                if reasoning_tokens is not None:
+                    return reasoning_tokens
+        return None
+
     def _decode_risk_estimate_from_api_response(
         self,
         response: ModelResponse | ResponsesAPIResponse,
@@ -526,9 +548,14 @@ class WebAPILLMClassifier(LLMClassifier):
             risk_estimate = question.get_answer_from_model_output(
                 text=response_message,
             )
+            reasoning_tokens = self._extract_reasoning_tokens(response)
             return (
                 risk_estimate,
-                {"reasoning": reasoning_content, "response": response_message},
+                {
+                    "reasoning": reasoning_content,
+                    "response": response_message,
+                    "reasoning_tokens": reasoning_tokens,
+                },
             )
 
         else:
