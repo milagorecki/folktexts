@@ -18,7 +18,6 @@ class ColumnToText:
         value_map: dict[object, str] | Callable | None = None,
         question: QAInterface | None = None,
         connector_verb: str = "is",
-        verbalize: Callable | None = None,  # template sentence, function of value
         missing_value_fill: str = "N/A",
         use_value_map_only: bool = False,
     ):
@@ -41,8 +40,6 @@ class ColumnToText:
         connector_verb : str, optional
             Which verb to use when connecting the column's description to its
             value; by default "is".
-        verbalize : Callable, optional
-            Function of the column value to generate a full sentence as description.
         missing_value_fill : str, optional
             The value to use when the column's value is not found in the
             `value_map`, by default "N/A".
@@ -61,7 +58,6 @@ class ColumnToText:
         self._connector_verb: str = connector_verb
         self._missing_value_fill: str = missing_value_fill
         self._use_value_map_only: bool = use_value_map_only
-        self._verbalize: Callable | None = verbalize
 
         # If a `question` was provided and `value_map` was not
         # > infer `value_map` from question (`value_map` is required for `__getitem__`)
@@ -105,7 +101,7 @@ class ColumnToText:
     @property
     def question(self) -> QAInterface:
         if self._question is None:
-            raise ValueError(f"No question provided for column '{self.name}'.")
+            logging.error(f"No question provided for column '{self.name}'.")
         return self._question
 
     @property

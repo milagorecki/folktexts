@@ -1,5 +1,6 @@
 """General constants and helper classes to run the main experiments on htcondor."""
 
+import base64
 import logging
 import sys
 from dataclasses import asdict, dataclass, field
@@ -73,11 +74,19 @@ def launch_experiment_job(exp: Experiment):
     # Name/prefix for cluster logs related to this job
     cluster_job_log_name = (Path(exp.results_dir) / f"log.$(Cluster).$(Process).exp{exp.hash()}").as_posix()
 
-    # Construct executable cmd-line arguments
+    # Construct executable cmd-line arguments.
+    # HTCondor's Python Submit class cannot pass argument values that contain spaces
+    # regardless of quoting style, so base64-encode any such values.  run_benchmark.py
+    # decodes them transparently after argparse runs.
+    def _encode_arg(value: str) -> str:
+        return "b64:" + base64.b64encode(value.encode()).decode()
+
     cmd_line_args = " ".join(
         (
             f"--{key.replace('_', '-')}"
             if isinstance(value, bool) and value is True
+            else f"--{key.replace('_', '-')}={_encode_arg(value)}"
+            if isinstance(value, str) and " " in value
             else f"--{key.replace('_', '-')}={value}"
         )
         for key, value in exp.kwargs.items()

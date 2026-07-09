@@ -4,8 +4,12 @@ Exemplary Usage:
     run_benchmark --model gpt2 --results-dir './results/test/' --data-dir '../llm_fairness/folktexts/data' --task ACSIncome --subsampling 0.01 --variation "format=bullet,connector=is" --logger-level ERROR
 """  # noqa: E501
 
+from __future__ import annotations
+
+import base64
 import json
 import logging
+import os
 import sys
 from argparse import ArgumentParser
 from pathlib import Path
@@ -13,7 +17,7 @@ from typing import Any
 
 from folktexts._utils import ParseDict
 from folktexts.llm_utils import get_model_folder_path
-from folktexts.prompting import DEFAULT_PROMPT_STYLE
+from folktexts.prompting import DEFAULT_PROMPT_STYLE, PROMPT_DEFAULT
 
 DEFAULT_ACS_TASK = "ACSIncome"
 ACS_TASKS = (
@@ -34,6 +38,11 @@ SIPP_TASKS = ("SIPP",)
 DEFAULT_BATCH_SIZE = 16
 DEFAULT_CONTEXT_SIZE = 600
 DEFAULT_SEED = 42
+
+DEFAULT_INFERENCE_BACKEND = "vllm"
+DEFAULT_GPU_MEM_UTIL = 0.85
+DEFAULT_VLLM_DTYPE = "auto"
+DEFAULT_TENSOR_PARALLEL_SIZE = 1
 
 
 def setup_arg_parser() -> ArgumentParser:
@@ -70,10 +79,63 @@ def setup_arg_parser() -> ArgumentParser:
 
     # Add special arguments (e.g., boolean flags or multiple-choice args)
     parser.add_argument(
+        "--temperature",
+        type=float,
+        help=(
+            "[float] Sampling temperature override for text-generation. "
+            "If unset, text generation uses greedy decoding (0.0), or 1.0 "
+            "with --enable-thinking. Ignored for multiple-choice/numeric "
+            "prompting, which reads untempered token probabilities."
+        ),
+        required=False,
+        default=None,
+    )
+
+    parser.add_argument(
         "--use-web-api-model",
         help="[bool] Whether use a model hosted on a web API (instead of a local model)",
         action="store_true",
         default=False,
+    )
+
+    parser.add_argument(
+        "--inference-backend",
+        type=str,
+        choices=["transformers", "vllm"],
+        default=DEFAULT_INFERENCE_BACKEND,
+        help=(
+            "[str] Local inference backend to use; default is 'vllm'. "
+            "Pass 'transformers' to fall back to the HuggingFace path. "
+            "Ignored when --use-web-api-model is set."
+        ),
+    )
+
+    parser.add_argument(
+        "--gpu-memory-utilization",
+        type=float,
+        default=DEFAULT_GPU_MEM_UTIL,
+        help="[float] vLLM gpu_memory_utilization (default 0.85). Lower if vLLM OOMs at startup.",
+    )
+
+    parser.add_argument(
+        "--max-model-len",
+        type=int,
+        default=None,
+        help=("[int] vLLM max_model_len (input + output tokens). If unset, derived from --context-size"),
+    )
+
+    parser.add_argument(
+        "--vllm-dtype",
+        type=str,
+        default=DEFAULT_VLLM_DTYPE,
+        help="[str] vLLM compute dtype (auto/bfloat16/float16/float32).",
+    )
+
+    parser.add_argument(
+        "--tensor-parallel-size",
+        type=int,
+        default=None,
+        help=("[int] vLLM tensor_parallel_size. If unset, auto-detected from CUDA_VISIBLE_DEVICES (1 if unset)."),
     )
 
     parser.add_argument(
@@ -98,6 +160,13 @@ def setup_arg_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
+        "--enable-thinking",
+        help=("[bool] Whether to enable thinking mode for tokenizers that support it (e.g., Qwen3)."),
+        action="store_true",
+        default=False,
+    )
+
+    parser.add_argument(
         "--reuse-few-shot-examples",
         help="[bool] Whether to reuse the same samples for few-shot prompting (or sample new ones every time)",
         action="store_true",
@@ -115,6 +184,33 @@ def setup_arg_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
+        "--example-order",
+        help=(
+            "[str] Comma-separated permutation of few-shot example indices, e.g. '2,0,1'. Only used when --few-shot is set."
+        ),
+    )
+
+    parser.add_argument(
+        "--few-shot-hide-question",
+        help=(
+            "[bool] In few-shot examples show only the answer (omit the repeated question). "
+            "By default each example includes the question, matching the original behavior. "
+            "Only used when --few-shot is set."
+        ),
+        action="store_true",
+        default=False,
+    )
+
+    parser.add_argument(
+        "--variation",
+        help="[dict] Prompt-style overrides as key=value pairs, e.g. --variation connector=is format=bullet (keys: format, connector, granularity, order, custom_prompt_prefix, custom_prompt_suffix, show_question).",
+        nargs="*",
+        action=ParseDict,
+        required=False,
+        default={},
+    )
+
+    parser.add_argument(
         "--use-chat-template",
         help="[bool] Whether to format prompts using the tokenizer's chat template (for instruct/chat models)",
         action="store_true",
@@ -126,7 +222,7 @@ def setup_arg_parser() -> ArgumentParser:
         type=str,
         help="[str] Custom assistant prefill text to use with chat templates",
         required=False,
-        default=None,
+        default=PROMPT_DEFAULT,
     )
 
     parser.add_argument(
@@ -134,7 +230,7 @@ def setup_arg_parser() -> ArgumentParser:
         type=str,
         help="[str] Custom system prompt text to use with chat templates",
         required=False,
-        default=None,
+        default=PROMPT_DEFAULT,
     )
 
     # Optionally, receive a list of features to use (subset of original list)
@@ -180,16 +276,18 @@ def setup_arg_parser() -> ArgumentParser:
         default="balanced_accuracy",
     )
 
-    parser.add_argument(
-        "--variation",
-        help="[dict] Dictionary specifying variations of data point serialization.",
-        nargs="*",
-        action=ParseDict,
-        required=False,
-        default={},
-    )
-
     return parser
+
+
+def _loggable_args(args) -> dict:
+    """Return the parsed args as a JSON-serializable dict for logging.
+
+    ``--chat-prompt``/``--system-prompt`` default to the ``PROMPT_DEFAULT`` sentinel
+    (``object()``), which ``json.dumps`` cannot serialize. Resolve it to ``"default"``
+    for logging only (mirrors ``BenchmarkConfig.__hash__``/``save_to_disk``); the sentinel
+    itself still flows unchanged into ``BenchmarkConfig``.
+    """
+    return {k: ("default" if v is PROMPT_DEFAULT else v) for k, v in vars(args).items()}
 
 
 def main():
@@ -199,10 +297,22 @@ def main():
     parser = setup_arg_parser()
     args = parser.parse_args()
 
+    # Decode any base64-encoded argument values (produced by experiments.py when a
+    # string value contains spaces, which HTCondor's Submit class cannot pass directly).
+    for _key, _val in list(vars(args).items()):
+        if isinstance(_val, str) and _val.startswith("b64:"):
+            setattr(args, _key, base64.b64decode(_val[4:]).decode())
+
     logging.getLogger().setLevel(level=args.logger_level)
-    pretty_args_str = json.dumps(vars(args), indent=4, sort_keys=True)
+    pretty_args_str = json.dumps(_loggable_args(args), indent=4, sort_keys=True)
     logging.info(f"Current python executable: '{sys.executable}'")
     logging.info(f"Received the following cmd-line args: {pretty_args_str}")
+
+    # Parse prompt variation dict
+    prompt_variation_dict = DEFAULT_PROMPT_STYLE
+    if args.variation != {}:
+        # update with args.variation
+        prompt_variation_dict = {**prompt_variation_dict, **args.variation}
 
     # Parse population filter if provided
     population_filter_dict = None
@@ -211,39 +321,63 @@ def main():
 
         population_filter_dict = cmd_line_args_to_kwargs(args.use_population_filter)
 
-    prompt_variation_dict = DEFAULT_PROMPT_STYLE
-    if args.variation != {}:
-        # update with args.variation
-        prompt_variation_dict = {**prompt_variation_dict, **args.variation}
-
     # Load model and tokenizer
-    # > Web-hosted LLM
+    backend = None  # webapi when --use-web-api-model; otherwise the local choice
+    # Web-hosted LLM
     if args.use_web_api_model:
         model = args.model
         tokenizer = None
-    # > Local LLM
+        backend = "webapi"
+
+    # Local LLM via vLLM (default)
+    if args.inference_backend == "vllm":
+        from folktexts.llm_utils import load_vllm_model
+
+        tensor_parallel_size = args.tensor_parallel_size
+        if tensor_parallel_size is None:
+            cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+            tensor_parallel_size = max(1, len([d for d in cuda_visible.split(",") if d.strip()]))
+        max_model_len = args.max_model_len
+        if max_model_len is None:
+            max_model_len = args.context_size + 256
+
+        model, tokenizer = load_vllm_model(
+            args.model,
+            dtype=args.vllm_dtype,
+            gpu_memory_utilization=args.gpu_memory_utilization,
+            max_model_len=max_model_len,
+            tensor_parallel_size=tensor_parallel_size,
+            seed=args.seed,
+        )
+        backend = "vllm"
+    # Local LLM via HuggingFace transformers (opt-in fallback)
     else:
         from folktexts.llm_utils import load_model_tokenizer
 
-        model_path = args.model
-        if args.models_dir:
-            model_path = get_model_folder_path(args.model, root_dir=args.models_dir)
-            if not Path(model_path).exists():
-                raise FileNotFoundError(f"Model folder not found at '{model_path}'.")
         model, tokenizer = load_model_tokenizer(args.model)
+        backend = "transformers"
 
-    example_composition = args.compose_few_shot_examples
-    if "," in example_composition:
-        example_composition = [int(count) for count in example_composition.split(",")]
+    # Build FewShotConfig if few-shot prompting is requested
+    from folktexts.prompting import FewShotConfig
+
+    few_shot_config = None
+    if args.few_shot:
+        few_shot_config = FewShotConfig(
+            n_shots=args.few_shot,
+            compose=args.compose_few_shot_examples,
+            reuse_examples=args.reuse_few_shot_examples,
+            example_order=args.example_order,
+            show_question_in_examples=not args.few_shot_hide_question,
+        )
 
     # Fill Benchmark config
     from folktexts.benchmark import BenchmarkConfig
 
     config = BenchmarkConfig(
-        few_shot=args.few_shot,
+        few_shot_config=few_shot_config,
+        prompt_variation=prompt_variation_dict,
         numeric_risk_prompting=args.numeric_risk_prompting,
-        reuse_few_shot_examples=args.reuse_few_shot_examples,
-        compose_few_shot_examples=example_composition,
+        enable_thinking=args.enable_thinking,
         use_chat_template=args.use_chat_template,
         chat_prompt=args.chat_prompt,
         system_prompt=args.system_prompt,
@@ -253,7 +387,7 @@ def main():
         feature_subset=args.use_feature_subset or None,
         population_filter=population_filter_dict,
         seed=args.seed,
-        prompt_variation=prompt_variation_dict,
+        temperature=args.temperature,
     )
 
     # Create Benchmark object
@@ -281,6 +415,8 @@ def main():
         config=config,
         subsampling=args.subsampling,
         max_api_rpm=args.max_api_rpm,
+        backend=backend,
+        model_name_or_path=args.model if backend == "vllm" else None,
     )
 
     # Set-up results directory

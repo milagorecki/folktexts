@@ -17,6 +17,7 @@ from tqdm.auto import tqdm
 
 from folktexts.dataset import Dataset
 from folktexts.evaluation import compute_best_threshold
+from folktexts.prompting import PromptConfig
 from folktexts.prompting import encode_row_prompt as default_encode_row_prompt
 from folktexts.qa_interface import DirectNumericQA, MultipleChoiceQA
 from folktexts.task import TaskMetadata
@@ -47,12 +48,12 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         self,
         model_name: str,
         task: TaskMetadata | str,
-        custom_prompt_prefix: str = None,
         encode_row: EncodeRowCallable = None,
         threshold: float = 0.5,
         correct_order_bias: bool = True,
         seed: int = 42,
-        prompt_variation: dict = {},
+        prompt_config: PromptConfig | None = None,
+        temperature: float | None = None,
         **inference_kwargs,
     ):
         """Creates an LLMClassifier object.
@@ -63,10 +64,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
             The model name or ID.
         task : TaskMetadata | str
             The task metadata object or name of an already created task.
-        custom_prompt_prefix : str, optional
-            A custom prompt prefix to supply to the model before the encoded
-            row data, by default None.
-        encode_row : Callable[[pd.Series], str], optional
+        encode_row : Callable[..., str], optional
             The function used to encode tabular rows into natural text. If not
             provided, will use the default encoding function for the task.
         threshold : float, optional
@@ -78,6 +76,14 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
             by default True.
         seed : int, optional
             The random seed - used for reproducibility.
+        temperature : float | None, optional
+            Sampling temperature for text-generation prompting. When ``None``
+            (the default) the question's own default is used: greedy (``0.0``)
+            for non-reasoning models, ``1.0`` in thinking mode; see
+            ``QAInterface.default_temperature``. Has no effect on
+            multiple-choice / direct-numeric prompting, which read the
+            untempered next-token distribution on every backend and never sample.
+            Resolved via :meth:`_resolve_temperature`.
         **inference_kwargs
             Additional keyword arguments to be used at inference time. Options
             include `context_size` and `batch_size`.
@@ -87,14 +93,13 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         self._model_name = model_name
 
         self._task = TaskMetadata.get_task(task) if isinstance(task, str) else task
-        self._custom_prompt_prefix = custom_prompt_prefix
-        self._prompt_variation = prompt_variation
 
-        self._encode_row = encode_row or partial(
+        self._prompt_config = prompt_config or PromptConfig.from_dict(pv={}, task=self.task)
+
+        self._encode_row: EncodeRowCallable = encode_row or partial(
             default_encode_row_prompt,
             task=self.task,
-            custom_prompt_prefix=self.custom_prompt_prefix,
-            prompt_variation=self.prompt_variation,
+            prompt_config=self._prompt_config,
         )
 
         self._threshold = threshold
@@ -102,8 +107,19 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         self._threshold_obj = "balanced_accuracy"  ##TODO: remove (but will change benchmark hash)
         self._correct_order_bias = correct_order_bias
         self._seed = seed
+        self._temperature = temperature
 
-        # Default inference kwargs
+        # Default inference kwargs. Reject unknown kwargs instead of silently swallowing
+        # them: prompt-shaping args removed in the refactor (e.g. `custom_prompt_prefix`)
+        # would otherwise land here unused and silently change behavior.
+        unknown = set(inference_kwargs) - set(self.DEFAULT_INFERENCE_KWARGS)
+        if unknown:
+            raise TypeError(
+                f"Unexpected keyword argument(s) {sorted(unknown)}. Valid inference kwargs "
+                f"are {sorted(self.DEFAULT_INFERENCE_KWARGS)}; prompt-shaping options removed "
+                f"in the refactor (e.g. 'custom_prompt_prefix') are now set via `prompt_config` "
+                f"or the CLI `--variation` flag."
+            )
         self._inference_kwargs = self.DEFAULT_INFERENCE_KWARGS.copy()
         self._inference_kwargs.update(inference_kwargs)
 
@@ -118,10 +134,10 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         hash_params = dict(
             model_name=self.model_name,
             task_hash=hash(self.task),
-            custom_prompt_prefix=self.custom_prompt_prefix,
-            prompt_variation=hash_dict(self.prompt_variation),
+            prompt_config_hash=hash(self.prompt_config),
             correct_order_bias=self.correct_order_bias,
             threshold=self.threshold,
+            temperature=self._temperature,
             encode_row_hash=hash_function(self.encode_row),
         )
 
@@ -136,12 +152,9 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         return self._task
 
     @property
-    def custom_prompt_prefix(self) -> str | None:
-        return self._custom_prompt_prefix
-
-    @property
-    def prompt_variation(self) -> dict:
-        return self._prompt_variation
+    def prompt_config(self) -> PromptConfig:
+        """The :class:`~folktexts.prompting.PromptConfig` used to render this classifier's prompts."""
+        return self._prompt_config
 
     @property
     def encode_row(self) -> EncodeRowCallable:
@@ -172,6 +185,28 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
     @property
     def seed(self) -> int:
         return self._seed
+
+    @property
+    def temperature(self) -> float | None:
+        """The explicit sampling-temperature override, or ``None`` to defer to
+        each question type's :attr:`~folktexts.qa_interface.QAInterface.default_temperature`."""
+        return self._temperature
+
+    def _resolve_temperature(
+        self,
+        question: MultipleChoiceQA | DirectNumericQA,
+    ) -> float:
+        """Return the sampling temperature to use when generating text for ``question``.
+
+        Uses the classifier-level override when one was provided; otherwise
+        falls back to the question's ``default_temperature`` (greedy for non-thinking
+        models, ``1.0`` in thinking mode). Only the text-generation paths
+        call this — multiple-choice / direct-numeric read untempered token
+        probabilities on every backend, so temperature never applies to them.
+        """
+        if self._temperature is not None:
+            return self._temperature
+        return question.default_temperature
 
     @property
     def inference_kwargs(self) -> dict:
@@ -206,7 +241,11 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
 
         # Compute the best threshold for the given data
         self.threshold = compute_best_threshold(
-            y, y_pred_scores, false_pos_cost=false_pos_cost, false_neg_cost=false_neg_cost, maximize=threshold_obj
+            y,
+            y_pred_scores,
+            false_pos_cost=false_pos_cost,
+            false_neg_cost=false_neg_cost,
+            maximize=threshold_obj,
         )
         self._threshold_obj = threshold_obj  ## TODO: save in llm_clf._threshold_obj before calling fun
 
@@ -283,8 +322,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         # Check if `predictions_save_path` exists and load predictions if possible
         if predictions_save_path is not None:
             logging.info(
-                f"Check if predictions_save_path '{predictions_save_path}' "
-                f"exists:{Path(predictions_save_path).exists()}"
+                f"Check if predictions_save_path '{predictions_save_path}' exists:{Path(predictions_save_path).exists()}"
             )
         if predictions_save_path is not None and Path(predictions_save_path).exists():
             result = self._load_predictions_from_disk(predictions_save_path, data=data)
@@ -328,7 +366,9 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         raise NotImplementedError("Calling an abstract method :: Use one of the subclasses of LLMClassifier.")
 
     def compute_risk_estimates_for_dataframe(
-        self, df: pd.DataFrame, save_intermed: dict = {"path": None, "labels": None}
+        self,
+        df: pd.DataFrame,
+        save_intermed: dict = {"path": None, "labels": None},
     ) -> np.ndarray:
         """Compute risk estimates for a specific dataframe (internal helper function).
 
@@ -384,6 +424,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
                 # Store risk estimates for current question
                 batch_risk_scores[:, q_idx] = np.clip(risk_estimates_batch, 0, 1)
 
+            path = None
             risk_scores[start_idx:end_idx] = batch_risk_scores.mean(axis=1)
 
             if batch_idx % 50 == 0:
@@ -407,9 +448,10 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         # Check that all risk scores were computed
         assert not np.isclose(risk_scores, fill_value).any()
         # remove intermediate saves
-        if Path(path).exists() and str(path).endswith("_batch.csv"):
-            logging.info(f"Removing file '{path}'.")
-            remove(path)
+        if path is not None:
+            if Path(path).exists() and str(path).endswith("_batch.csv"):
+                logging.info(f"Removing file '{path}'.")
+                remove(path)
         return risk_scores
 
     def compute_risk_estimates_for_dataset(

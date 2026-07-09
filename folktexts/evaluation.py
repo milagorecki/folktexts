@@ -151,10 +151,7 @@ def evaluate_binary_predictions_fairness(
 
         # Add group-wise metrics to the dictionary
         groupwise_metrics.update(
-            {
-                group_metric_name(metric_name, s_value): metric_value
-                for metric_name, metric_value in curr_group_metrics.items()
-            }
+            {group_metric_name(metric_name, s_value): metric_value for metric_name, metric_value in curr_group_metrics.items()}
         )
 
         unique_metrics = unique_metrics.union(curr_group_metrics.keys())

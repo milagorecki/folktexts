@@ -13,7 +13,7 @@ import logging
 import re
 from abc import ABC
 from dataclasses import dataclass
-from typing import Iterator, Optional
+from typing import ClassVar, Iterator, Optional
 
 import numpy as np
 
@@ -26,6 +26,34 @@ ANSWER_PROB_THRESHOLD = 0.1
 # Default answer keys for multiple-choice questions
 _ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
+# ---------------------------------------------------------------------------
+# Default system / chat prompts — owned here so each QAInterface subclass can
+# declare its own defaults without importing from prompting.py (which imports
+# from this module, which would create a circular dependency).
+# ---------------------------------------------------------------------------
+
+SYSTEM_PROMPT = """\
+You are a helpful assistant. You answer multiple-choice questions \
+based on the information provided. Respond with a single answer choice.
+"""
+
+NUMERIC_SYSTEM_PROMPT = """\
+You are a helpful assistant. You provide numeric probability \
+estimates based on the information provided.
+"""
+ANTHROPIC_CHAT_PROMPT = "If had to select one of the options, my answer would be"
+GEMMA_CHAT_PROMPT = "The provided information suggests that the answer is"
+
+
+# NOTE: The leading `0.` is part of the prefill, so the model only generates
+# the digits after the decimal point. This caps the expressible probability
+# at the open interval [0, 1) — true posteriors at or near 1.0 cannot be
+# emitted exactly. If you need full [0, 1] coverage, override `chat_prompt`
+# with e.g. `"Answer (between 0 and 1): "` and let the model produce the
+# leading digit itself (note that this also widens the digit-scoring search
+# space and may degrade calibration for low-probability cases).
+NUMERIC_CHAT_PROMPT = "Answer (between 0 and 1): 0."
+
 
 @dataclass(frozen=True)
 class QAInterface(ABC):
@@ -34,6 +62,20 @@ class QAInterface(ABC):
     column: str
     text: str
     num_forward_passes: int
+
+    # Subclasses override these to declare their mode-appropriate defaults.
+    # `None` means "no default" (i.e. no system prompt / no chat prefill).
+    default_system_prompt: ClassVar[str | None] = SYSTEM_PROMPT
+    default_chat_prompt: ClassVar[str | None] = ANTHROPIC_CHAT_PROMPT
+
+    # Default sampling temperature for *text-generation* prompting, read via
+    # `LLMClassifier._resolve_temperature`. Only meaningful for
+    # text generation: token-probability methods (multiple-choice,
+    # direct-numeric) read the untempered next-token distribution on every
+    # backend and never sample, so temperature does not
+    # apply to them. A `ClassVar` (not a dataclass field) so it does not
+    # affect the frozen dataclass hash / result-cache identity.
+    default_temperature: ClassVar[float] = 0.0
 
     def get_answer_prefix(self) -> str:
         """Returns the answer label that follows the question (e.g. 'Answer:')."""
@@ -104,6 +146,9 @@ class DirectNumericQA(QAInterface):
     num_forward_passes: int = 2  # NOTE: overrides superclass default
     answer_probability: bool = True
 
+    default_system_prompt: ClassVar[str] = NUMERIC_SYSTEM_PROMPT
+    default_chat_prompt: ClassVar[str] = NUMERIC_CHAT_PROMPT
+
     def get_answer_prefix(self) -> str:
         if self.answer_probability:
             return "Answer (between 0 and 1): 0."
@@ -112,7 +157,7 @@ class DirectNumericQA(QAInterface):
     def get_question_prompt(self, with_answer_prefill: bool = True) -> str:
         question_prompt = f"Question: {self.text}"
         if with_answer_prefill:
-            question_prompt += "\n" + self.get_answer_prefix()
+            question_prompt += f"\n{self.get_answer_prefix()}"
 
         return question_prompt
 
@@ -129,10 +174,24 @@ class DirectNumericQA(QAInterface):
         Token ids are filtered to `< vocab_dim` (the model's logits axis); some
         tokenizer families place added/special tokens beyond the base vocab,
         and the caller indexes `last_token_probs` by these ids.
+
+        Parameters
+        ----------
+        tokenizer_vocab : dict[str, int]
+            The tokenizer vocabulary mapping token strings to token IDs.
+        vocab_dim : int
+            Size of the model's logits axis. Token IDs >= vocab_dim are excluded
+            (some tokenizer families place added/special tokens beyond the base
+            vocab, and the caller indexes ``last_token_probs`` by these IDs).
+
+        Returns
+        -------
+        dict[str, int]
+            Mapping from numeric token string to token ID, filtered to
+            ``token_id < vocab_dim``.
+
         """
-        numeric_tokens = {
-            key: token_id for key, token_id in tokenizer_vocab.items() if key.isdigit() and token_id < vocab_dim
-        }
+        numeric_tokens = {key: token_id for key, token_id in tokenizer_vocab.items() if key.isdigit() and token_id < vocab_dim}
 
         if "." in tokenizer_vocab and tokenizer_vocab["."] < vocab_dim:
             numeric_tokens["."] = tokenizer_vocab["."]
@@ -143,7 +202,7 @@ class DirectNumericQA(QAInterface):
         self,
         last_token_probs: np.ndarray,
         tokenizer_vocab: dict[str, int],
-    ) -> float:
+    ) -> float | int:
         """Outputs a numeric answer inferred from the model's output.
 
         Parameters
@@ -157,7 +216,7 @@ class DirectNumericQA(QAInterface):
 
         Returns
         -------
-        answer : float
+        answer : float | int
             The numeric answer to the question.
 
         Notes
@@ -317,6 +376,7 @@ class MultipleChoiceQA(QAInterface):
 
     def get_question_prompt(self, with_answer_prefill: bool = True) -> str:
         choice_str = "\n".join(f"{key}. {choice.text}." for key, choice in self.key_to_choice.items())
+
         prompt = f"Question: {self.text}\n{choice_str}"
         if with_answer_prefill:
             prompt += f"\n{self.get_answer_prefix()}"
@@ -383,10 +443,19 @@ class MultipleChoiceQA(QAInterface):
         msg = f"Answers have {answers_sum_prob:.2%} probability assigned."
         if answers_sum_prob < ANSWER_PROB_THRESHOLD:
             id_to_tok = {v: k for k, v in tokenizer_vocab.items()}
-            argmax_token = id_to_tok[int(np.argmax(last_token_probs))]
+            argmax_id = int(np.argmax(last_token_probs))
+            argmax_token = id_to_tok.get(argmax_id, f"<id={argmax_id}>")
             logging.warning(msg + f" Argmax token: '{argmax_token}'.")
         else:
             logging.debug(msg)
+
+        # No mass on any choice token — happens when the top-K logprobs cap
+        # excludes all answer-letter variants (vLLM/WebAPI), or with extreme
+        # FP16 underflow on transformers. Fall back to uniform over the QA's
+        # declared choices: same effect as the model saying "I don't know."
+        if answers_sum_prob <= 0 or not answers:
+            n = len(self.choices)
+            return {choice: 1.0 / n for choice in self.choices}
 
         return {choice: prob / answers_sum_prob for choice, prob in answers.items()}
 
@@ -413,9 +482,7 @@ class MultipleChoiceQA(QAInterface):
         """
         if last_token_probs.ndim > 1:
             if last_token_probs.shape[0] > 1:
-                logging.warning(
-                    f"Multiple ({last_token_probs.shape[0]}) forward passes detected: using only the first pass."
-                )
+                logging.warning(f"Multiple ({last_token_probs.shape[0]}) forward passes detected: using only the first pass.")
 
             # Using only 1st forward pass results
             last_token_probs = last_token_probs[0]
@@ -441,3 +508,20 @@ class MultipleChoiceQA(QAInterface):
 
         logging.debug(f"Risk estimate: {risk_estimate:.2f}")
         return risk_estimate
+
+
+# Regex patterns for extracting probability from generated text
+# Matches formats like: "Probability: 80%", "Probability: 0.80", "probability: 80 percent"
+# Patterns are ordered by specificity - more specific patterns first
+_PROBABILITY_PATTERNS = [
+    # Match "Probability: X%" or "probability: X%" (with optional "is", "of", etc.)
+    r"[Pp]robability(?:\s+(?:is|of|estimate)?)?[:\s]+(\d+(?:\.\d+)?)\s*%",
+    # Match "Probability: 0.XX" or "probability: 0.XX" or "Probability: 1.0"
+    r"[Pp]robability(?:\s+(?:is|of|estimate)?)?[:\s]+(\d*\.?\d+)(?![%\d])",
+    # Match "X%" anywhere in text (prefer later matches in fallback)
+    r"(\d+(?:\.\d+)?)\s*%",
+    # Match "X percent" pattern
+    r"(\d+(?:\.\d+)?)\s+percent",
+    # Match standalone decimal (0.XX or .XX) that looks like probability
+    r"(?<![.\d])(0?\.\d+)(?![.\d])",
+]

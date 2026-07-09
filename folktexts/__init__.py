@@ -1,5 +1,19 @@
-from ._version import __version__, __version_info__
-from .acs import ACSDataset, ACSTaskMetadata
-from .benchmark import Benchmark, BenchmarkConfig
-from .classifier import LLMClassifier, TransformersLLMClassifier, WebAPILLMClassifier
-from .task import TaskMetadata
+from ._version import __version__, __version_info__  # noqa: F401
+from .acs import ACSDataset, ACSTaskMetadata  # noqa: F401
+from .benchmark import Benchmark, BenchmarkConfig  # noqa: F401
+from .classifier import (  # noqa: F401
+    LLMClassifier,
+    TransformersLLMClassifier,
+    VLLMClassifier,
+    WebAPILLMClassifier,
+)
+from .prompting import (  # noqa: F401
+    PROMPT_DEFAULT,
+    FewShotConfig,
+    PromptConfig,
+)
+from .qa_interface import (  # noqa: F401
+    DirectNumericQA,
+    MultipleChoiceQA,
+)
+from .task import TaskMetadata  # noqa: F401

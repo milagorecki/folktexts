@@ -55,7 +55,7 @@ CONTEXT_SIZE = 750
 
 JOB_CPUS = 4
 JOB_MEMORY_GB = 60
-JOB_BID = 200
+JOB_BID = 250
 
 # LLMs to evaluate
 LLM_MODELS = [
@@ -152,9 +152,7 @@ def make_llm_clf_experiment(
     n_shots = int(experiment_kwargs.get("few_shot", 1))
     experiment_kwargs.setdefault("batch_size", math.ceil(BATCH_SIZE / n_shots))
     experiment_kwargs.setdefault("context_size", CONTEXT_SIZE * n_shots)
-    experiment_kwargs.setdefault(
-        "data_dir", ACS_DATA_DIR.as_posix() if task in ACS_TASKS else TABLESHIFT_DATA_DIR.as_posix()
-    )
+    experiment_kwargs.setdefault("data_dir", ACS_DATA_DIR.as_posix() if task in ACS_TASKS else TABLESHIFT_DATA_DIR.as_posix())
     # experiment_kwargs.setdefault("fit_threshold", FIT_THRESHOLD)
 
     if "use_feature_subset" in kwargs:

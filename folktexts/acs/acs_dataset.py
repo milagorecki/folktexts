@@ -22,7 +22,7 @@ DEFAULT_SURVEY_HORIZON = "1-Year"
 DEFAULT_SURVEY_UNIT = "person"
 
 
-class ACSDataset(Dataset[ACSTaskMetadata]):
+class ACSDataset(Dataset):
     """Wrapper for ACS folktables datasets."""
 
     def __init__(
@@ -82,7 +82,7 @@ class ACSDataset(Dataset[ACSTaskMetadata]):
         cache_dir = Path(cache_dir or DEFAULT_DATA_DIR).expanduser().resolve() / "folktables"
         if not cache_dir.exists():
             logging.warning(f"Creating cache directory '{cache_dir}' for ACS data.")
-            cache_dir.mkdir(exist_ok=True, parents=False)
+            cache_dir.mkdir(exist_ok=True, parents=True)
 
         # Parse task if given a string
         task_obj = ACSTaskMetadata.get_task(task) if isinstance(task, str) else task

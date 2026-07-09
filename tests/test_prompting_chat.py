@@ -11,26 +11,32 @@ present locally (we never download from the Hub during tests).
 
 from __future__ import annotations
 
+import dataclasses
 import os
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
-from folktexts.acs.acs_tasks import ACSTaskMetadata
 from folktexts.prompting import (
+    PromptConfig,
+    VaryFormat,
+    VarySuffix,
+    apply_chat_template,
+    encode_row_prompt,
+    encode_row_prompt_chat,
+    resolve_chat_defaults,
+    tokenizer_supports_system_prompt,
+)
+from folktexts.qa_interface import (
     ANTHROPIC_CHAT_PROMPT,
     NUMERIC_CHAT_PROMPT,
     NUMERIC_SYSTEM_PROMPT,
     SYSTEM_PROMPT,
-    apply_chat_template,
-    encode_row_prompt,
-    encode_row_prompt_chat,
-    reset_building_block_cache,
-    resolve_chat_defaults,
-    tokenizer_supports_system_prompt,
+    Choice,
+    DirectNumericQA,
+    MultipleChoiceQA,
 )
-from folktexts.qa_interface import DirectNumericQA
 from transformers import AutoTokenizer
 
 # Local snapshot dir for a chat-tuned tokenizer. Override via env var if needed.
@@ -121,27 +127,29 @@ def minimal_tokenizer(chat_tokenizer) -> AutoTokenizer:
     return tok
 
 
-def _make_fake_task():
+@pytest.fixture
+def fake_task() -> MagicMock:
+    """Minimal TaskMetadata stand-in for prompting tests.
+
+    `encode_row_prompt` only touches `task.get_row_description(row)` and
+    `task.question.get_question_prompt()`, so a MagicMock is sufficient.
+    """
     age_col = MagicMock()
-    age_col.short_description = "age"
-    age_col.__getitem__.side_effect = lambda val: f"{val} years old"
-
+    age_col.short_description = "Age"
+    age_col.__getitem__ = lambda self, k: f"{k} years old"
     occp_col = MagicMock()
-    occp_col.short_description = "occupation"
-    occp_col.__getitem__.side_effect = lambda val: str(val)
+    occp_col.short_description = "Occupation"
+    occp_col.__getitem__ = lambda self, k: str(k)
 
-    task = MagicMock(spec=ACSTaskMetadata)
-    task.name = "ACSIncome"
+    task = MagicMock()
+    task.name = "ACSFakeTask"
     task.features = ["AGE", "OCCP"]
     task.cols_to_text = {"AGE": age_col, "OCCP": occp_col}
     task.question.get_question_prompt.return_value = "Question: What is the income bracket?\nA. <50k\nB. >=50k\nAnswer:"
+    task.question.get_answer_prefix.return_value = "Answer:"
+    task.question.default_system_prompt = SYSTEM_PROMPT
+    task.question.default_chat_prompt = ANTHROPIC_CHAT_PROMPT
     return task
-
-
-@pytest.fixture
-def fake_task() -> MagicMock:
-    """Minimal TaskMetadata stand-in for prompting tests usind MagicMock."""
-    return _make_fake_task()
 
 
 @pytest.fixture
@@ -156,18 +164,25 @@ def sample_row() -> pd.Series:
 
 class TestResolveChatDefaults:
     def test_mc_mode_uses_mc_defaults(self):
-        sys_p, chat_p = resolve_chat_defaults(numeric=False)
+        mc_q = MultipleChoiceQA(
+            column="X",
+            text="Q?",
+            choices=(Choice("No", 0), Choice("Yes", 1)),
+        )
+        sys_p, chat_p = resolve_chat_defaults(question=mc_q)
         assert sys_p == SYSTEM_PROMPT
         assert chat_p == ANTHROPIC_CHAT_PROMPT
 
     def test_numeric_mode_uses_numeric_defaults(self):
-        sys_p, chat_p = resolve_chat_defaults(numeric=True)
+        numeric_q = DirectNumericQA(column="X", text="Q?")
+        sys_p, chat_p = resolve_chat_defaults(question=numeric_q)
         assert sys_p == NUMERIC_SYSTEM_PROMPT
         assert chat_p == NUMERIC_CHAT_PROMPT
 
     def test_explicit_values_are_returned_unchanged(self):
+        numeric_q = DirectNumericQA(column="X", text="Q?")
         sys_p, chat_p = resolve_chat_defaults(
-            numeric=True,
+            question=numeric_q,
             system_prompt="custom system",
             chat_prompt="custom prefill",
         )
@@ -175,8 +190,13 @@ class TestResolveChatDefaults:
         assert chat_p == "custom prefill"
 
     def test_partial_override_only_replaces_provided_field(self):
+        mc_q = MultipleChoiceQA(
+            column="X",
+            text="Q?",
+            choices=(Choice("No", 0), Choice("Yes", 1)),
+        )
         sys_p, chat_p = resolve_chat_defaults(
-            numeric=False,
+            question=mc_q,
             system_prompt="custom system",
         )
         assert sys_p == "custom system"
@@ -293,16 +313,21 @@ class TestEncodeRowPromptChat:
         assert SYSTEM_PROMPT.strip() in out
         assert out.endswith(ANTHROPIC_CHAT_PROMPT)
 
-    def test_numeric_kwarg_applies_numeric_defaults(self, chat_tokenizer, fake_task, sample_row):
+    def test_numeric_question_applies_numeric_defaults(self, chat_tokenizer, fake_task, sample_row):
+        # Numeric defaults are driven by question type, not a separate flag.
+        # This mirrors make_benchmark, which calls _configure_task_question
+        # (setting task.question to DirectNumericQA) before building the
+        # prompt_config, so the two are always in sync.
+        numeric_qa = DirectNumericQA(column="PINCP", text="What is the income bracket?")
         out = encode_row_prompt_chat(
             row=sample_row,
             task=fake_task,
             tokenizer=chat_tokenizer,
-            numeric=True,
+            question=numeric_qa,
         )
         assert NUMERIC_SYSTEM_PROMPT.strip() in out
         assert out.endswith(NUMERIC_CHAT_PROMPT)
-        # Cross-check that the MC defaults are NOT injected when numeric=True.
+        # Cross-check that the MC defaults are NOT injected for a numeric question.
         assert SYSTEM_PROMPT.strip() not in out
 
     def test_explicit_system_prompt_none_does_not_reinject_default(self, minimal_tokenizer, fake_task, sample_row):
@@ -358,9 +383,36 @@ class TestEncodeRowPromptChat:
             task=fake_task,
             tokenizer=chat_tokenizer,
         )
-        assert "age is 35 years old" in out
-        assert "occupation is Engineer" in out
+        assert "35 years old" in out
+        assert "Engineer" in out
         assert "What is the income bracket?" in out
+
+    def test_custom_system_prompt_appears_in_output(self, minimal_tokenizer, acs_income_task, acs_row):
+        custom_system = "You are a test assistant."
+        out = encode_row_prompt_chat(
+            acs_row,
+            task=acs_income_task,
+            tokenizer=minimal_tokenizer,
+            system_prompt=custom_system,
+            chat_prompt=ANTHROPIC_CHAT_PROMPT,
+        )
+        assert custom_system in out
+
+    def test_prompt_variation_changes_output(self, minimal_tokenizer, acs_income_task, acs_row):
+        base_config = PromptConfig.default(task=acs_income_task)
+        prompt_bullet = encode_row_prompt_chat(
+            acs_row,
+            task=acs_income_task,
+            tokenizer=minimal_tokenizer,
+            prompt_config=dataclasses.replace(base_config, format=VaryFormat("bullet")),
+        )
+        prompt_comma = encode_row_prompt_chat(
+            acs_row,
+            task=acs_income_task,
+            tokenizer=minimal_tokenizer,
+            prompt_config=dataclasses.replace(base_config, format=VaryFormat("comma")),
+        )
+        assert prompt_bullet != prompt_comma
 
 
 # ----------------------------------------------------------------------
@@ -373,9 +425,10 @@ class TestEncodeRowPromptChat:
 # that suffix) as the assistant turn; if both paths emitted the prefill, it
 # would render twice and silently degrade scoring (Mistral 7B IT chat-numeric
 # AUC collapsed from 0.815 to 0.578 before the fix). The fix is structural:
-# `encode_row_prompt_chat` calls `encode_row_prompt(..., with_answer_prefill=False)`
-# so the user message stops short of the prefill; the chat_prompt assistant
-# turn is then the only place it appears. These tests pin that invariant.
+# `build_chat` forces `with_answer_prefill=False` on the `VarySuffix` via
+# `dataclasses.replace` before calling `encode_row_prompt`, so the user message
+# stops short of the prefill; the `chat_prompt` assistant turn is the only place
+# it appears. These tests pin that invariant.
 
 
 class TestEncodeRowPromptChatNumericPrefill:
@@ -390,7 +443,6 @@ class TestEncodeRowPromptChatNumericPrefill:
             row=sample_row,
             task=fake_task,
             tokenizer=chat_tokenizer,
-            numeric=True,
             question=self._numeric_question(),
         )
         assert out.count(NUMERIC_CHAT_PROMPT) == 1, (
@@ -404,7 +456,6 @@ class TestEncodeRowPromptChatNumericPrefill:
             row=sample_row,
             task=fake_task,
             tokenizer=chat_tokenizer,
-            numeric=True,
             question=self._numeric_question(),
         )
         assert out.endswith(NUMERIC_CHAT_PROMPT), (
@@ -443,11 +494,16 @@ class TestEncodeRowPromptChatNumericPrefill:
     def test_chat_numeric_user_turn_omits_prefill(self, chat_tokenizer, fake_task, sample_row):
         # Pin the structural property directly: the bare user content (before
         # chat-template wrapping) must not contain the numeric prefill at all.
+        base_config = PromptConfig.from_dict({}, task=fake_task)
+        config_no_prefill = dataclasses.replace(
+            base_config,
+            suffix=dataclasses.replace(base_config.suffix, with_answer_prefill=False),
+        )
         user_content = encode_row_prompt(
             row=sample_row,
             task=fake_task,
             question=self._numeric_question(),
-            prompt_variation={"with_answer_prefill": False},
+            prompt_config=config_no_prefill,
         )
         assert "Answer (between 0 and 1): 0." not in user_content
         assert user_content.rstrip().endswith("What is this person's estimated yearly income?")
@@ -456,50 +512,62 @@ class TestEncodeRowPromptChatNumericPrefill:
 # ----------------------------------------------------------------------
 # encode_row_prompt — `with_answer_prefill` plumbing
 # ----------------------------------------------------------------------
-# The chat path calls `encode_row_prompt(..., with_answer_prefill=False)` to
-# tell the QAInterface to leave out the answer prefill (so it can be supplied
-# as the assistant turn instead). These tests pin that the kwarg is actually
-# forwarded to `question.get_question_prompt(with_answer_prefill=...)` rather
-# than relying on a default — and that it round-trips for both QA types.
+# `with_answer_prefill` lives on `VarySuffix` (part of `PromptConfig`).
+# Setting it to False tells the QAInterface to omit the answer prefix from
+# the question text — required by the chat path, where the prefill is the
+# assistant turn. These tests pin that the flag round-trips through
+# `PromptConfig` → `VarySuffix` → `question.get_question_prompt` correctly
+# for both QA types.
 
 
 class TestEncodeRowPromptThreadsAnswerPrefillFlag:
-    def setup_method(self):
-        reset_building_block_cache()
-
-    def test_kwarg_forwarded_to_question_get_question_prompt(self, sample_row):
-        """The plumbing assertion: `with_answer_prefill` reaches the QAInterface."""
-        task = _make_fake_task()
-        task.question.get_question_prompt.return_value = "Q?"
-
-        encode_row_prompt(row=sample_row, task=task, prompt_variation={"with_answer_prefill": False})
-        task.question.get_question_prompt.assert_called_once_with(
-            with_answer_prefill=False,
+    def test_kwarg_forwarded_to_question_get_question_prompt(self, fake_task, sample_row):
+        """Plumbing: with_answer_prefill on VarySuffix reaches question.get_question_prompt."""
+        mock_q = MagicMock()
+        mock_q.get_question_prompt.return_value = "Q?"
+        base_config = PromptConfig.from_dict({}, task=fake_task)
+        config = dataclasses.replace(
+            base_config,
+            suffix=VarySuffix(question=mock_q, with_answer_prefill=False),
         )
+        encode_row_prompt(row=sample_row, task=fake_task, prompt_config=config)
+        mock_q.get_question_prompt.assert_called_once_with(with_answer_prefill=False)
 
-    def test_default_is_with_answer_prefill_true(self, sample_row):
-        """Backward-compat: callers that don't pass the kwarg get `True`."""
-        task = _make_fake_task()
-        task.question.get_question_prompt.return_value = "Q?"
+    def test_default_includes_answer_prefill(self, fake_task, sample_row):
+        """Default config (with_answer_prefill=True) bakes prefill into output."""
+        q = DirectNumericQA(column="x", text="Numeric Q?")
+        config = PromptConfig.from_dict({}, task=fake_task, question=q)
+        out = encode_row_prompt(row=sample_row, task=fake_task, prompt_config=config)
+        assert out.rstrip().endswith("Answer (between 0 and 1): 0.")
 
-        encode_row_prompt(row=sample_row, task=task)
-        task.question.get_question_prompt.assert_called_once_with(
-            with_answer_prefill=True,
+    def test_with_answer_prefill_false_omits_prefill(self, fake_task, sample_row):
+        """VarySuffix(with_answer_prefill=False) omits the prefill from output."""
+        q = DirectNumericQA(column="x", text="Numeric Q?")
+        base_config = PromptConfig.from_dict({}, task=fake_task, question=q)
+        config = dataclasses.replace(
+            base_config,
+            suffix=dataclasses.replace(base_config.suffix, with_answer_prefill=False),
         )
+        out = encode_row_prompt(row=sample_row, task=fake_task, prompt_config=config)
+        assert "Answer (between 0 and 1): 0." not in out
+        assert out.rstrip().endswith("Numeric Q?")
 
     def test_numeric_round_trip_drops_prefill(self, fake_task, sample_row):
         q = DirectNumericQA(column="x", text="Numeric Q?")
+        base_config = PromptConfig.from_dict({}, task=fake_task, question=q)
+        no_prefill_config = dataclasses.replace(
+            base_config,
+            suffix=dataclasses.replace(base_config.suffix, with_answer_prefill=False),
+        )
         with_prefill = encode_row_prompt(
             row=sample_row,
             task=fake_task,
-            question=q,
-            prompt_variation={"with_answer_prefill": True},
+            prompt_config=base_config,
         )
         without_prefill = encode_row_prompt(
             row=sample_row,
             task=fake_task,
-            question=q,
-            prompt_variation={"with_answer_prefill": False},
+            prompt_config=no_prefill_config,
         )
         assert with_prefill.endswith("Answer (between 0 and 1): 0.")
         assert "Answer (between 0 and 1)" not in without_prefill
@@ -508,8 +576,6 @@ class TestEncodeRowPromptThreadsAnswerPrefillFlag:
         assert without_prefill.rstrip().endswith("Numeric Q?")
 
     def test_mc_round_trip_drops_answer_prefix(self, fake_task, sample_row):
-        from folktexts.qa_interface import Choice, MultipleChoiceQA
-
         q = MultipleChoiceQA(
             column="x",
             text="MC Q?",
@@ -518,17 +584,20 @@ class TestEncodeRowPromptThreadsAnswerPrefillFlag:
                 Choice(text="Yes", data_value=1, numeric_value=1.0),
             ),
         )
+        base_config = PromptConfig.from_dict({}, task=fake_task, question=q)
+        no_prefill_config = dataclasses.replace(
+            base_config,
+            suffix=dataclasses.replace(base_config.suffix, with_answer_prefill=False),
+        )
         with_prefill = encode_row_prompt(
             row=sample_row,
             task=fake_task,
-            question=q,
-            prompt_variation={"with_answer_prefill": True},
+            prompt_config=base_config,
         )
         without_prefill = encode_row_prompt(
             row=sample_row,
             task=fake_task,
-            question=q,
-            prompt_variation={"with_answer_prefill": False},
+            prompt_config=no_prefill_config,
         )
         assert with_prefill.rstrip().endswith("Answer:")
         # Choices remain in both forms — they're question content, not prefill.

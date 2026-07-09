@@ -5,7 +5,6 @@ import logging
 import pickle
 from collections.abc import Collection
 from pathlib import Path
-from typing import Any
 
 import cloudpickle
 
@@ -17,7 +16,7 @@ def save_json(obj: Collection, path: str | Path, overwrite: bool = True):
         json.dump(obj, f_out, indent=4, sort_keys=True)
 
 
-def load_json(path: str | Path) -> Any:
+def load_json(path: str | Path) -> object:
     """Loads a JSON file from disk and returns the deserialized object."""
     with open(path, "r") as f_in:
         return json.load(f_in)

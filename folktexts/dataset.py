@@ -11,7 +11,6 @@ TODO
 from __future__ import annotations
 
 import logging
-from functools import partial
 from typing import Generic, TypeVar
 
 import numpy as np
@@ -290,14 +289,18 @@ class Dataset(Generic[T_Task]):
         reuse_examples : bool, optional
             Whether to reuse the same examples for consistency. By default will
             sample new examples each time (`reuse_examples=False`).
+        composition : str or list, optional
+            "random" (default) samples uniformly. "balanced" draws equal counts
+            per class. A list of ints specifies exact per-class counts in label
+            order and must sum to `n`.
 
         Returns
         -------
         X, y : tuple[pd.DataFrame, pd.Series]
             The features and target data for the sampled examples.
         """
-        assert composition in ["random", "balanced"] or isinstance(composition, list), (
-            "Provided sample composition has to be one of ['random', 'balanced'] or a list specifying class counts."
+        assert composition in ("random", "balanced") or isinstance(composition, (list, tuple)), (
+            "composition must be 'random', 'balanced', or a list of per-class counts."
         )
 
         example_indices: list | np.ndarray
@@ -306,52 +309,45 @@ class Dataset(Generic[T_Task]):
                 example_indices = self._train_indices[:n]
             else:
                 example_indices = self._rng.choice(self._train_indices, size=n, replace=False)
-        elif composition == "balanced" or isinstance(composition, list):
+        else:
             train_labels = self.get_target_data().iloc[self._train_indices]
             unique_labels, counts = np.unique(train_labels, return_counts=True)
 
             if composition == "balanced":
                 per_label_counts = [n // len(unique_labels)] * len(unique_labels)
-                remaining = n % len(unique_labels)  # distribute extra samples
-                if remaining != 0:
+                remaining = n % len(unique_labels)
+                if remaining:
                     logging.warning(
-                        f"Cannot evenly divide {n} samples among {len(unique_labels)} classes."
-                        f" Distributing {remaining} samples evenly."
+                        f"Cannot evenly divide {n} samples among {len(unique_labels)} classes. "
+                        f"Distributing {remaining} extra samples."
                     )
                     for i in range(remaining):
                         per_label_counts[i] += 1
-            elif isinstance(composition, list):
+            elif isinstance(composition, (list, tuple)):
+                # FewShotConfig normalizes per-class `compose` to a tuple, so accept tuples too.
                 assert len(composition) == len(unique_labels), (
-                    "Provide a count for every class, they will be assigned in order of the labels."
+                    "Provide a count for every class; they are assigned in label order."
                 )
-                assert sum(composition) == n, "Counts have to add up to n."
-                per_label_counts = composition
+                assert sum(composition) == n, "Per-class counts must sum to n."
+                per_label_counts = list(composition)
 
-            if any(counts < per_label_counts):
+            if any(c < k for c, k in zip(counts, per_label_counts)):
                 raise ValueError(
                     "Not enough samples to draw from:\n"
                     + "\n".join(
-                        [
-                            f"- class {unique_labels[i]}: "
-                            f"{counts[i]} samples available, attempting to draw {per_label_counts[i]}"
-                            for i in (unique_labels[counts < per_label_counts])
-                        ]
+                        f"- class {unique_labels[i]}: {counts[i]} available, {per_label_counts[i]} requested"
+                        for i in range(len(unique_labels))
+                        if counts[i] < per_label_counts[i]
                     )
                 )
 
-            example_indices = []
-            for i, label in enumerate(unique_labels):
+            example_indices_list: list = []
+            for label, k in zip(unique_labels, per_label_counts):
                 class_indices = self._train_indices[train_labels == label]
-                per_label_n = per_label_counts[i]
-                if reuse_examples:
-                    selected = class_indices[:per_label_n]
-                else:
-                    selected = self._rng.choice(
-                        class_indices,
-                        size=per_label_n,
-                        replace=False,
-                    )
-                example_indices.extend(selected)
+
+                selected = class_indices[:k] if reuse_examples else self._rng.choice(class_indices, size=k, replace=False)
+                example_indices_list.extend(selected)
+            example_indices = np.array(example_indices_list)
 
             # shuffle indices to ensure classes are mixed
             example_indices = self._rng.permutation(example_indices)
@@ -397,31 +393,3 @@ class Dataset(Generic[T_Task]):
         }
 
         return int(hash_dict(hashable_params), 16)
-
-    def convert_split_to_text(
-        self,
-        split: str,
-        prompt_variation: dict = {
-            "connector": "is",
-            "format": "text",
-            "granularity": "original",
-        },
-    ) -> pd.DataFrame:
-        from tqdm import tqdm
-
-        from folktexts.prompting import encode_row_prompt
-
-        tqdm.pandas()
-        assert split in ["test", "train"]
-        X, y = self.get_data_split(split)
-
-        encode_row = partial(encode_row_prompt, task=self._task, prompt_variation=prompt_variation)
-        X_text = X.progress_apply(lambda row: encode_row(row), axis=1).to_frame(name="text")
-        if not self._task._use_numeric_qa:
-            assert self._task.multiple_choice_qa is not None
-            map_label_to_choice = {
-                choice.data_value: answer for choice, answer in self._task.multiple_choice_qa.choice_to_key.items()
-            }
-            y_text = y.replace(map_label_to_choice)
-            return X_text, y_text
-        return X_text, y
