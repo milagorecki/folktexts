@@ -2,9 +2,15 @@
 
 Structural properties this file guards:
 
-1. `get_question_prompt()` — pins the legacy zero-shot string byte-for-byte.
+1. `get_question_prompt(with_answer_prefill: bool)` — `True` (default) keeps
+   the legacy zero-shot string byte-for-byte; `False` removes the answer
+   prefill so the chat-template path can supply it as the assistant turn
+   without duplicating it in the user message.
 
-2. `_get_numeric_tokens(tokenizer_vocab, vocab_dim)` — filters digit / decimal
+2. `get_answer_prefix()` — the answer prefill string returned by each QA
+   subclass independently of the full question prompt.
+
+3. `_get_numeric_tokens(tokenizer_vocab, vocab_dim)` — filters digit / decimal
    tokens whose ids fall outside `[0, vocab_dim)`. The caller (`get_answer_from_model_output`)
    derives `vocab_dim` from the actual logits axis (`last_token_probs.shape[-1]`),
    so out-of-range vocab entries no longer trip an `IndexError` deep in the
@@ -35,13 +41,29 @@ class TestDirectNumericQAGetQuestionPrompt:
         # so the paper-reproducing path is provably untouched.
         expected = "Question: What is this person's estimated yearly income?\nAnswer (between 0 and 1): 0."
         assert self._q().get_question_prompt() == expected
+        assert self._q().get_question_prompt(with_answer_prefill=True) == expected
 
-    def test_answer_probability_false_emits_open_answer(self):
+    def test_with_answer_prefill_false_omits_prefill(self):
+        out = self._q().get_question_prompt(with_answer_prefill=False)
+        assert "Answer (between 0 and 1)" not in out
+        assert "0." not in out
+        # The bare question must still be present and the string must end at
+        # the question text — that's exactly what the chat user-turn needs.
+        assert out == "Question: What is this person's estimated yearly income?"
+
+    def test_answer_probability_false_with_prefill_emits_open_answer(self):
         # `answer_probability=False` ⇒ open-ended numeric Q&A; the prefill is
         # `"Answer: "` (trailing space matters for tokenization in the
         # zero-shot path).
         out = self._q(answer_probability=False).get_question_prompt()
         assert out.endswith("\nAnswer: ")
+
+    def test_answer_probability_false_no_prefill_omits_answer_line(self):
+        out = self._q(answer_probability=False).get_question_prompt(
+            with_answer_prefill=False,
+        )
+        assert "Answer" not in out
+        assert out == "Question: What is this person's estimated yearly income?"
 
 
 # ----------------------------------------------------------------------
@@ -63,6 +85,42 @@ class TestMultipleChoiceQAGetQuestionPrompt:
     def test_default_matches_legacy_zero_shot_string(self):
         expected = "Question: Is this person's income above $50k?\nA. No.\nB. Yes.\nAnswer:"
         assert self._q().get_question_prompt() == expected
+        assert self._q().get_question_prompt(with_answer_prefill=True) == expected
+
+    def test_with_answer_prefill_false_omits_answer_line(self):
+        out = self._q().get_question_prompt(with_answer_prefill=False)
+        # Choices must remain — they're the question content, not the prefill.
+        assert "A. No." in out
+        assert "B. Yes." in out
+        # The trailing "Answer:" prefill is the only thing that should drop.
+        assert not out.rstrip().endswith("Answer:")
+        assert out == ("Question: Is this person's income above $50k?\nA. No.\nB. Yes.")
+
+
+# ----------------------------------------------------------------------
+# get_answer_prefix — the answer prefill string for each QA subclass
+# ----------------------------------------------------------------------
+
+
+class TestGetAnswerPrefix:
+    def test_numeric_answer_probability_true(self):
+        q = DirectNumericQA(column="x", text="dummy", answer_probability=True)
+        assert q.get_answer_prefix() == "Answer (between 0 and 1): 0."
+
+    def test_numeric_answer_probability_false(self):
+        q = DirectNumericQA(column="x", text="dummy", answer_probability=False)
+        assert q.get_answer_prefix() == "Answer: "
+
+    def test_mc_answer_prefix(self):
+        q = MultipleChoiceQA(
+            column="x",
+            text="dummy",
+            choices=(
+                Choice(text="No", data_value=0, numeric_value=0.0),
+                Choice(text="Yes", data_value=1, numeric_value=1.0),
+            ),
+        )
+        assert q.get_answer_prefix() == "Answer:"
 
 
 # ----------------------------------------------------------------------

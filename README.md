@@ -15,20 +15,21 @@
 
 Folktexts provides a suite of Q&A datasets for evaluating **uncertainty**, **calibration**, **accuracy** and **fairness** of LLMs on individual outcome prediction tasks. It provides a flexible framework to derive prediction **tasks from survey data**, translates them into natural text prompts, extracts LLM-generated _risk scores_, and computes statistical properties of these risk scores by comparing them to the ground truth outcomes.
 
-**Use folktexts to benchmark your LLM:** 
+**Use folktexts to benchmark your LLM:**
 
-- Pre-defined Q&A benchmark tasks are provided based on data from the American Community Survey (<a href="https://www.census.gov/programs-surveys/acs/microdata/documentation.html">ACS</a>). Each tabular prediction task from the popular 
-[folktables](https://github.com/socialfoundations/folktables) package is made available 
+- Pre-defined Q&A benchmark tasks are provided based on data from the American Community Survey (<a href="https://www.census.gov/programs-surveys/acs/microdata/documentation.html">ACS</a>). Each tabular prediction task from the popular
+[folktables](https://github.com/socialfoundations/folktables) package is made available
 as a natural-language Q&A task.
-- Parsed and ready-to-use versions of each *folktexts* dataset can be found on 
+- Parsed and ready-to-use versions of each *folktexts* dataset can be found on
 <a href="https://huggingface.co/datasets/acruz/folktexts"> Huggingface</a>.
-- The package can be used to customize your tasks. Select a feature to define your prediciton target. Specify subsets of input features to vary outcome uncertainty. Modify prompting templates to evaluate mappings from tabular data to natural text prompts. Compare different methods to extract uncertainty values from LLM responses. Extract raw risk scores and outcomes to perform custom statistical evaluations. Package documentation can be found [here](https://socialfoundations.github.io/folktexts/).
+- The package can be used to customize your tasks. Select a feature to define your prediction target. Specify subsets of input features to vary outcome uncertainty. Modify prompting templates to evaluate mappings from tabular data to natural text prompts. Compare different methods to extract uncertainty values from LLM responses. Extract raw risk scores and outcomes to perform custom statistical evaluations. Package documentation can be found [here](https://socialfoundations.github.io/folktexts/).
 
 <!-- ![folktexts-diagram](docs/_static/folktexts-loop-diagram.png) -->
 <p align="center">
     <img src="docs/_static/folktexts-loop-diagram.png" alt="folktexts-diagram" width="700px">
 </p>
 
+> **🆕 v0.6.0** adds typed, composable prompt configuration — build prompts from `PromptConfig` / `FewShotConfig` and vary the feature block with the `--variation` CLI flag; see [Configuring prompts](#configuring-prompts). The v0.4.0 [vLLM](https://github.com/vllm-project/vllm) backend remains the default local-inference path (`pip install 'folktexts[vllm]'`, CUDA GPU required). Full release notes in [`docs/updates.md`](docs/updates.md).
 
 
 ## Table of contents   <!-- omit in toc -->
@@ -39,12 +40,13 @@ as a natural-language Q&A task.
   - [Ready-to-use datasets](#ready-to-use-datasets)
   - [Example usage](#example-usage)
 - [Benchmark features and options](#benchmark-features-and-options)
+- [Configuring prompts](#configuring-prompts)
 - [Evaluating feature importance](#evaluating-feature-importance)
 - [FAQ](#faq)
 - [Citation](#citation)
 - [License and terms of use](#license-and-terms-of-use)
 
-## Changes in this fork
+## Changes in this fork [added to scoialfoundations/folktexts in version 0.6.0]
 
 This repository is a fork of [socialfoundations/folktexts](https://github.com/socialfoundations/folktexts) with the following additions and modifications.
 
@@ -135,13 +137,15 @@ run_acs_benchmark --results-dir results --data-dir data --task 'ACSIncome' --mod
 Run `run_acs_benchmark --help` to get a list of all available benchmark flags.
 
 ### Ready-to-use datasets
+<details>
+<summary>click to expand</summary>
 
-Ready-to-use Q&A datasets generated from the 2018 American Community Survey are available via
+Pre-rendered Q&A datasets generated from the 2018 American Community Survey are available on
 <a href="https://huggingface.co/datasets/acruz/folktexts">
 <span style="display: inline-block; vertical-align: middle;">
     <img src="https://huggingface.co/front/assets/huggingface_logo-noborder.svg" alt="Logo" style="height: 1em; vertical-align: text-bottom;">
 </span>
-datasets</a>.
+Hugging Face</a> — handy if you only need the prompts/labels and don't want to run the LLM scoring pipeline yourself.
 
 ```py
 import datasets
@@ -151,61 +155,92 @@ acs_task_qa = datasets.load_dataset(
     split="test")       # Choose split according to your intended use case
 ```
 
+</details>
+
 
 ### Example usage
 
-Example code snippet that loads a pre-trained model, collects and parses Q&A data
-for the income-prediction task, and computes risk scores on the test split.
+Load a model and produce risk scores on the test split using the default vLLM backend:
 
 ```py
-# Load transformers model
-from folktexts.llm_utils import load_model_tokenizer
-model, tokenizer = load_model_tokenizer("gpt2")   # using tiny model as an example
-
+from folktexts.llm_utils import load_vllm_model
+from folktexts.classifier import VLLMClassifier
 from folktexts.acs import ACSDataset
-acs_task_name = "ACSIncome"     # Name of the benchmark ACS task to use
 
-# Create an object that classifies data using an LLM
-from folktexts import TransformersLLMClassifier
-clf = TransformersLLMClassifier(
-    model=model,
-    tokenizer=tokenizer,
-    task=acs_task_name,
+# BF16 + gpu_memory_utilization=0.85 by default; tune `max_model_len` for your VRAM.
+llm, tokenizer = load_vllm_model("/path/to/model", max_model_len=2048)
+
+clf = VLLMClassifier(
+    llm=llm, tokenizer=tokenizer,
+    task="ACSIncome",
+    model_name_or_path="/path/to/model",
 )
-# NOTE: You can also use a web-hosted model like GPT4 using the `WebAPILLMClassifier` class
 
-# Use a dataset or feed in your own data
-dataset = ACSDataset.make_from_task(acs_task_name)   # use `.subsample(0.01)` to get faster approximate results
-
-# You can compute risk score predictions using an sklearn-style interface
+dataset = ACSDataset.make_from_task("ACSIncome")    # `.subsample(0.01)` for faster approximate results
 X_test, y_test = dataset.get_test()
 test_scores = clf.predict_proba(X_test)
 ```
 
-If you only care about the overall benchmark results and not individual predictions,
-you can simply run the following code instead of using `.predict_proba()` directly:
+`VLLMClassifier`, `TransformersLLMClassifier`, and `WebAPILLMClassifier` all expose the
+same `.predict_proba` / `.predict` / `.fit` interface — switching backends is a one-line
+change to how the model is loaded.
+
+<details>
+<summary><strong>Using the 🤗 transformers backend instead</strong> (click to expand)</summary>
+
 ```py
-from folktexts.benchmark import Benchmark, BenchmarkConfig
+from folktexts.llm_utils import load_model_tokenizer
+from folktexts.classifier import TransformersLLMClassifier
+
+model, tokenizer = load_model_tokenizer("gpt2")     # tiny model for example
+clf = TransformersLLMClassifier(model=model, tokenizer=tokenizer, task="ACSIncome")
+```
+
+For web-hosted models (OpenAI, Anthropic, ...), use `WebAPILLMClassifier` with any
+[litellm](https://docs.litellm.ai)-compatible identifier that exposes log-probabilities
+(`pip install 'folktexts[apis]'`).
+
+</details>
+
+<details>
+<summary><strong>Running the full benchmark suite</strong> (click to expand)</summary>
+
+If you only care about overall metrics rather than per-row scores, use
+`Benchmark.make_benchmark`. The backend is autodetected from the model handle
+(vLLM `LLM` → `vllm`, HF `PreTrainedModel` → `transformers`, model-id string →
+`webapi`); pass `backend=` explicitly to override.
+
+```py
+from folktexts.benchmark import Benchmark
 bench = Benchmark.make_benchmark(
-    task=acs_task_name, dataset=dataset,  # These vars are defined in the snippet above
-    model=model, tokenizer=tokenizer,
-    numeric_risk_prompting=True,    # See the full list of configs below in the README
+    task="ACSIncome", dataset=dataset,
+    model=llm, tokenizer=tokenizer,
+    numeric_risk_prompting=True,    # see the options table below for the full list
 )
 bench_results = bench.run(results_root_dir="results")
 ```
 
-Example snippet showcasing how to fit the binarization threshold on a few training samples
-(note that this is *not fine-tuning*), and obtaining discretized predictions using `.predict()`.
-```py
-# Optionally, you can fit the threshold based on a few samples
-clf.fit(*dataset[0:100])    # (`dataset[...]` will access training data)
+</details>
 
-# ...in order to get more accurate binary predictions with `.predict`
+
+<details>
+<summary><strong>Fitting a binarization threshold</strong> (click to expand)</summary>
+
+Fit a decision threshold on a small training slice (this is *not* fine-tuning —
+only the post-hoc threshold is learned), then call `.predict()` for discretized
+labels:
+
+```py
+clf.fit(*dataset[0:100])    # `dataset[...]` indexes into training data
 test_preds = clf.predict(X_test)
 ```
 
+</details>
+
 
 ## Benchmark features and options
+<details>
+<summary>click to expand</summary>
 
 Here's a summary list of the most important benchmark options/flags used in
 conjunction with the `run_acs_benchmark` command line script, or with the
@@ -218,17 +253,24 @@ conjunction with the `run_acs_benchmark` command line script, or with the
 | `--results-dir` | Path to directory under which benchmark results will be saved. | `results` |
 | `--data-dir` | Root folder to find datasets in (or download ACS data to). | `~/data` |
 | `--numeric-risk-prompting` | Whether to use verbalized numeric risk prompting, i.e., directly query model for a probability estimate. **By default** will use standard multiple-choice Q&A, and extract risk scores from internal token probabilities. | Boolean flag (`True` if present, `False` otherwise) |
-| `--use-web-api-model` | Whether the given `--model` name corresponds to a web-hosted model or not. **By default** this is False (assumes a huggingface transformers model). If this flag is provided, `--model` must contain a [litellm](https://docs.litellm.ai) model identifier ([examples here](https://docs.litellm.ai/docs/providers/openai#openai-chat-completion-models)). | Boolean flag (`True` if present, `False` otherwise) |
+| `--use-chat-template` | Format prompts using the tokenizer's chat template (recommended for instruct/chat models). Pair with `--system-prompt` and/or `--chat-prompt` to override the defaults. Mutually exclusive with `--cot-prompting`. **By default** uses zero-shot prompting without a chat template. | Boolean flag (`True` if present, `False` otherwise) |
+| `--temperature` | Sampling-temperature override for text-generation prompting, applied consistently across all backends (vLLM / transformers / web API). **By default** text generation uses greedy decoding (`0`), or temperature `1` with `--enable-thinking` (thinking models should not run greedy). Ignored for multiple-choice / numeric prompting, which reads untempered token probabilities. Web APIs that reject `temperature` (e.g. OpenAI o1/o3) have it filtered out with a logged warning. | `0.0`, `0.7`, `1.0` |
+| `--use-web-api-model` | Whether the given `--model` name corresponds to a web-hosted model or not. **By default** this is False (assumes a local model). If this flag is provided, `--model` must contain a [litellm](https://docs.litellm.ai) model identifier ([examples here](https://docs.litellm.ai/docs/providers/openai#openai-chat-completion-models)). | Boolean flag (`True` if present, `False` otherwise) |
+| `--inference-backend` | Local inference backend. **Default** `vllm` for high-throughput continuous batching (requires `pip install 'folktexts[vllm]'` and a CUDA GPU); pass `transformers` to use the HuggingFace path instead. Ignored when `--use-web-api-model` is set. | `vllm`, `transformers` |
+| `--gpu-memory-utilization` | vLLM only. Fraction of GPU VRAM vLLM may pre-allocate for KV cache. Lower if vLLM OOMs at startup. | `0.85` (default) |
+| `--max-model-len` | vLLM only. Maximum tokens (input + output) per request. Defaults to `--context-size + 256` for CoT runs (600 + 256 = 8856 with the default `--context-size` of 600), otherwise `--context-size + 256`. Override on tighter VRAM. | `2048`, `8192` |
+| `--vllm-dtype` | vLLM only. Compute dtype. | `auto`, `bfloat16`, `float16` |
+| `--tensor-parallel-size` | vLLM only. Number of GPUs to shard the model across; auto-detects from `CUDA_VISIBLE_DEVICES`. | `1`, `2` |
 | `--subsampling` | Which fraction of the dataset to use for the benchmark. **By default** will use the whole test set. | `0.01` |
 | `--fit-threshold` | Whether to use the given number of samples to fit the binarization threshold. **By default** will use a fixed $t=0.5$ threshold instead of fitting on data. | `100` |
 | `--batch-size` | The number of samples to process in each inference batch. Choose according to your available VRAM. | `10`, `32` |
 
-
-Full list of options:
+<details>
+<summary><strong>Full list of options</strong> (click to expand)</summary>
 
 ```
-usage: run_acs_benchmark [-h] --model MODEL --results-dir RESULTS_DIR --data-dir DATA_DIR [--task TASK] [--few-shot FEW_SHOT] [--batch-size BATCH_SIZE] [--context-size CONTEXT_SIZE] [--fit-threshold FIT_THRESHOLD] [--subsampling SUBSAMPLING] [--seed SEED] [--use-web-api-model] [--dont-correct-order-bias] [--numeric-risk-prompting] [--reuse-few-shot-examples] [--use-feature-subset USE_FEATURE_SUBSET]
-                         [--use-population-filter USE_POPULATION_FILTER] [--logger-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}]
+usage: run_acs_benchmark [-h] --model MODEL --results-dir RESULTS_DIR --data-dir DATA_DIR [--task TASK] [--few-shot FEW_SHOT] [--batch-size BATCH_SIZE] [--context-size CONTEXT_SIZE] [--fit-threshold FIT_THRESHOLD] [--subsampling SUBSAMPLING] [--seed SEED] [--temperature TEMPERATURE] [--use-web-api-model] [--inference-backend {transformers,vllm}] [--gpu-memory-utilization GPU_MEMORY_UTILIZATION] [--max-model-len MAX_MODEL_LEN] [--vllm-dtype VLLM_DTYPE] [--tensor-parallel-size TENSOR_PARALLEL_SIZE] [--dont-correct-order-bias] [--numeric-risk-prompting] [--cot-prompting] [--enable-thinking] [--reuse-few-shot-examples] [--compose-few-shot-examples COMPOSE_FEW_SHOT_EXAMPLES] [--example-order EXAMPLE_ORDER] [--few-shot-hide-question] [--variation [VARIATION ...]] [--use-chat-template] [--chat-prompt CHAT_PROMPT] [--system-prompt SYSTEM_PROMPT]
+                         [--use-feature-subset USE_FEATURE_SUBSET] [--use-population-filter USE_POPULATION_FILTER] [--max-api-rpm MAX_API_RPM] [--logger-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}]
 
 Benchmark risk scores produced by a language model on ACS data.
 
@@ -249,24 +291,155 @@ options:
   --subsampling SUBSAMPLING
                         [float] Which fraction of the dataset to use (if omitted will use all data)
   --seed SEED           [int] Random seed -- to set for reproducibility
+  --temperature TEMPERATURE
+                        [float] Sampling temperature override for text-generation (--cot-prompting). If unset, text generation uses greedy decoding (0.0), or 1.0 with --enable-thinking. Ignored for multiple-choice/numeric prompting, which reads untempered token probabilities.
   --use-web-api-model   [bool] Whether use a model hosted on a web API (instead of a local model)
+  --inference-backend {transformers,vllm}
+                        [str] Local inference backend to use; default is 'vllm'. Pass 'transformers' to fall back to the HuggingFace path. Ignored when --use-web-api-model is set.
+  --gpu-memory-utilization GPU_MEMORY_UTILIZATION
+                        [float] vLLM gpu_memory_utilization (default 0.85). Lower if vLLM OOMs at startup.
+  --max-model-len MAX_MODEL_LEN
+                        [int] vLLM max_model_len (input + output tokens). If unset, derived from --context-size for the prompting mode.
+  --vllm-dtype VLLM_DTYPE
+                        [str] vLLM compute dtype (auto/bfloat16/float16/float32).
+  --tensor-parallel-size TENSOR_PARALLEL_SIZE
+                        [int] vLLM tensor_parallel_size. If unset, auto-detected from CUDA_VISIBLE_DEVICES (1 if unset).
   --dont-correct-order-bias
                         [bool] Whether to avoid correcting ordering bias, by default will correct it
   --numeric-risk-prompting
                         [bool] Whether to prompt for numeric risk-estimates instead of multiple-choice Q&A
+  --enable-thinking     [bool] Whether to enable thinking mode for tokenizers that support it (e.g., Qwen3). Only applies with --cot-prompting
   --reuse-few-shot-examples
                         [bool] Whether to reuse the same samples for few-shot prompting (or sample new ones every time)
+  --compose-few-shot-examples COMPOSE_FEW_SHOT_EXAMPLES
+                        [str|list] How to select samples in few-shot prompting: random, balanced or a list of specified class counts. Defaults to random.
+  --example-order EXAMPLE_ORDER
+                        [str] Comma-separated permutation of few-shot example indices, e.g. '2,0,1'. Only used when --few-shot is set.
+  --few-shot-hide-question
+                        [bool] In few-shot examples show only the answer (omit the repeated question). By default each example includes the question. Only used when --few-shot is set.
+  --variation [VARIATION ...]
+                        [dict] Prompt-style overrides as key=value pairs, e.g. --variation connector=is format=bullet (keys: format, connector, granularity, order, custom_prompt_prefix, custom_prompt_suffix, show_question).
+  --use-chat-template   [bool] Whether to format prompts using the tokenizer's chat template (for instruct/chat models)
+  --chat-prompt CHAT_PROMPT
+                        [str] Custom assistant prefill text to use with chat templates
+  --system-prompt SYSTEM_PROMPT
+                        [str] Custom system prompt text to use with chat templates
   --use-feature-subset USE_FEATURE_SUBSET
                         [str] Optional subset of features to use for prediction, comma separated
   --use-population-filter USE_POPULATION_FILTER
                         [str] Optional population filter for this benchmark; must follow the format 'column_name=value' to filter the dataset by a specific value.
+  --max-api-rpm MAX_API_RPM
+                        [int] Maximum number of API requests per minute (if using a web-hosted model)
   --logger-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}
                         [str] The logging level to use for the experiment
 ```
 
+</details>
+
+</details>
+
+
+## Configuring prompts
+<details>
+<summary>click to expand</summary>
+
+Every prompt that `folktexts` builds for a tabular row is composed of three parts:
+
+```
+[PREFIX]  task description                (constant across rows)
+[INFO]    serialized feature-value pairs  (row-specific)
+[SUFFIX]  question text + answer prefill  (constant)
+```
+
+The *answer prefill* is the fixed lead-in the prompt ends on (e.g. `Answer:`), so
+the next token the model emits is the answer we score; in chat mode it becomes the
+assistant's opening turn instead.
+
+These parts are set through a single `PromptConfig` object (plus `FewShotConfig`
+for in-context examples), built once and passed down unchanged.
+
+The defaults reproduce the original paper's prompts exactly — you only need this
+section if you want to *change* how prompts are rendered. Every knob below is also
+available from Python; see the
+[prompt-configuration guide](https://socialfoundations.github.io/folktexts/configuring_prompts.html)
+for the full `PromptConfig` / `FewShotConfig` reference and a migration note from
+the older flat-keyword API (`custom_prompt_prefix`, `class_balancing`, …). For a
+hands-on, runnable walkthrough see the
+[example notebook](notebooks/configuring-prompts-example.ipynb).
+
+### Question modes
+
+Each run asks one of three kinds of question:
+
+| Mode | Flag | What the model does |
+|:---|:---|:---|
+| Multiple-choice | *(default)* | Picks an answer choice; we score the answer-letter tokens. |
+| Numeric | `--numeric-risk-prompting` | Reports the probability directly (`Answer (between 0 and 1): 0.…`). |
+
+The mode is independent of the delivery path — zero-shot (default), `--few-shot`,
+or `--use-chat-template`. This combinations raises an error: `--few-shot` with
+`--use-chat-template`; multiple-choice and numeric work with every delivery path.
+
+### Varying the feature block — `--variation`
+
+The `--variation` flag takes one or more `key=value` overrides that change how
+the `[INFO]` block is rendered. Keys (with their defaults) are:
+
+| Key | Default | Allowed values | Effect |
+|:---|:---|:---|:---|
+| `format` | `textbullet` | `textbullet`, `bullet`, `comma`, `text` | Layout of the feature list: `textbullet` → `- The Age is: 42.`, `bullet` → `- Age is: 42`, `comma` → `Age is: 42, …`. |
+| `connector` | `is:` | any string, e.g. `is`, `=`, `:` | Separator between a feature label and its value. |
+| `granularity` | `original` | `original`, `low` | `low` coarsens ACS feature values into broader bins (age ranges, grouped occupations). ACS-only. |
+| `order` | *(original)* | comma-separated column names | Reorders features: the named columns come first, the rest are appended (nothing is dropped). |
+| `custom_prompt_prefix` | *(none)* | any string | Extra text inserted after the task description and before the feature block. |
+| `custom_prompt_suffix` | *(none)* | any string | Extra text appended after the question / answer prefill (it does not replace the question — use `show_question=false` for that). |
+| `show_question` | `true` | `true`, `false` | When `false`, drops the repeated question and relies on the answer prefill. |
+
+```sh
+# Plain bullets, "=" between each label and value, age/education first
+# (connector== sets the separator to the literal "="):
+run_acs_benchmark --model "$MODEL" --task ACSIncome --results-dir results \
+    --variation format=bullet connector== order=AGEP,SCHL,COW
+
+# Coarser feature values (low granularity) rendered as a comma-separated list:
+run_acs_benchmark --model "$MODEL" --task ACSIncome --results-dir results \
+    --variation granularity=low format=comma
+```
+
+Each distinct variation produces its own deterministic results-file name, so
+runs never overwrite one another.
+
+### Few-shot examples
+
+Few-shot prompting is enabled with `--few-shot N` and tuned with:
+
+| Flag | Effect |
+|:---|:---|
+| `--reuse-few-shot-examples` | Reuse the same `N` examples for every row (faster, deterministic) instead of resampling. |
+| `--compose-few-shot-examples` | How examples are drawn: `random` (default), `balanced` (equal per class), or per-class counts in label order like `2,2` (2 of class 0, 2 of class 1). |
+| `--example-order` | Comma-separated permutation of the example indices, e.g. `3,2,1,0`. |
+| `--few-shot-hide-question` | Show only the answer in each example (omit the repeated question). |
+
+```sh
+run_acs_benchmark --model "$MODEL" --task ACSIncome --results-dir results \
+    --few-shot 4 --compose-few-shot-examples balanced --reuse-few-shot-examples
+```
+
+> Few-shot prompting cannot be combined with `--use-chat-template` (raises an error).
+
+### Chat, system prompt
+
+`--use-chat-template` formats prompts with the tokenizer's chat template; pair it
+with `--system-prompt "..."` and/or `--chat-prompt "..."` to override the role
+text. Passing `--system-prompt` or `--chat-prompt` without `--use-chat-template`
+has no effect and warns. 
+
+</details>
 
 
 ## Evaluating feature importance
+<details>
+<summary>click to expand</summary>
 
 By evaluating LLMs on tabular classification tasks, we can use standard feature importance methods to assess which features the model uses to compute risk scores.
 
@@ -282,8 +455,12 @@ python -m folktexts.cli.eval_feature_importance --model 'meta-llama/Meta-Llama-3
 
 This script uses sklearn's [`permutation_importance`](https://scikit-learn.org/stable/modules/generated/sklearn.inspection.permutation_importance.html#sklearn.inspection.permutation_importance) to assess which features contribute the most for the ROC AUC metric (other metrics can be assessed using the `--scorer [scorer]` parameter).
 
+</details>
+
 
 ## FAQ
+<details>
+<summary>click to expand</summary>
 
 1.
     **Q:** Can I use `folktexts` with a different dataset?
@@ -300,7 +477,7 @@ This script uses sklearn's [`permutation_importance`](https://scikit-learn.org/s
 3.
     **Q:** Can I use `folktexts` with closed-source models?
 
-    **A:** **Yes!** We provide compatibility with local LLMs via [🤗 transformers](https://github.com/huggingface/transformers) and compatibility with web-hosted LLMs via [litellm](https://github.com/BerriAI/litellm). For example, you can use `--model='gpt-4o' --use-web-api-model` to use GPT-4o when calling the `run_acs_benchmark` script. [Here's a complete list](https://docs.litellm.ai/docs/providers/openai#openai-chat-completion-models) of compatible OpenAI models. Note that some models are not compatible as they don't enable access to log-probabilities.
+    **A:** **Yes!** Local LLMs run on a high-throughput [vLLM](https://github.com/vllm-project/vllm) backend by default (install with `pip install 'folktexts[vllm]'`); pass `--inference-backend transformers` to fall back to the [🤗 transformers](https://github.com/huggingface/transformers) path. Web-hosted LLMs are supported via [litellm](https://github.com/BerriAI/litellm) — for example, `--model='gpt-4o' --use-web-api-model` runs GPT-4o through the OpenAI API. [Here's a complete list](https://docs.litellm.ai/docs/providers/openai#openai-chat-completion-models) of compatible OpenAI models. Note that some models are not compatible as they don't enable access to log-probabilities.
     Using models through a web API requires installing extra optional dependencies with `pip install 'folktexts[apis]'`.
 
 
@@ -311,6 +488,7 @@ This script uses sklearn's [`permutation_importance`](https://scikit-learn.org/s
 
     <!-- **A:** Yes. Although the package does not feature specific fine-tuning functionality, you can use the data and Q&A prompts generated by `folktexts` to fine-tune an LLM for a specific prediction task. Follow the [example jupyter notebook](notebooks/finetuning-llms-example.ipynb) for more details. In the future we may bring this functionality into the main package implementation. -->
 
+</details>
 
 
 ## Citation

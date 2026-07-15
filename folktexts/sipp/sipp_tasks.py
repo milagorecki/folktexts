@@ -32,6 +32,10 @@ class SIPPTaskMetadata(TaskMetadata):
     """A class to hold information on an Tableshift BRFSS prediction task."""
 
     @classmethod
+    def get_task(cls, name: str, use_numeric_qa: bool = False, use_text_output_for_qa: bool = False) -> SIPPTaskMetadata:
+        return super().get_task(name, use_numeric_qa, use_text_output_for_qa)  # type: ignore[return-value]
+
+    @classmethod
     def make_task(
         cls,
         name: str,
@@ -46,9 +50,7 @@ class SIPPTaskMetadata(TaskMetadata):
         """Create an SIPP task object from the given parameters."""
         # Resolve target column name
         target_col_name = (
-            target_threshold.apply_to_column_name(target)
-            if target_threshold is not None and target is not None
-            else target
+            target_threshold.apply_to_column_name(target) if target_threshold is not None and target is not None else target
         )
 
         # Get default Q&A interfaces for this task's target column

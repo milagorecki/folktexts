@@ -22,7 +22,7 @@ DEFAULT_VAL_SIZE = 0.1
 DEFAULT_SEED = 42
 
 
-class SIPPDataset(Dataset):
+class SIPPDataset(Dataset[SIPPTaskMetadata]):
     """Wrapper for tableshift BRFSS datasets."""
 
     _task: SIPPTaskMetadata
@@ -93,7 +93,7 @@ class SIPPDataset(Dataset):
             print((cache_dir / "sipp_2014_wave_1.csv").exists(), (cache_dir / "sipp_2014_wave_2.csv").exists())
             if not (cache_dir / "sipp_2014_wave_1.csv").exists() and not (cache_dir / "sipp_2014_wave_2.csv").exists():
                 print("Download SIPP data... (May take a while)")
-                download_sipp(save_path=cache_dir)
+                download_sipp(save_path=cache_dir.as_posix())
                 print("Preprocess SIPP... (May take a while)")
                 preprocess_sipp(data_dir=cache_dir)
             X, y = load_sipp(data_dir=cache_dir)

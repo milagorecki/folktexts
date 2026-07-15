@@ -3,7 +3,6 @@
 This module maps risk-estimation questions to different prompting techniques
 and supports systematic prompt variations for benchmarking and evaluation.
 
-
 Each prompt (corresponding to a tabular data row) is represented
 as composition of three parts:
 
@@ -35,14 +34,17 @@ from dataclasses import dataclass, field
 from string import Template
 from typing import Any, ClassVar
 
-from folktexts._utils import hash_dict
-
 import pandas as pd
 from jinja2 import TemplateError
 from transformers import AutoTokenizer
 
 from folktexts.acs import ACS_TASK_DESCRIPTION, ACS_TASK_DESCRIPTION_DEFAULTS
-from folktexts.sipp import SIPP_TASK_DESCRIPTION, SIPP_TASK_DESCRIPTION_DEFAULTS
+from folktexts.sipp import (
+    SIPP_TASK_DESCRIPTION,
+    SIPP_TASK_DESCRIPTION_DEFAULTS,
+)
+
+from ._utils import hash_dict
 
 try:
     from folktexts.ts import TABLESHIFT_TASK_DESCRIPTION, TABLESHIFT_TASK_DESCRIPTION_DEFAULTS
@@ -54,19 +56,25 @@ from .dataset import Dataset
 from .qa_interface import MultipleChoiceQA, QAInterface
 from .task import TaskMetadata
 
-# Sentinel distinguishing "use the mode-appropriate default" from `None`
 PROMPT_DEFAULT = object()
+"""Sentinel: "use the question type's default system / chat prompt" — as opposed to ``None``, which disables the role."""
+
+COT_SYSTEM_PROMPT = (
+    "You are a helpful assistant. Reason step-by-step about the question "
+    "and provide your final probability estimate. Your response MUST end "
+    "with 'Probability: X%' where X is a number between 0 and 100."
+)
+# TODO: adjust based on question. maybe only "COT instruction" to add to rest of default?
 
 DEFAULT_PROMPT_STYLE: dict[str, Any] = {
     "format": "textbullet",
-    "connector": "is",
+    "connector": "is:",  # match main's "<feature> is: <value>"; override via --variation connector=is
     "granularity": "original",
     "order": None,
     "custom_prompt_prefix": None,
     "custom_prompt_suffix": None,
     "show_question": True,
 }
-
 
 # ---------------------------------------------------------------------------
 # Intermediate representation for prompt construction
@@ -75,6 +83,8 @@ DEFAULT_PROMPT_STYLE: dict[str, Any] = {
 
 @dataclass
 class FeatureItem:
+    """One feature mid-pipeline: ``text_value`` is set by :class:`VaryValueMap`, ``connected`` by :class:`VaryConnector`."""
+
     col: str  # pandas column name
     label: str  # human-readable name from ColumnToText.short_description
     raw_value: Any  # original value from the DataFrame
@@ -89,12 +99,8 @@ class FeatureItem:
 
 @dataclass(frozen=True)
 class VaryPrefix:
-    task_description: str
-    add_task_description: bool = True
-    custom_prefix: str | None = None
+    """Builds the prompt ``[PREFIX]``: the task description plus an optional custom prefix.
 
-    """
-    A stage for adding a prefix to the prompt.
     Parameters
     ----------
     task_description : str
@@ -102,9 +108,13 @@ class VaryPrefix:
     add_task_description : bool, optional
         Whether to include the task description in the prefix. Default is True.
     custom_prefix : str | None, optional
-        A custom string to include in the prefix after the task description and before 
+        A custom string to include in the prefix after the task description and before
         the encoded features. If None, no custom prefix is added. Default is None.
     """
+
+    task_description: str
+    add_task_description: bool = True
+    custom_prefix: str | None = None
 
     def __hash__(self) -> int:
         return int(hash_dict(dataclasses.asdict(self)), 16)
@@ -122,15 +132,8 @@ class VaryPrefix:
 
 @dataclass(frozen=True)
 class VarySuffix:
-    question: QAInterface
-    show_question: bool = True
-    with_answer_prefill: bool = True  # set False for chat mode (prefill is assistant turn)
-    show_label: bool = False
-    label: Any = None  # only used when show_label=True
-    custom_suffix: str | None = None
+    """Builds the prompt ``[SUFFIX]``: the question text and answer prefill (or just the prefill when ``show_question=False``).
 
-    """
-    A stage for adding a suffix to the prompt, typically containing the question.
     Parameters
     ----------
     question : QAInterface
@@ -138,7 +141,7 @@ class VarySuffix:
     show_question : bool, optional
         Whether to include the full question prompt (True) or just the answer prefix (False). Default is True.
     with_answer_prefill : bool, optional
-       Whether to include the answer prefill in the question prompt. Default is True. Ignored if show_question is False.     
+       Whether to include the answer prefill in the question prompt. Default is True. Ignored if show_question is False.
     show_label : bool, optional
         Whether to include the label in the suffix. Default is False.
     label : Any, optional
@@ -147,12 +150,19 @@ class VarySuffix:
         Custom string to include in the suffix after the question. If None, no custom suffix is added. Default is None.
     """
 
-    def __hash__(self) -> int:
-        return int(hash_dict(dataclasses.asdict(self)), 16)
+    question: QAInterface
+    show_question: bool = True
+    with_answer_prefill: bool = True  # set False for chat mode (prefill is assistant turn)
+    show_label: bool = False
+    label: Any = None  # only used when show_label=True
+    custom_suffix: str | None = None
 
     def __post_init__(self):
         if self.show_label and self.label is None:
             raise ValueError("show_label=True requires label to be set.")
+
+    def __hash__(self) -> int:
+        return int(hash_dict(dataclasses.asdict(self)), 16)
 
     def __call__(self) -> str:
         base = (
@@ -166,11 +176,10 @@ class VarySuffix:
 
 @dataclass(frozen=True)
 class VaryValueMap:
-    cols_to_text: dict = field(hash=False, compare=False)
-    granularity: str = "original"
+    """Maps raw feature values to human-readable text.
 
-    """
-    A stage for mapping raw feature values to human-readable text.
+    ``granularity`` (``"original"`` / ``"low"``) selects the value-map variant.
+
     Parameters
     ----------
     cols_to_text : dict
@@ -181,11 +190,15 @@ class VaryValueMap:
         simplified maps (set by ``with_low_granularity``).
     """
 
+    cols_to_text: dict = field(hash=False, compare=False)
+    granularity: str = "original"
+
     def __hash__(self) -> int:
-        # Hash the column names (which identify the task) and the granularity
-        # tag (which identifies the value-map variant).  This is cross-run
-        # stable and avoids inspecting value-map contents entirely.
-        return int(hash_dict({"cols": sorted(self.cols_to_text), "granularity": self.granularity}), 16)
+        # Hash the column names (which identify the task) and the granularity tag (which identifies the value-map variant).
+        return int(
+            hash_dict({"cols": sorted(self.cols_to_text), "granularity": self.granularity}),
+            16,
+        )
 
     def __call__(self, items: list[FeatureItem]) -> list[FeatureItem]:
         return [dataclasses.replace(item, text_value=self.cols_to_text[item.col][item.raw_value]) for item in items]
@@ -210,16 +223,25 @@ class VaryValueMap:
 
 @dataclass(frozen=True)
 class VaryOrder:
-    order: list | None = None  # list[str] of column names; None → keep original
+    """Reorders feature items by ``order`` (named columns first, the rest appended); ``None`` keeps the original order.
 
-    """ 
-    A stage for reordering the feature items.
     Parameters
     ----------
     order : list | None, optional
-        A list of column names specifying the desired order of features in the prompt. 
+        A list of column names specifying the desired order of features in the prompt.
         If None, the original order is preserved. Default is None.
     """
+
+    order: tuple | list | str | None = None  # column names; None → keep original
+
+    def __post_init__(self):
+        # Frozen dataclasses must be hashable: PromptConfig.__hash__ reaches hash(VaryOrder),
+        # and a list field raises "unhashable type: 'list'". Normalize to a tuple
+        # (as FewShotConfig already does for `compose`).
+        if isinstance(self.order, str):
+            object.__setattr__(self, "order", tuple(col.strip() for col in self.order.split(",")))
+        elif self.order is not None:
+            object.__setattr__(self, "order", tuple(self.order))
 
     def __hash__(self) -> int:
         return int(hash_dict(dataclasses.asdict(self)), 16)
@@ -228,7 +250,10 @@ class VaryOrder:
         if not self.order:
             return items
         index = {item.col: item for item in items}
-        return [index[col] for col in self.order if col in index]
+        ordered_cols = set(self.order)
+        # Put the specified columns first (in the given order), then append any
+        # remaining columns that weren't mentioned — dropping nothing.
+        return [index[col] for col in self.order if col in index] + [item for item in items if item.col not in ordered_cols]
 
 
 VaryFeatureOrder = VaryOrder  # alias for backward compatibility
@@ -236,16 +261,18 @@ VaryFeatureOrder = VaryOrder  # alias for backward compatibility
 
 @dataclass(frozen=True)
 class VaryConnector:
-    connector: str = "is"
+    """Joins each feature label to its value with ``connector``.
 
-    """
-    A stage for connecting feature labels to their values in the prompt.
+    Default ``"is:"`` -> ``"Age is: 30"``; e.g. ``"is"``, ``":"``.
+
     Parameters
     ----------
     connector : str, optional
-        The string to use for connecting feature labels to their values. 
-        For example, "is" would produce prompts like "Age is 30", while ":" would produce "Age: 30". Default is "is".
+        The string to use for connecting feature labels to their values.
+        For example, "is :" would produce prompts like "Age is 30", while ":" would produce "Age: 30". Default is "is :".
     """
+
+    connector: str = "is:"  # match DEFAULT_PROMPT_STYLE; "is" (no colon) is a valid override
 
     def __hash__(self) -> int:
         return int(hash_dict(dataclasses.asdict(self)), 16)
@@ -257,10 +284,8 @@ class VaryConnector:
 
 @dataclass(frozen=True)
 class VaryFormat:
-    format: str = "textbullet"
-
-    """
-    A stage for formatting the connected feature strings into the final prompt.
+    """Collapses the feature list into the final layout: ``"textbullet"`` (default), ``"bullet"``, ``"comma"``, or ``"text"``.
+    
     Parameters
     ----------
     format : str, optional
@@ -276,6 +301,8 @@ class VaryFormat:
         Default is "textbullet".
     """
 
+    format: str = "textbullet"
+
     _TEMPLATES: ClassVar[dict] = {
         "bullet": lambda s: f"- {s}\n",
         "comma": lambda s: f"{s}, ",
@@ -283,12 +310,12 @@ class VaryFormat:
         "textbullet": lambda s: f"- The {s}.\n",
     }
 
-    def __hash__(self) -> int:
-        return int(hash_dict(dataclasses.asdict(self)), 16)
-
     def __post_init__(self):
         if self.format not in self._TEMPLATES:
             raise ValueError(f"Unknown format {self.format!r}. Choose from {list(self._TEMPLATES)}")
+
+    def __hash__(self) -> int:
+        return int(hash_dict(dataclasses.asdict(self)), 16)
 
     def __call__(self, items: list[FeatureItem]) -> str:
         template = self._TEMPLATES[self.format]
@@ -297,15 +324,17 @@ class VaryFormat:
 
 @dataclass(frozen=True)
 class VarySystemPrompt:
-    system_prompt: str
+    """Holds the optional system-role string for the chat path.
 
-    """
-    A stage for adding a system prompt to the chat context.
     Parameters
     ----------
     system_prompt : str
-        The system prompt string to include in the chat context. This provides instructions or 
-        context to the model before the user prompt. """
+        The system prompt string to include in the chat context. This provides instructions or
+        context to the model before the user prompt.
+
+    """
+
+    system_prompt: str
 
     def __hash__(self) -> int:
         return int(hash_dict(dataclasses.asdict(self)), 16)
@@ -327,32 +356,39 @@ class FewShotConfig:
     ----------
     n_shots : int
         Number of example questions and answers to prepend.
-    example_order : list[int] | str | None, optional
-        Integer permutation to reorder examples (e.g. ``[2, 0, 1]`` or
-        ``"2,0,1"``). ``None`` keeps the sampled order.
+    example_order : tuple[int, ...] | str | None, optional
+        Integer permutation to reorder examples (e.g. ``(2, 0, 1)`` or ``"2,0,1"``). ``None`` keeps the sampled order.
     compose : str | list, optional
-        How to select few-shot samples: ``"random"`` (default),
-        ``"balanced"`` (equal draws per class), or a list of per-class
-        counts summing to ``n_shots``.
+        How to select few-shot samples: ``"random"`` (default), ``"balanced"`` (equal draws per class), or a list of
+        per-class counts summing to ``n_shots``.
     reuse_examples : bool, optional
         Whether to reuse the same examples across calls, by default False.
+    show_question_in_examples : bool, optional
+        Whether each in-context example repeats the question (default, matches main) or shows
+        only the answer. Set False for the compact answer-only format. Default is True.
     """
 
     n_shots: int
-    example_order: list[int] | str | None = None
+    example_order: tuple[int, ...] | list[int] | str | None = None
     compose: str | list = "random"
     reuse_examples: bool = False
+    show_question_in_examples: bool = True
 
     def __post_init__(self):
         if self.n_shots < 1:
             raise ValueError(f"n_shots must be >= 1; got {self.n_shots}.")
 
+        # Normalize example_order to a tuple: a frozen dataclass must be hashable, and a
+        # list field breaks hash(FewShotConfig) (reached via BenchmarkConfig.__hash__).
         if isinstance(self.example_order, str):
             object.__setattr__(
                 self,
                 "example_order",
-                [int(i) for i in self.example_order.split(",")],
+                tuple(int(i) for i in self.example_order.split(",")),
             )
+        elif self.example_order is not None:
+            object.__setattr__(self, "example_order", tuple(self.example_order))
+
         if self.example_order is not None:
             if sorted(self.example_order) != list(range(self.n_shots)):
                 raise ValueError(
@@ -373,6 +409,9 @@ class FewShotConfig:
             raise ValueError(f"compose must be 'random', 'balanced', or a list of counts; got {self.compose!r}.")
 
     def __hash__(self) -> int:
+        # Cannot rely on the frozen-dataclass auto-hash: `compose` as a str
+        # would use PYTHONHASHSEED-dependent str.__hash__, breaking cross-
+        # process benchmark stability.  Serialise via json.dumps + shake-256.
         return int(hash_dict(dataclasses.asdict(self)), 16)
 
 
@@ -383,6 +422,16 @@ class FewShotConfig:
 
 @dataclass(frozen=True)
 class PromptConfig:
+    """How one row is rendered into a prompt — one instance of each variation stage.
+
+    A prompt is a task ``prefix``, a feature ``[INFO]`` block (the
+    ``value_map → order → connector → format`` pipeline), and a question
+    ``suffix``, plus an optional ``system_prompt`` for the chat path. Build one
+    with :meth:`from_dict` (or :meth:`default`) rather than instantiating the
+    stages directly. Frozen and hashable, so each distinct configuration gets its
+    own ``results.bench-{hash}.json``.
+    """
+
     prefix: VaryPrefix
     value_map: VaryValueMap
     order: VaryOrder
@@ -392,15 +441,21 @@ class PromptConfig:
     system_prompt: VarySystemPrompt | None = None
 
     def __hash__(self) -> int:
-        return int(hash_dict({
-            "prefix": hash(self.prefix),
-            "value_map": hash(self.value_map),
-            "order": hash(self.order),
-            "connector": hash(self.connector),
-            "format": hash(self.format),
-            "suffix": hash(self.suffix),
-            "system_prompt": hash(self.system_prompt) if self.system_prompt is not None else None,
-        }), 16)
+        # Python's builtin hash() of this frozen dataclass is salted (PYTHONHASHSEED): the
+        # stages hold str fields, so hashing them gave a different value every process. That
+        # flows into the classifier hash and made `results.bench-{hash}.json` non-deterministic
+        # across processes. Hash the rendered prompt skeleton + value-line knobs deterministically
+        # instead. `value_map` is excluded (as it already is from equality, via field compare=False)
+        # and is captured by the task hash; the rendered prefix/suffix capture the question text.
+        parts = {
+            "prefix": self.prefix(),
+            "connector": self.connector.connector,
+            "format": self.format.format,
+            "order": list(self.order.order) if self.order.order else None,
+            "suffix": self.suffix(),
+            "system_prompt": self.system_prompt() if self.system_prompt is not None else None,
+        }
+        return int(hash_dict(parts), 16)
 
     @classmethod
     def default(cls, task: TaskMetadata) -> "PromptConfig":
@@ -443,11 +498,11 @@ class PromptConfig:
 
         order = pv.get("order", DEFAULT_PROMPT_STYLE["order"])
         if isinstance(order, str):
-            order = [col.strip() for col in order.split(",")]
+            order = tuple(col.strip() for col in order.split(","))
 
         question = question or task.question
         if system_prompt is PROMPT_DEFAULT:
-            system_prompt = question.default_system_prompt
+            system_prompt = question.get_default_system_prompt()
         value_map = (
             VaryValueMap.with_low_granularity(task.cols_to_text, cls._get_simplified_value_maps(task))
             if granularity == "low"
@@ -475,14 +530,21 @@ class PromptConfig:
     def _get_task_description(task: TaskMetadata) -> str:
         descriptions = {
             "ACS": ACS_TASK_DESCRIPTION.substitute(ACS_TASK_DESCRIPTION_DEFAULTS),
+            "BRFSS": TABLESHIFT_TASK_DESCRIPTION.substitute(TABLESHIFT_TASK_DESCRIPTION_DEFAULTS),
             "SIPP": SIPP_TASK_DESCRIPTION.substitute(SIPP_TASK_DESCRIPTION_DEFAULTS),
         }
-        if TABLESHIFT_TASK_DESCRIPTION is not None and TABLESHIFT_TASK_DESCRIPTION.template:
-            descriptions["BRFSS"] = TABLESHIFT_TASK_DESCRIPTION.substitute(TABLESHIFT_TASK_DESCRIPTION_DEFAULTS)
+
         for key, desc in descriptions.items():
             if key in task.name:
                 return desc
-        raise ValueError(f"Cannot determine task description for task '{task.name}'")
+
+        # Fall back to the task's own description field for non-ACS tasks.
+        if task.description is not None:
+            return task.description
+
+        raise ValueError(
+            f"Cannot determine task description for task '{task.name}'. Set a 'description' field on the TaskMetadata object."
+        )
 
     @staticmethod
     def _get_simplified_value_maps(task: TaskMetadata) -> dict:
@@ -496,13 +558,14 @@ class PromptConfig:
     def _get_few_shot_task_description(task: TaskMetadata) -> str | None:
         overrides = {
             "respondent": "different survey respondents",
+            "question_phrase": "each question",  # R4: match main's few-shot wording
             "suffix": " for each person",
         }
         if task.name.startswith("ACS"):
             return ACS_TASK_DESCRIPTION.substitute({**ACS_TASK_DESCRIPTION_DEFAULTS, **overrides})
-        if TABLESHIFT_TASK_DESCRIPTION is not None and "BRFSS" in task.name:
+        elif task.name.startswith("BRFSS"):
             return TABLESHIFT_TASK_DESCRIPTION.substitute({**TABLESHIFT_TASK_DESCRIPTION_DEFAULTS, **overrides})
-        if task.name.startswith("SIPP"):
+        elif task.name.startswith("SIPP"):
             return SIPP_TASK_DESCRIPTION.substitute({**SIPP_TASK_DESCRIPTION_DEFAULTS, **overrides})
         return None
 
@@ -549,7 +612,8 @@ class PromptBuilder:
         config: PromptConfig,
         examples: list[tuple],  # list of (pd.Series, label)
         question: QAInterface | None = None,
-        example_order: list[int] | None = None,
+        example_order: list[int] | tuple[int, ...] | None = None,
+        show_example_question: bool = True,
     ) -> str:
         if example_order is not None:
             assert len(example_order) == len(examples)
@@ -570,7 +634,9 @@ class PromptBuilder:
                 prefix=prefix,
                 suffix=dataclasses.replace(
                     config.suffix,
-                    show_question=False,
+                    # examples repeat the question by default (matches main); the
+                    # answer-only format is opt-in via FewShotConfig.show_question_in_examples.
+                    show_question=show_example_question,
                     show_label=True,
                     label=ex_label,
                 ),
@@ -625,6 +691,7 @@ class PromptBuilder:
 def encode_row_prompt(
     row: pd.Series,
     task: TaskMetadata,
+    *,
     question: QAInterface = None,
     prompt_config: PromptConfig | None = None,
 ) -> str:
@@ -647,6 +714,10 @@ def encode_row_prompt(
         Build once at classifier/benchmark init and pass here to avoid
         rebuilding on every row.
 
+    `with_answer_prefill` is forwarded to `question.get_question_prompt`. The
+    chat-template path passes `False` so the prefill is supplied as a separate
+    assistant turn rather than baked into the user message.
+
     Returns
     -------
     str
@@ -662,11 +733,12 @@ def encode_row_prompt_few_shot(
     row: pd.Series,
     task: TaskMetadata,
     dataset: Dataset,
+    *,
     n_shots: int = None,
     question: QAInterface = None,
     reuse_examples: bool = False,
     compose_few_shot_examples: str | list = "random",
-    example_order: list[int] | str | None = None,
+    example_order: list[int] | tuple[int] | str | None = None,
     prompt_config: PromptConfig | None = None,
     few_shot_config: FewShotConfig | None = None,
 ) -> str:
@@ -693,7 +765,7 @@ def encode_row_prompt_few_shot(
         How to select few-shot samples: ``"random"`` (default), ``"balanced"``
         (equal draws per class), or a list of per-class counts summing to
         ``n_shots``. Ignored when ``few_shot_config`` is provided.
-    example_order : list[int] | str | None, optional
+    example_order : tuple[int, ...] | str | None, optional
         Integer permutation to reorder examples before building the prompt
         (e.g. ``[2, 0, 1]`` for 3 shots). ``None`` keeps the sampled order.
         Ignored when ``few_shot_config`` is provided.
@@ -720,7 +792,9 @@ def encode_row_prompt_few_shot(
             reuse_examples=reuse_examples,
         )
 
-    assert few_shot_config.example_order is None or isinstance(few_shot_config.example_order, list)  # mypy
+    assert few_shot_config.example_order is None or isinstance(
+        few_shot_config.example_order, (list, tuple)
+    )  # mypy (example_order is normalized to a tuple in FewShotConfig)
     logging.debug(f"Composition of few shot examples: {few_shot_config.compose}")
 
     # Take `n_shots` random samples from the train set
@@ -729,8 +803,14 @@ def encode_row_prompt_few_shot(
         reuse_examples=few_shot_config.reuse_examples,
         composition=few_shot_config.compose,
     )
-    X_examples = X_examples.sort_index()
-    y_examples = y_examples.sort_index()
+    # `example_order` can be positional permutation, so only sort by index when it
+    # is provided: this gives its positions a stable, interpretable baseline
+    # (position 0 == lowest-index example). Without it, keep the seeded sample
+    # order (matches main).
+    if few_shot_config.example_order is not None:
+        X_examples = X_examples.sort_index()
+        y_examples = y_examples.sort_index()
+
     logging.debug(f"ys index: {y_examples.index.tolist()}")
     logging.debug(f"ys: {y_examples.values.tolist()}")
 
@@ -757,6 +837,7 @@ def encode_row_prompt_few_shot(
         examples=examples,
         question=question if prompt_config is not None else None,
         example_order=few_shot_config.example_order,
+        show_example_question=few_shot_config.show_question_in_examples,
     )
     logging.debug(prompt)
     return prompt
@@ -801,6 +882,10 @@ def resolve_chat_defaults(
     a role entirely (e.g. for Gemma-style tokenizers that reject the system role).
     """
     if system_prompt is PROMPT_DEFAULT:
+        # NOTE: the chat-template path uses the `chat_prompt` prefill (a
+        # logprob-scoring construct), so it deliberately reads the *plain*
+        # default system prompt — the generated-text answer-format instruction
+        # (see `get_default_system_prompt`) would contradict that prefill.
         system_prompt = question.default_system_prompt
     if chat_prompt is PROMPT_DEFAULT:
         chat_prompt = question.default_chat_prompt
@@ -860,12 +945,7 @@ def encode_row_prompt_chat(
             question=question,
             chat_prompt=chat_prompt,
         )
-    config = PromptConfig.from_dict(
-        {},
-        task=task,
-        question=question,
-        system_prompt=system_prompt,
-    )
+    config = PromptConfig.from_dict({}, task=task, question=question, system_prompt=system_prompt)
     return PromptBuilder(task).build_chat(
         row[task.features],
         config,
@@ -908,13 +988,13 @@ def apply_chat_template(
     # Add user prompt
     conversation.append({"role": "user", "content": user_prompt})
 
-    if chat_prompt is not None:
+    if chat_prompt is None:
+        # No assistant prefill; let the model generate freely
+        kwargs.setdefault("add_generation_prompt", True)
+    else:
         # Using the Anthropic-style chat prompt
         conversation.append({"role": "assistant", "content": chat_prompt})
         kwargs.setdefault("add_generation_prompt", False)
-    else:
-        # No assistant prefill; let the model generate freely
-        kwargs.setdefault("add_generation_prompt", True)
 
     # Apply prompt template
     if kwargs.pop("tokenize", False):

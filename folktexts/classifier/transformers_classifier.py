@@ -3,20 +3,19 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
-from typing import Callable
 
 import numpy as np
-import pandas as pd
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from folktexts.llm_utils import query_model_batch_multiple_passes, query_model_text_batch
+from folktexts.llm_utils import generate_text_batch, query_model_batch_multiple_passes
 from folktexts.qa_interface import DirectNumericQA, MultipleChoiceQA
 from folktexts.task import TaskMetadata
 from folktexts.token_tracker import TokenTracker
 
 from .._utils import hash_dict
-from .base import LLMClassifier
+from .base import EncodeRowCallable, LLMClassifier
 
 
 class TransformersLLMClassifier(LLMClassifier):
@@ -27,7 +26,7 @@ class TransformersLLMClassifier(LLMClassifier):
         model: AutoModelForCausalLM,
         tokenizer: AutoTokenizer,
         task: TaskMetadata | str,
-        encode_row: Callable[[pd.Series], str] = None,
+        encode_row: EncodeRowCallable = None,
         threshold: float = 0.5,
         correct_order_bias: bool = True,
         seed: int = 42,
@@ -81,6 +80,48 @@ class TransformersLLMClassifier(LLMClassifier):
             **inference_kwargs,
         )
 
+        # Logging controls (used mainly for text generation debugging).
+        # By default, log only the first N prompt/generation pairs; users can
+        # enable logging all generations via env var or CLI wrapper.
+        self._log_generations_all = os.getenv("FOLKTEXTS_LOG_GENERATIONS", "0").strip() in {"1", "true", "True"}
+        try:
+            self._log_generations_first_n = int(os.getenv("FOLKTEXTS_LOG_GENERATIONS_FIRST_N", "3"))
+        except ValueError:
+            self._log_generations_first_n = 3
+        self._logged_generations_count = 0
+
+        # Track answer extraction failures across batches so we can warn
+        # if a non-trivial fraction of samples fall back to the silent 0.5
+        # default — otherwise a benchmark with collapsed AUC looks "successful".
+        self._regex_total = 0
+        self._regex_failed = 0
+
+    def _should_log_generation(self) -> bool:
+        """Return True if we should log the next prompt/generation pair."""
+        if self._log_generations_all:
+            return True
+        return self._logged_generations_count < max(self._log_generations_first_n, 0)
+
+    # Warn the first time the failure rate crosses 25% (after ≥20 samples) and
+    # again at every 200-sample boundary, so a benchmark with mostly-failing
+    # extractions surfaces in the logs instead of silently collapsing AUC to 0.5.
+    _REGEX_FAILURE_WARN_THRESHOLD = 0.25
+    _REGEX_FAILURE_WARN_MIN_SAMPLES = 20
+
+    def _maybe_warn_regex_extraction_failure_rate(self) -> None:
+        if self._regex_total < self._REGEX_FAILURE_WARN_MIN_SAMPLES:
+            return
+        if self._regex_total % 200 != 0 and self._regex_total != self._REGEX_FAILURE_WARN_MIN_SAMPLES:
+            return
+        rate = self._regex_failed / self._regex_total
+        if rate >= self._REGEX_FAILURE_WARN_THRESHOLD:
+            logging.warning(
+                f"Probability extraction failed via regex for "
+                f"{self._regex_failed}/{self._regex_total} samples "
+                f"({rate:.1%}); these fall back to 0.5 and will collapse AUC. "
+                f"Inspect generations with FOLKTEXTS_LOG_GENERATIONS_FIRST_N."
+            )
+
     def __hash__(self) -> int:
         """Generate a unique hash for the LLMClassifier object."""
 
@@ -107,7 +148,7 @@ class TransformersLLMClassifier(LLMClassifier):
         *,
         question: MultipleChoiceQA | DirectNumericQA,
         context_size: int = None,
-    ) -> np.ndarray:
+    ) -> tuple[np.ndarray, list]:
         """Query model with a batch of prompts and return risk estimates.
 
         Parameters
@@ -128,6 +169,56 @@ class TransformersLLMClassifier(LLMClassifier):
         if self.token_tracker is not None:
             prompt_tokens = sum(len(self._tokenizer.encode(p, add_special_tokens=False)) for p in prompts_batch)
 
+        # Handle ChainOfThoughtQA with text generation
+        #  (kept for future use: numeric questions with use_generated_text can extract
+        # the probability from the generated text via regex instead of token log-probs)
+        # if isinstance(question, ChainOfThoughtQA):
+        #     # Pass enable_thinking to generate_text_batch:
+        #     # - True: enable thinking mode (uses chat template with enable_thinking=True)
+        #     # - False: explicitly disable thinking mode (uses chat template with enable_thinking=False)
+        #     # Always apply chat template for ChainOfThoughtQA to properly format the prompt
+        #     generated_texts = generate_text_batch(
+        #         text_inputs=prompts_batch,
+        #         model=self.model,
+        #         tokenizer=self.tokenizer,
+        #         max_new_tokens=question.max_new_tokens,
+        #         context_size=context_size or self.inference_kwargs["context_size"],
+        #         enable_thinking=question.enable_thinking,
+        #         system_prompt=(self.prompt_config.system_prompt() if self.prompt_config.system_prompt is not None else None),
+        #         temperature=self._resolve_temperature(question),
+        #         seed=self.seed,
+        #     )
+
+        #     # Extract probability from generated text and log each sample
+        #     risk_estimates_batch = []
+        #     for idx, (prompt, generated_text) in enumerate(zip(prompts_batch, generated_texts)):
+        #         extracted = question.extract_probability_from_text(generated_text)
+        #         self._regex_total += 1
+        #         if extracted is None:
+        #             self._regex_failed += 1
+        #         risk_estimate = 0.5 if extracted is None else extracted
+        #         risk_estimates_batch.append(risk_estimate)
+        #         self._maybe_warn_regex_extraction_failure_rate()
+
+        #         if self._should_log_generation():
+        #             # Log prompt, generated answer, and extracted risk score at INFO level
+        #             logging.info(
+        #                 ("\n" + "=" * 60 + "\n")
+        #                 + f"[ChainOfThoughtQA Sample {self._logged_generations_count + 1}]"
+        #                 + ("\n" + "=" * 60 + "\n")
+        #                 + "PROMPT:\n"
+        #                 + prompt
+        #                 + ("\n" + "-" * 60 + "\n")
+        #                 + "GENERATED ANSWER:\n"
+        #                 + generated_text
+        #                 + ("\n" + "-" * 60 + "\n")
+        #                 + f"EXTRACTED RISK SCORE: {risk_estimate:.6f}\n"
+        #                 + "=" * 60
+        #             )
+        #             self._logged_generations_count += 1
+
+        #     return np.asarray(risk_estimates_batch, dtype=float)
+
         if question.use_generated_text:
             try:
                 # try to apply chat
@@ -140,11 +231,11 @@ class TransformersLLMClassifier(LLMClassifier):
                         self.prompt_config.system_prompt() if self.prompt_config.system_prompt is not None else None
                     )
                 else:
-                    system_prompt = question.default_system_prompt
+                    system_prompt = question.get_default_system_prompt()
 
                 logging.debug(f"System prompt: {system_prompt}")
 
-                generated_text_batch = query_model_text_batch(
+                generated_text_batch = generate_text_batch(
                     text_inputs=prompts_batch,
                     model=self.model,
                     tokenizer=self.tokenizer,
@@ -176,7 +267,9 @@ class TransformersLLMClassifier(LLMClassifier):
                     )
 
                 # sanitized_texts = [text.replace(";", "") for text in generated_text_batch]
-                return risk_estimates_batch, generated_text_batch
+                # np.assarray coerces None → nan
+                # TODO; check, if wanted
+                return np.asarray(risk_estimates_batch, dtype=float), generated_text_batch
             except Exception as error:
                 logging.error(f"Error occurred while querying model: {error}")
                 raise
@@ -212,4 +305,4 @@ class TransformersLLMClassifier(LLMClassifier):
                     batch_size=len(prompts_batch),
                 )
 
-            return risk_estimates_batch, last_token_probs_batch  # ltp not used
+            return np.asarray(risk_estimates_batch, dtype=float), last_token_probs_batch  # type: ignore[return-value]  # ltp not used

@@ -16,7 +16,7 @@ import numpy as np
 from netcal.metrics import ECE
 from sklearn.metrics import brier_score_loss, confusion_matrix, log_loss, roc_auc_score, roc_curve
 
-from ._utils import join_dictionaries, safe_division
+from ._utils import is_valid_number, join_dictionaries, safe_division
 
 
 def evaluate_binary_predictions(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
@@ -151,10 +151,7 @@ def evaluate_binary_predictions_fairness(
 
         # Add group-wise metrics to the dictionary
         groupwise_metrics.update(
-            {
-                group_metric_name(metric_name, s_value): metric_value
-                for metric_name, metric_value in curr_group_metrics.items()
-            }
+            {group_metric_name(metric_name, s_value): metric_value for metric_name, metric_value in curr_group_metrics.items()}
         )
 
         unique_metrics = unique_metrics.union(curr_group_metrics.keys())
@@ -251,7 +248,7 @@ def evaluate_predictions(
     y_true: np.ndarray,
     y_pred_scores: np.ndarray,
     *,
-    sensitive_attribute: np.ndarray = None,
+    sensitive_attribute: np.ndarray | None = None,
     threshold: float | str = "best",
     model_name: str = None,
     return_groupwise_metrics: bool = True,  # change default of binary eval, set True
@@ -280,7 +277,12 @@ def evaluate_predictions(
     # Compute threshold if necessary
     if threshold == "best":
         threshold = compute_best_threshold(y_true, y_pred_scores)
-    assert isinstance(threshold, (int, float)) and 0 <= threshold <= 1, f"Invalid threshold: {threshold}"
+    elif not is_valid_number(threshold):
+        raise ValueError(f"Invalid threshold: {threshold}")
+
+    threshold = float(threshold)
+    if not 0 <= threshold <= 1:
+        raise ValueError(f"Invalid threshold: {threshold}")
 
     # Save initial results' statistics
     results = {
@@ -336,7 +338,7 @@ def bootstrap_estimate(
     *,
     y_true: np.ndarray,
     y_pred_scores: np.ndarray,
-    sensitive_attribute: np.ndarray = None,
+    sensitive_attribute: np.ndarray | None = None,
     k: int = 200,
     confidence_pct: float = 95,
     seed: int = 42,
@@ -420,7 +422,7 @@ def evaluate_predictions_bootstrap(
     y_true: np.ndarray,
     y_pred_scores: np.ndarray,
     *,
-    sensitive_attribute: np.ndarray = None,
+    sensitive_attribute: np.ndarray | None = None,
     threshold: float | str = "best",
     k: int = 200,
     confidence_pct: float = 95,
@@ -453,7 +455,11 @@ def evaluate_predictions_bootstrap(
         A dictionary containing bootstrap estimates for a variety of metrics.
     """
 
-    def _eval(labels: np.ndarray, scores: np.ndarray, sens_attr: np.ndarray | None = None) -> dict[str, float]:
+    def _eval_predictions_for_bootstrap(
+        labels: np.ndarray,
+        scores: np.ndarray,
+        sens_attr: np.ndarray | None = None,
+    ) -> dict:
         return evaluate_predictions(
             y_true=labels,
             y_pred_scores=scores,
@@ -462,7 +468,7 @@ def evaluate_predictions_bootstrap(
         )
 
     return bootstrap_estimate(
-        eval_func=_eval,
+        eval_func=_eval_predictions_for_bootstrap,
         y_true=y_true,
         y_pred_scores=y_pred_scores,
         sensitive_attribute=sensitive_attribute,

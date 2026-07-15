@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 from pathlib import Path
 from typing import Callable
@@ -31,6 +32,15 @@ _error_msg = (
 
 # Minimum fraction of the dataset size to consider a group for plotting
 GROUP_SIZE_THRESHOLD = 0.04
+
+# sklearn >=1.7 takes matplotlib styling for ROC curves via `curve_kwargs` (plain
+# **kwargs removed in 1.9); `curve_kwargs` itself doesn't exist before 1.7.
+_ROC_HAS_CURVE_KWARGS = "curve_kwargs" in inspect.signature(RocCurveDisplay.from_predictions).parameters
+
+
+def _roc_style(style: dict) -> dict:
+    """Wrap matplotlib styling for RocCurveDisplay per the installed sklearn."""
+    return {"curve_kwargs": style} if _ROC_HAS_CURVE_KWARGS else style
 
 
 def _check_plotting_deps() -> bool:
@@ -76,20 +86,16 @@ def render_evaluation_plots(
     # ### ### ### ###
     # Plot ROC curve
     # ### ### ### ###
+    # NOTE: scores are passed positionally throughout: sklearn renamed the kwarg
+    # (y_pred/y_prob -> y_score in 1.7, old names removed in 1.9), and positional
+    # binding is the only spelling valid across all supported sklearn versions.
     disp = RocCurveDisplay.from_predictions(y_true=y_true, y_pred=y_pred_scores, plot_chance_level=True)
     disp.figure_.suptitle("ROC Curve" + model_str)
 
     # Plot ROC point
     if "fpr" in eval_results and "tpr" in eval_results and "threshold" in eval_results:
         fpr, tpr = eval_results["fpr"], eval_results["tpr"]
-        plt.plot(
-            fpr,
-            tpr,
-            "ro",
-            markersize=5,
-            lw=0,
-            label=f"threshold={eval_results['threshold']:.2f}",
-        )
+        plt.plot(fpr, tpr, "ro", markersize=5, lw=0, label=f"threshold={eval_results['threshold']:.2f}")
         plt.legend()
 
     show_or_save(disp.figure_, "roc_curve")
@@ -113,16 +119,27 @@ def render_evaluation_plots(
     # ### ### ### ### ### ### ### ### ### ###
     # Plot distribution of scores per label #
     # ### ### ### ### ### ### ### ### ### ###
-    sns.kdeplot(
-        data=pd.DataFrame({"score": y_pred_scores, "label": y_true}).reset_index(drop=True),
-        x="score",
-        hue="label",
-        multiple="fill",
-    )
-    plt.xlim(y_pred_scores.min(), y_pred_scores.max())
-    plt.xlabel("Predicted Risk Score")
-    plt.gcf().suptitle("Score Distribution per Label" + (f" - {model_name}" if model_name else ""))
-    show_or_save(plt.gcf(), "score_distribution_per_label")
+    # `sns.kdeplot` fits a gaussian_kde per label group, which raises LinAlgError
+    # (singular covariance) when a group's scores are degenerate -- e.g. near-constant
+    # scores on a small sample or a highly-confident API model. Skip just this
+    # sub-plot in that case instead of failing the whole `plot_results` call.
+    try:
+        sns.kdeplot(
+            data=pd.DataFrame({"score": y_pred_scores, "label": y_true}).reset_index(drop=True),
+            x="score",
+            hue="label",
+            multiple="fill",
+        )
+        plt.xlim(y_pred_scores.min(), y_pred_scores.max())
+        plt.xlabel("Predicted Risk Score")
+        plt.gcf().suptitle("Score Distribution per Label" + (f" - {model_name}" if model_name else ""))
+        show_or_save(plt.gcf(), "score_distribution_per_label")
+    except (np.linalg.LinAlgError, ValueError) as e:
+        logging.warning(
+            "Skipping 'score distribution per label' plot: kernel-density "
+            f"estimation failed on a degenerate score distribution ({e})."
+        )
+        plt.close()
 
     return results
 
@@ -205,10 +222,14 @@ def render_fairness_plots(  # noqa: C901
             y_pred=group_y_pred_scores,
             plot_chance_level=is_last_group,
             ax=ax,
-            # Group-specific visuals
-            linestyle=group_line_styles[idx],
-            color=group_colors[idx],
             name=group_value_map(s_value),
+            # Group-specific visuals
+            **_roc_style(
+                {
+                    "linestyle": group_line_styles[idx],
+                    "color": group_colors[idx],
+                }
+            ),
         )
 
         # Plot group-specific ROC point

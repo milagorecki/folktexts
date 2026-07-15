@@ -4,6 +4,8 @@ Exemplary Usage:
     run_benchmark --model gpt2 --results-dir './results/test/' --data-dir '../llm_fairness/folktexts/data' --task ACSIncome --subsampling 0.01 --variation "format=bullet,connector=is" --logger-level ERROR
 """  # noqa: E501
 
+from __future__ import annotations
+
 import base64
 import json
 import logging
@@ -39,7 +41,7 @@ DEFAULT_BATCH_SIZE = 16
 DEFAULT_CONTEXT_SIZE = 600
 DEFAULT_SEED = 42
 
-DEFAULT_INFERENCE_BACKEND = "transformers"
+DEFAULT_INFERENCE_BACKEND = "vllm"
 DEFAULT_GPU_MEM_UTIL = 0.85
 DEFAULT_VLLM_DTYPE = "auto"
 DEFAULT_TENSOR_PARALLEL_SIZE = 1
@@ -78,6 +80,19 @@ def setup_arg_parser() -> ArgumentParser:
         )
 
     # Add special arguments (e.g., boolean flags or multiple-choice args)
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        help=(
+            "[float] Sampling temperature override for text-generation. "
+            "If unset, text generation uses greedy decoding (0.0), or 1.0 "
+            "with --enable-thinking. Ignored for multiple-choice/numeric "
+            "prompting, which reads untempered token probabilities."
+        ),
+        required=False,
+        default=None,
+    )
+
     parser.add_argument(
         "--use-web-api-model",
         help="[bool] Whether use a model hosted on a web API (instead of a local model)",
@@ -203,7 +218,7 @@ def setup_arg_parser() -> ArgumentParser:
     parser.add_argument(
         "--compose-few-shot-examples",
         help=(
-            "[str|list] How to select samples in few-shot prompting: random, balanced or list of speicified "
+            "[str|list] How to select samples in few-shot prompting: random, balanced or list of specified "
             "class counts. Defaults to random."
         ),
         default="random",
@@ -212,12 +227,33 @@ def setup_arg_parser() -> ArgumentParser:
 
     parser.add_argument(
         "--example-order",
-        type=str,
         help=(
             "[str] Comma-separated permutation of few-shot example indices, e.g. '2,0,1'. Only used when --few-shot is set."
         ),
+    )
+
+    parser.add_argument(
+        "--few-shot-hide-question",
+        help=(
+            "[bool] In few-shot examples show only the answer (omit the repeated question). "
+            "By default each example includes the question, matching the original behavior. "
+            "Only used when --few-shot is set."
+        ),
+        action="store_true",
+        default=False,
+    )
+
+    parser.add_argument(
+        "--variation",
+        help=(
+            "[dict] Prompt-style overrides as key=value pairs, e.g. "
+            "--variation connector=is format=bullet (keys: format, connector, "
+            "granularity, order, custom_prompt_prefix, custom_prompt_suffix, show_question)."
+        ),
+        nargs="*",
+        action=ParseDict,
         required=False,
-        default=None,
+        default={},
     )
 
     parser.add_argument(
@@ -286,16 +322,18 @@ def setup_arg_parser() -> ArgumentParser:
         default="balanced_accuracy",
     )
 
-    parser.add_argument(
-        "--variation",
-        help="[dict] Dictionary specifying variations of data point serialization.",
-        nargs="*",
-        action=ParseDict,
-        required=False,
-        default={},
-    )
-
     return parser
+
+
+def _loggable_args(args) -> dict:
+    """Return the parsed args as a JSON-serializable dict for logging.
+
+    ``--chat-prompt``/``--system-prompt`` default to the ``PROMPT_DEFAULT`` sentinel
+    (``object()``), which ``json.dumps`` cannot serialize. Resolve it to ``"default"``
+    for logging only (mirrors ``BenchmarkConfig.__hash__``/``save_to_disk``); the sentinel
+    itself still flows unchanged into ``BenchmarkConfig``.
+    """
+    return {k: ("default" if v is PROMPT_DEFAULT else v) for k, v in vars(args).items()}
 
 
 def main():
@@ -312,10 +350,7 @@ def main():
             setattr(args, _key, base64.b64decode(_val[4:]).decode())
 
     logging.getLogger().setLevel(level=args.logger_level)
-    pretty_args_str = json.dumps(
-        {k: ("default" if v is PROMPT_DEFAULT else v) for k, v in vars(args).items()},
-        indent=4, sort_keys=True,
-    )
+    pretty_args_str = json.dumps(_loggable_args(args), indent=4, sort_keys=True)
     logging.info(f"Current python executable: '{sys.executable}'")
     logging.info(f"Received the following cmd-line args: {pretty_args_str}")
 
@@ -329,6 +364,7 @@ def main():
 
         population_filter_dict = cmd_line_args_to_kwargs(args.use_population_filter)
 
+    # Parse prompt variation dict
     prompt_variation_dict = DEFAULT_PROMPT_STYLE
     if args.variation != {}:
         # update with args.variation
@@ -355,10 +391,11 @@ def main():
             cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
             tensor_parallel_size = max(1, len([d for d in cuda_visible.split(",") if d.strip()]))
 
-        max_model_len = args.context_size + (
-            8000 if args.reasoning is not None else 1
-        )  # reasoning models may need more context for the generate intermediate tokens
-        # TODO: Define default max as global constant
+        max_model_len = args.max_model_len
+        if max_model_len is None:
+            max_model_len = args.context_size + (8000 if args.reasoning is not None else 1) + 256
+            # reasoning models may need more context for the generate intermediate tokens
+            # TODO: Define default max as global constant
 
         model, tokenizer = load_vllm_model(
             args.model,
@@ -370,7 +407,7 @@ def main():
         )
         backend = "vllm"
 
-    # Local LLM via HuggingFace transformers (default)
+    # Local LLM via HuggingFace transformers (opt-in fallback)
     else:
         from folktexts.llm_utils import load_model_tokenizer
 
@@ -384,14 +421,12 @@ def main():
             model_load_kwargs["attn_implementation"] = args.attn_implementation
         if args.use_generated_text:
             logging.info("Tokenizer padding_side set to 'left'.")
-            model, tokenizer = load_model_tokenizer(args.model, padding_side="left", **model_load_kwargs)
+            model, tokenizer = load_model_tokenizer(model_path, padding_side="left", **model_load_kwargs)
         else:
-            model, tokenizer = load_model_tokenizer(args.model, **model_load_kwargs)
+            model, tokenizer = load_model_tokenizer(model_path, **model_load_kwargs)
 
         backend = "transformers"
-
     # Build FewShotConfig if few-shot prompting is requested
-    from folktexts.benchmark import BenchmarkConfig
     from folktexts.prompting import FewShotConfig
 
     few_shot_config = None
@@ -401,9 +436,12 @@ def main():
             compose=args.compose_few_shot_examples,
             reuse_examples=args.reuse_few_shot_examples,
             example_order=args.example_order,
+            show_question_in_examples=not args.few_shot_hide_question,
         )
 
     # Fill Benchmark config
+    from folktexts.benchmark import BenchmarkConfig
+
     config = BenchmarkConfig(
         few_shot_config=few_shot_config,
         use_generated_text=args.use_generated_text,
@@ -419,6 +457,7 @@ def main():
         feature_subset=args.use_feature_subset or None,
         population_filter=population_filter_dict,
         seed=args.seed,
+        temperature=args.temperature,
     )
 
     # Create Benchmark object

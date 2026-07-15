@@ -23,7 +23,7 @@ DEFAULT_VAL_SIZE = 0.1
 DEFAULT_SEED = 42
 
 
-class TableshiftBRFSSDataset(Dataset):
+class TableshiftBRFSSDataset(Dataset[TableshiftBRFSSTaskMetadata]):
     """Wrapper for tableshift BRFSS datasets."""
 
     _task: TableshiftBRFSSTaskMetadata

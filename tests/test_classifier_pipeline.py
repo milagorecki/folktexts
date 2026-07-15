@@ -177,6 +177,58 @@ class TestClassifierOrderBias:
 
         assert len(captured) == len(X_test)
 
+    def test_batch_path_prompts_match_series_path(self, clf, acs_income_dataset):
+        """The batch loop materializes rows once per batch instead of re-iterating
+        `batch_data.iterrows()` inside the per-question loop. This test guards the
+        byte-equality of the emitted prompts against a Series-per-row reference."""
+        X_test, _ = acs_income_dataset.get_test()
+
+        captured: list[tuple] = []  # (question, prompt)
+        original_encode_row = clf.encode_row
+
+        def capturing_encode_row(row, **kwargs):
+            prompt = original_encode_row(row, **kwargs)
+            captured.append((kwargs.get("question"), prompt))
+            return prompt
+
+        clf._encode_row = capturing_encode_row
+        try:
+            clf.predict_proba(X_test)
+        finally:
+            clf._encode_row = original_encode_row
+
+        # Two permutations under order-bias correction.
+        n_rows = len(X_test)
+        assert len(captured) == n_rows * 2
+
+        # Reference: encode each row directly with the classifier's encode_row,
+        # feeding pd.Series produced by df.iloc[i]. This mimics the pre-refactor
+        # path (Series per row) and must byte-match the batch path.
+        for perm_idx in range(2):
+            slice_start = perm_idx * n_rows
+            perm_captures = captured[slice_start : slice_start + n_rows]
+            # All prompts in this slice share the same question object.
+            question = perm_captures[0][0]
+            for i in range(n_rows):
+                q_captured, prompt_captured = perm_captures[i]
+                assert q_captured is question
+                prompt_ref = original_encode_row(X_test.iloc[i], question=question)
+                assert prompt_captured == prompt_ref, f"Prompt mismatch at row {i}, permutation {perm_idx}"
+
+
+class TestClassifierConstruction:
+    def test_rejects_removed_kwargs(self, tiny_model_and_tokenizer, acs_income_task):
+        """Removed prompt-shaping kwargs (e.g. custom_prompt_prefix) used to be silently
+        swallowed into inference_kwargs; now they raise with a pointer to prompt_config."""
+        model, tokenizer = tiny_model_and_tokenizer
+        with pytest.raises(TypeError, match="custom_prompt_prefix"):
+            TransformersLLMClassifier(
+                model=model,
+                tokenizer=tokenizer,
+                task=acs_income_task,
+                custom_prompt_prefix="extra context",
+            )
+
 
 class TestBenchmarkConfig:
     def test_default_is_hashable(self):
@@ -189,6 +241,29 @@ class TestBenchmarkConfig:
     def test_hash_with_few_shot_config(self):
         cfg = BenchmarkConfig(few_shot_config=FewShotConfig(n_shots=2))
         assert isinstance(hash(cfg), int)
+
+    def test_few_shot_hash_is_deterministic_across_processes(self):
+        """B4 regression: __hash__ hashed few_shot_config with Python's salted builtin
+        hash(), so `results.bench-{hash}.json` got a different name every process. The
+        few-shot hash must be stable across PYTHONHASHSEED values."""
+        import os
+        import subprocess
+        import sys
+
+        code = (
+            "from folktexts.benchmark import BenchmarkConfig;"
+            "from folktexts.prompting import FewShotConfig;"
+            "print(hash(BenchmarkConfig(few_shot_config=FewShotConfig(n_shots=2))))"
+        )
+
+        def _hash_with_seed(seed: int) -> str:
+            return subprocess.check_output(
+                [sys.executable, "-c", code],
+                env={**os.environ, "PYTHONHASHSEED": str(seed)},
+            ).strip()
+
+        hashes = {_hash_with_seed(seed) for seed in (1, 2)}
+        assert len(hashes) == 1, f"few-shot config hash is not deterministic: {hashes}"
 
     def test_hash_with_feature_subset(self):
         cfg = BenchmarkConfig(feature_subset=["AGEP", "WKHP"])
@@ -205,6 +280,7 @@ class TestBenchmarkConfig:
 
     def test_hash_differs_with_reasoning(self):
         assert hash(BenchmarkConfig()) != hash(BenchmarkConfig(reasoning="low"))
+        assert hash(BenchmarkConfig(reasoning="low")) != hash(BenchmarkConfig(reasoning="high"))
 
     def test_save_load_roundtrip(self, tmp_path):
         cfg = BenchmarkConfig(seed=7, batch_size=4)
@@ -236,10 +312,28 @@ class TestBenchmarkConfig:
         assert updated.seed == 99
         assert updated.reasoning == "low"
 
+    def test_load_legacy_few_shot_keys(self, tmp_path):
+        """Back-compat: pre-refactor configs used flat few_shot/reuse/balance keys and
+        had no few_shot_config; loading them used to raise TypeError. Stray result-file
+        metadata (e.g. roc_auc) must also be tolerated."""
+        legacy = {
+            "numeric_risk_prompting": False,
+            "few_shot": 3,
+            "reuse_few_shot_examples": True,
+            "balance_few_shot_examples": True,
+            "seed": 7,
+            "roc_auc": 0.81,  # stray metadata -> ignored, not a TypeError
+        }
+        path = tmp_path / "legacy.json"
+        path.write_text(json.dumps(legacy))
+        cfg = BenchmarkConfig.load_from_disk(path)
+        assert cfg.few_shot_config == FewShotConfig(n_shots=3, reuse_examples=True, compose="balanced")
+        assert cfg.seed == 7
+
     def test_update_ignores_unknown_keys(self):
         cfg = BenchmarkConfig()
         updated = cfg.update(nonexistent_key="value")
-        assert dataclasses.asdict(updated) == dataclasses.asdict(cfg)
+        assert updated == cfg
 
     def test_update_returns_new_object(self):
         cfg = BenchmarkConfig()
@@ -260,6 +354,22 @@ class TestBenchmarkConfig:
         pv = {"format": "bullet", "connector": ":"}
         cfg = BenchmarkConfig(prompt_variation=pv)
         assert cfg.prompt_variation == pv
+
+    def test_no_chat_prompt_warning_on_default_prompts(self, caplog):
+        """Spin-off of B1: the chat-only warning used `is not None`, but the defaults
+        are the PROMPT_DEFAULT sentinel (not None), so it fired on every default run."""
+        import logging
+
+        with caplog.at_level(logging.WARNING):
+            Benchmark._validate_config(BenchmarkConfig(use_chat_template=False))
+        assert "will be ignored" not in caplog.text
+
+    def test_chat_prompt_warning_when_user_set_without_chat_template(self, caplog):
+        import logging
+
+        with caplog.at_level(logging.WARNING):
+            Benchmark._validate_config(BenchmarkConfig(use_chat_template=False, system_prompt="custom"))
+        assert "will be ignored" in caplog.text
 
 
 class TestBenchmarkRun:
@@ -355,6 +465,22 @@ class TestBenchmarkRun:
         bench.run(results_root_dir=tmp_path)
         assert bench.results is not None
 
+    def test_run_with_per_class_few_shot(self, tiny_model_and_tokenizer, acs_income_task, acs_income_dataset, tmp_path):
+        """B4 (related): per-class `compose` is normalized to a tuple by FewShotConfig,
+        but Dataset.sample_n_train_examples used to accept only list/str -> the documented
+        per-class few-shot feature crashed end-to-end. A tuple compose must run."""
+        model, tokenizer = tiny_model_and_tokenizer
+        bench = self._make_bench(
+            model,
+            tokenizer,
+            acs_income_task,
+            acs_income_dataset,
+            context_size=512,
+            few_shot_config=FewShotConfig(n_shots=2, compose=[1, 1], reuse_examples=True),
+        )
+        bench.run(results_root_dir=tmp_path)
+        assert bench.results is not None
+
     def test_run_with_prompt_variation(self, tiny_model_and_tokenizer, acs_income_task, acs_income_dataset, tmp_path):
         model, tokenizer = tiny_model_and_tokenizer
         bench = self._make_bench(
@@ -411,33 +537,43 @@ class TestBenchmarkRun:
         catch hash randomization bugs.  This test spawns subprocesses with
         explicitly different seeds and compares their outputs.
 
-        Covers the full hash chain: Benchmark → LLMClassifier → PromptConfig →
-        VaryValueMap → ColumnToText, which is where PYTHONHASHSEED bugs actually live.
+        Covers the full hash chain: TransformersLLMClassifier → PromptConfig →
+        VaryPrefix / VarySuffix / VaryValueMap / VaryOrder / VaryConnector /
+        VaryFormat / VarySystemPrompt, which is where PYTHONHASHSEED bugs live.
         """
+        import os
         import subprocess
         import sys
+        import textwrap
+        from pathlib import Path
 
-        repo = str(__file__).rsplit("/tests/", 1)[0]
+        fixture_path = Path(__file__).parent / "acs_income_10rows.csv"
+        if not fixture_path.exists():
+            pytest.skip(f"ACS fixture not found at {fixture_path}. Run `python tests/create_acs_fixture.py` to generate it.")
 
-        # Hash the full LLMClassifier (includes PromptConfig → VaryValueMap → ColumnToText)
-        # using the tiny model so it's fast.
-        clf_script = """
-        import sys
-        sys.path.insert(0, {repo!r})
+        # Hash the full Benchmark (includes classifier → PromptConfig → Vary* chain)
+        # using the tiny model and the fixture CSV so it's fast.
+        bench_script = textwrap.dedent("""
+        import pandas as pd
+        from folktexts.acs import ACSTaskMetadata
+        from folktexts.dataset import Dataset
         from folktexts.llm_utils import load_model_tokenizer
         from folktexts.classifier import TransformersLLMClassifier
-        from folktexts.acs import ACSTaskMetadata
+        from folktexts.benchmark import Benchmark, BenchmarkConfig
 
-        model, tokenizer = load_model_tokenizer({model!r})
         task = ACSTaskMetadata.get_task("ACSIncome", use_numeric_qa=False)
+        df = pd.read_csv({fixture_path!r}, index_col=0)
+        dataset = Dataset(data=df, task=task, test_size=0.3, val_size=0.0, seed=42)
+        model, tokenizer = load_model_tokenizer({model!r})
         clf = TransformersLLMClassifier(model=model, tokenizer=tokenizer, task=task)
-        print(hash(clf))
-        """.format(repo=repo, model=causal_lm_name_or_path)
+        bench = Benchmark(llm_clf=clf, dataset=dataset, config=BenchmarkConfig.default_config())
+        print(hash(bench))
+        """).format(fixture_path=str(fixture_path), model=causal_lm_name_or_path)
 
         def run(seed: int) -> str:
-            env = {**__import__("os").environ, "PYTHONHASHSEED": str(seed)}
+            env = {**os.environ, "PYTHONHASHSEED": str(seed)}
             result = subprocess.run(
-                [sys.executable, "-c", clf_script],
+                [sys.executable, "-c", bench_script],
                 capture_output=True,
                 text=True,
                 env=env,
@@ -447,6 +583,18 @@ class TestBenchmarkRun:
 
         h0, h1, h999 = run(0), run(1), run(999)
         assert h0 == h1 == h999, (
-            f"LLMClassifier hash (incl. PromptConfig/ColumnToText) is not stable across processes: "
-            f"seed=0 → {h0}, seed=1 → {h1}, seed=999 → {h999}"
+            f"Benchmark hash is not stable across processes: seed=0 → {h0}, seed=1 → {h1}, seed=999 → {h999}"
         )
+
+
+class TestTemperatureWiring:
+    """The transformers text extraction path must thread the resolved temperature + seed
+    into `generate_text_batch` (greedy for non-reasoning models, 1.0 in thinking mode;
+    explicit override wins)."""
+
+    def test_temperature_changes_classifier_hash(self, tiny_model_and_tokenizer, acs_income_task):
+        """An explicit temperature must produce distinct result-cache identity."""
+        model, tokenizer = tiny_model_and_tokenizer
+        clf_default = TransformersLLMClassifier(model=model, tokenizer=tokenizer, task=acs_income_task)
+        clf_override = TransformersLLMClassifier(model=model, tokenizer=tokenizer, task=acs_income_task, temperature=0.7)
+        assert hash(clf_default) != hash(clf_override)

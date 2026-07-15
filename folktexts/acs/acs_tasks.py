@@ -27,13 +27,16 @@ from .acs_thresholds import (
 ACS_TASK_DESCRIPTION = Template("""\
 The following data corresponds to $respondent. \
 The survey was conducted among US residents in $year. \
-Please answer the question based on the information provided. \
+Please answer $question_phrase based on the information provided. \
 The data provided is enough to reach an approximate answer$suffix.
 """)
 ACS_TASK_DESCRIPTION_DEFAULTS = {
     "respondent": "a survey respondent",
     "year": 2018,
     "suffix": "",
+    # "the question" for a single row; few-shot overrides to "each question" so the
+    # few-shot task description matches main verbatim (R4).
+    "question_phrase": "the question",
 }
 
 
@@ -51,6 +54,10 @@ class ACSTaskMetadata(TaskMetadata):
     folktables_obj: BasicProblem = None
 
     @classmethod
+    def get_task(cls, name: str, use_numeric_qa: bool = False, use_text_output_for_qa: bool = False) -> ACSTaskMetadata:
+        return super().get_task(name, use_numeric_qa, use_text_output_for_qa)  # type: ignore[return-value]
+
+    @classmethod
     def make_task(
         cls,
         name: str,
@@ -66,9 +73,7 @@ class ACSTaskMetadata(TaskMetadata):
         """Create an ACS task object from the given parameters."""
         # Resolve target column name
         target_col_name = (
-            target_threshold.apply_to_column_name(target)
-            if target_threshold is not None and target is not None
-            else target
+            target_threshold.apply_to_column_name(target) if target_threshold is not None and target is not None else target
         )
 
         # Get default Q&A interfaces for this task's target column

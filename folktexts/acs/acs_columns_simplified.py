@@ -47,7 +47,7 @@ def transform_cow(x):
         8: "Unpaid worker",
         9: "Unemployed or not in the labor force",
     }
-    return simplified_cow_map.get(map_to_lower_res.get(x))
+    return simplified_cow_map.get(map_to_lower_res.get(x), "N/A")
 
 
 def transform_schooling(x):
@@ -89,7 +89,33 @@ def transform_schooling(x):
         23: 10,  # Professional degree -> Graduate or professional degree
         24: 10,  # Doctorate degree -> Graduate or professional degree
     }
-    return simplified_schl_map.get(map_to_lower_res.get(x))
+    return simplified_schl_map.get(map_to_lower_res.get(x), "N/A")
+
+
+def _occp_get_prefix(occp):
+    if len(occp.split("-", 1)) == 2:
+        cat, desc = occp.split("-", 1)
+        return cat
+    else:
+        # catch cases in OCCP.txt not following the format
+        if occp.startswith("Engineering"):
+            return "ENG"
+        elif occp.startswith("Grinding"):
+            return "PRD"
+        elif occp.startswith("Unemployed"):
+            return "UNEMPL"
+        else:
+            return occp
+
+
+# Module-scope partial so parse_pums_code's (file, postprocess) cache key is stable across
+# rows: defining get_prefix per call made a new postprocess identity every row, defeating the
+# cache and re-parsing OCCP.txt for every single row.
+_occp_map_to_lower_res = partial(
+    parse_pums_code,
+    file=ACS_CODEBOOK_DIR / "OCCP.txt",
+    postprocess=_occp_get_prefix,
+)
 
 
 def transform_occp(x):
@@ -122,27 +148,7 @@ def transform_occp(x):
         "UNEMPL": "Unemployed, Not worked for at least 5 years or Never Worked",
     }
 
-    def get_prefix(occp):
-        if len(occp.split("-", 1)) == 2:
-            cat, desc = occp.split("-", 1)
-            return cat
-        else:
-            # catch cases in OCCP.txt not following the format
-            if occp.startswith("Engineering"):
-                return "ENG"
-            elif occp.startswith("Grinding"):
-                return "PRD"
-            elif occp.startswith("Unemployed"):
-                return "UNEMPL"
-            else:
-                return occp
-
-    map_to_lower_res = partial(
-        parse_pums_code,
-        file=ACS_CODEBOOK_DIR / "OCCP.txt",
-        postprocess=get_prefix,
-    )
-    return simplified_occp_map.get(map_to_lower_res(x), "N/A")
+    return simplified_occp_map.get(_occp_map_to_lower_res(x), "N/A")
 
 
 def transform_pobp(x):
@@ -273,7 +279,7 @@ def transform_pobp(x):
         554: 14,  # Misc. unspecified regions
     }
 
-    return simplified_pobp_map.get(map_to_lower_res.get(x, 14))
+    return simplified_pobp_map.get(map_to_lower_res.get(x, 14), "N/A")
 
 
 def transform_pobp_unsd(x):
@@ -328,11 +334,27 @@ def transform_pobp_unsd(x):
             name = name[: name.find("(")].strip()
         if name in manually_matched_area_names.keys():
             name = manually_matched_area_names[name]
-        for idx, (region, area) in unsd_data[["Sub-region Name", "Country or Area"]].iterrows():
-            if name == area:
-                return region
-            if name in area:
-                return region
+        name_area_pairs = unsd_data[["Sub-region Name", "Country or Area"]].values
+        exact_matches = [region for region, area in name_area_pairs if name == area]
+        if exact_matches:
+            return exact_matches[0]
+
+        # Substring fallback: "Guinea" in "Equatorial Guinea" is ambiguous, so
+        # collect all hits and warn if more than one distinct sub-region matches.
+        substring_matches = [(region, area) for region, area in name_area_pairs if name in area]
+        if len(substring_matches) == 1:
+            return substring_matches[0][0]
+        if len(substring_matches) > 1:
+            regions = [r for r, _ in substring_matches]
+            areas = [a for _, a in substring_matches]
+            if len(set(regions)) == 1:
+                return regions[0]  # all hits agree on sub-region
+            logging.warning(
+                f"Ambiguous country name '{name}' substring-matches multiple areas "
+                f"with different sub-regions: {list(zip(areas, regions))}. "
+                f"Using first match: '{areas[0]}' → '{regions[0]}'."
+            )
+            return regions[0]
         if name in manually_matched_name_to_subregion.keys():
             return manually_matched_name_to_subregion[name]
         else:
@@ -374,7 +396,7 @@ def transform_relp(x):
         16: 10,  # "Institutionalized group quarters population" -> "Group quarters population"
         17: 10,  # "Non-institutionalized group quarters population" -> "Group quarters population"
     }
-    return simplified_relp_map.get(map_to_lower_res.get(x))
+    return simplified_relp_map.get(map_to_lower_res.get(x), "N/A")
 
 
 def transform_wkhp(x, bin_width=10, max_hours=60):
@@ -401,7 +423,7 @@ def transform_rac1p_binary(x):
     def map_to_binary(x):
         return 1 if x == 1 else 2
 
-    return binary_value_map.get(map_to_binary(x))
+    return binary_value_map.get(map_to_binary(x), "N/A")
 
 
 def transform_rac1p(x):
@@ -415,7 +437,7 @@ def transform_rac1p(x):
         7: "Two or more races",
     }
     map_to_lower_res = {1: 1, 2: 2, 3: 3, 4: 3, 5: 3, 6: 4, 7: 5, 8: 6, 9: 7}
-    return simplified_rac1p_map.get(map_to_lower_res.get(x))
+    return simplified_rac1p_map.get(map_to_lower_res.get(x), "N/A")
 
 
 simplified_value_maps = {

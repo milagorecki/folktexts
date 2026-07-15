@@ -283,7 +283,7 @@ def download_sipp(
 
 def download_sipp_zip(
     data_source="https://www2.census.gov/programs-surveys/sipp/data/datasets/2014/",
-    save_path="./data/sipp/",
+    save_path: str | Path = "./data/sipp/",
     overwrite_download: bool = False,
 ):
     save_path = Path(save_path)
@@ -351,12 +351,8 @@ def preprocess_sipp(data_dir="./data/sipp/"):
     determine_uniqueness_of_column(preprocessed_data["wave_2"], "tage")
 
     # determine whether the first column of `tage` has any nan values
-    print(
-        f"Number of missing valus in col 0 of `tage` for wave 1: {preprocessed_data['wave_1']['tage'][0].isna().sum()}"
-    )
-    print(
-        f"Number of missing valus in col 0 of `tage` for wave 2: {preprocessed_data['wave_2']['tage'][0].isna().sum()}"
-    )
+    print(f"Number of missing valus in col 0 of `tage` for wave 1: {preprocessed_data['wave_1']['tage'][0].isna().sum()}")
+    print(f"Number of missing valus in col 0 of `tage` for wave 2: {preprocessed_data['wave_2']['tage'][0].isna().sum()}")
 
     preprocessed_data["wave_1"] = drop_underage_individuals(preprocessed_data["wave_1"])
     preprocessed_data["wave_2"] = drop_underage_individuals(preprocessed_data["wave_2"])
@@ -614,9 +610,7 @@ def preprocess_sipp(data_dir="./data/sipp/"):
         )
 
     # plot the distribution of NaN values
-    cols_with_nan_w1 = (final_dataframes["wave_1"].isna().sum() / len(final_dataframes["wave_1"])).sort_values(
-        ascending=False
-    )
+    cols_with_nan_w1 = (final_dataframes["wave_1"].isna().sum() / len(final_dataframes["wave_1"])).sort_values(ascending=False)
 
     cols_with_nan_w2 = (final_dataframes["wave_2"].isna().sum() / len(final_dataframes["wave_2"])).sort_values(  # noqa: F841
         ascending=False
@@ -655,12 +649,8 @@ def preprocess_sipp(data_dir="./data/sipp/"):
     respondents_to_keep = final_dataframes["wave_2"][~final_dataframes["wave_2"]["OPM_RATIO"].isna()]["UNIQUE_ID"]
 
     # drop the individual with missing target variables (i.e., `OPM_RATIO` in wave 2) usig their `UNIQUE_ID`
-    final_dataframes["wave_1"] = final_dataframes["wave_1"][
-        final_dataframes["wave_1"]["UNIQUE_ID"].isin(respondents_to_keep)
-    ]
-    final_dataframes["wave_2"] = final_dataframes["wave_2"][
-        final_dataframes["wave_2"]["UNIQUE_ID"].isin(respondents_to_keep)
-    ]
+    final_dataframes["wave_1"] = final_dataframes["wave_1"][final_dataframes["wave_1"]["UNIQUE_ID"].isin(respondents_to_keep)]
+    final_dataframes["wave_2"] = final_dataframes["wave_2"][final_dataframes["wave_2"]["UNIQUE_ID"].isin(respondents_to_keep)]
 
     print(f"Number of respondents left in wave 1: {len(final_dataframes['wave_1'])}")
     print(f"Number of respondents left in wave 2: {len(final_dataframes['wave_2'])}")

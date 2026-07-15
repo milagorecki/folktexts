@@ -9,18 +9,21 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
 import numpy as np
-import pandas as pd
 from transformers import AutoConfig, AutoTokenizer
 
-from folktexts.llm_utils import decode_topk_logprobs_to_risk_estimate
+from folktexts.llm_utils import (
+    _apply_chat_template_batch,
+    _postprocess_generated_text,
+    decode_topk_logprobs_to_risk_estimate,
+)
 from folktexts.qa_interface import DirectNumericQA, MultipleChoiceQA
 from folktexts.task import TaskMetadata
 
 from .._utils import hash_dict
-from .base import LLMClassifier
+from .base import EncodeRowCallable, LLMClassifier
 
 if TYPE_CHECKING:
     import vllm
@@ -43,7 +46,7 @@ class VLLMClassifier(LLMClassifier):
         task: TaskMetadata | str,
         *,
         model_name_or_path: str | Path | None = None,
-        encode_row: Callable[[pd.Series], str] = None,
+        encode_row: EncodeRowCallable = None,
         threshold: float = 0.5,
         correct_order_bias: bool = True,
         seed: int = 42,
@@ -92,7 +95,7 @@ class VLLMClassifier(LLMClassifier):
             **inference_kwargs,
         )
 
-        # Observability — mirrors transformers_classifier.py:88-125 so
+        # Observability — mirrors transformers_classifier.py:88-125 so the
         # failure-rate warning fires identically across backends.
         self._log_generations_all = os.getenv("FOLKTEXTS_LOG_GENERATIONS", "0").strip() in {"1", "true", "True"}
         try:
@@ -100,6 +103,9 @@ class VLLMClassifier(LLMClassifier):
         except ValueError:
             self._log_generations_first_n = 3
         self._logged_generations_count = 0
+
+        self._regex_total = 0
+        self._regex_failed = 0
 
     # ------------------------------------------------------------------
     # Init helpers
@@ -197,6 +203,32 @@ class VLLMClassifier(LLMClassifier):
         return int(hash_dict(hash_params), 16)
 
     # ------------------------------------------------------------------
+    # Text generation failure-rate observability — mirrors transformers backend
+    # ------------------------------------------------------------------
+
+    _REGEX_FAILURE_WARN_THRESHOLD = 0.25
+    _REGEX_FAILURE_WARN_MIN_SAMPLES = 20
+
+    def _should_log_generation(self) -> bool:
+        if self._log_generations_all:
+            return True
+        return self._logged_generations_count < max(self._log_generations_first_n, 0)
+
+    def _maybe_warn_regex_extraction_failure_rate(self) -> None:
+        if self._regex_total < self._REGEX_FAILURE_WARN_MIN_SAMPLES:
+            return
+        if self._regex_total % 200 != 0 and self._regex_total != self._REGEX_FAILURE_WARN_MIN_SAMPLES:
+            return
+        rate = self._regex_failed / self._regex_total
+        if rate >= self._REGEX_FAILURE_WARN_THRESHOLD:
+            logging.warning(
+                f"Probability extraction failed for "
+                f"{self._regex_failed}/{self._regex_total} samples "
+                f"({rate:.1%}); these fall back to 0.5 and will collapse AUC. "
+                f"Inspect generations with FOLKTEXTS_LOG_GENERATIONS_FIRST_N."
+            )
+
+    # ------------------------------------------------------------------
     # Inference dispatch
     # ------------------------------------------------------------------
 
@@ -206,12 +238,92 @@ class VLLMClassifier(LLMClassifier):
         *,
         question: MultipleChoiceQA | DirectNumericQA,
         context_size: int = None,
-    ) -> np.ndarray:
+    ) -> tuple[np.ndarray, list]:
         """Query vLLM with a batch of prompts and return risk estimates."""
         if isinstance(question, DirectNumericQA):
-            return self._risk_estimates_numeric(prompts_batch, question, context_size)
+            risk_estimates = self._risk_estimates_numeric(prompts_batch, question, context_size)
+        else:
+            risk_estimates = self._risk_estimates_multiple_choice(prompts_batch, question, context_size)
 
-        return self._risk_estimates_multiple_choice(prompts_batch, question, context_size)
+        # The base compute loop unpacks (risk_estimates, per-row outputs). vLLM
+        # surfaces no extra per-row metadata (it doesn't take the generated-text
+        # path), so pad the second element with None to satisfy the contract.
+        return risk_estimates, [None] * len(risk_estimates)
+
+    # ------------------------------------------------------------------
+    # Text generation path: text generation + regex extraction
+    # ------------------------------------------------------------------
+
+    def _risk_estimates_numeric_from_text(
+        self,
+        prompts_batch: list[str],
+        question,
+        context_size: int | None,
+    ) -> np.ndarray:
+        from vllm import (
+            SamplingParams,  # local import — keeps module importable without vllm
+        )
+
+        # Apply chat template (or fall back to raw prompts for base models) —
+        # exact same path the transformers backend takes. `enable_thinking` is
+        # threaded through.
+        formatted_inputs = _apply_chat_template_batch(
+            prompts_batch,
+            tokenizer=self._tokenizer,
+            enable_thinking=question.enable_thinking,
+            system_prompt=(self.prompt_config.system_prompt() if self.prompt_config.system_prompt is not None else None),
+        )
+
+        sampling_params = SamplingParams(
+            temperature=self._resolve_temperature(question),
+            max_tokens=question.max_new_tokens,
+            seed=self.seed,
+        )
+        outputs = self._llm.generate(formatted_inputs, sampling_params)
+
+        risk_estimates_batch: list[float] = []
+        for idx, (prompt, request_output) in enumerate(zip(prompts_batch, outputs)):
+            generated_text = request_output.outputs[0].text
+            response_text = _postprocess_generated_text(
+                generated_text,
+                enable_thinking=question.enable_thinking,
+                i=idx,
+                n=len(outputs),
+            )
+
+            extracted = question.extract_probability_from_text(response_text)
+            self._regex_total += 1
+            if extracted is None:
+                self._regex_failed += 1
+            risk_estimate = 0.5 if extracted is None else extracted
+            risk_estimates_batch.append(risk_estimate)
+            self._maybe_warn_regex_extraction_failure_rate()
+
+            if self._should_log_generation():
+                logging.info(
+                    "\n"
+                    + "=" * 60
+                    + "\n"
+                    + f"[Sample {self._logged_generations_count + 1}]"
+                    + "\n"
+                    + "=" * 60
+                    + "\n"
+                    + "PROMPT:\n"
+                    + prompt
+                    + "\n"
+                    + "-" * 60
+                    + "\n"
+                    + "GENERATED ANSWER:\n"
+                    + generated_text
+                    + "\n"
+                    + "-" * 60
+                    + "\n"
+                    + f"EXTRACTED RISK SCORE: {risk_estimate:.6f}\n"
+                    + "=" * 60
+                )
+                self._logged_generations_count += 1
+
+        return np.asarray(risk_estimates_batch, dtype=float)
 
     # ------------------------------------------------------------------
     # DirectNumericQA path: greedy + digit-only constraint
@@ -235,6 +347,11 @@ class VLLMClassifier(LLMClassifier):
         if not digit_token_ids:
             raise RuntimeError("No digit tokens found in tokenizer vocabulary; cannot run DirectNumericQA on this model.")
 
+        # Always 0.0 — numeric QA reads the next-token distribution, it doesn't
+        # sample. With `logprobs_mode="processed_logprobs"` any temperature > 0
+        # would rescale the returned logprobs (vLLM divides logits by the
+        # temperature before computing them) and silently change risk scores
+        # relative to the other backends, which read untempered probabilities.
         sampling_params = SamplingParams(
             temperature=0.0,
             max_tokens=question.num_forward_passes,
@@ -273,6 +390,7 @@ class VLLMClassifier(LLMClassifier):
         # the same way it handles low-mass tokens on the transformers path.
         from vllm import SamplingParams
 
+        # Always 0.0 — see the equivalent comment in `_risk_estimates_numeric`.
         sampling_params = SamplingParams(
             temperature=0.0,
             max_tokens=1,

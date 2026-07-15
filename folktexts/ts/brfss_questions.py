@@ -10,9 +10,7 @@ from . import brfss_columns
 
 # Map of BRFSS column names to ColumnToText objects
 brfss_columns_map: dict[str, ColumnToText] = {
-    col_mapper.name: col_mapper
-    for col_mapper in brfss_columns.__dict__.values()
-    if isinstance(col_mapper, ColumnToText)
+    col_mapper.name: col_mapper for col_mapper in brfss_columns.__dict__.values() if isinstance(col_mapper, ColumnToText)
 }
 
 # Map of numeric BRFSS questions

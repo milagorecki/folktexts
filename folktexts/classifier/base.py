@@ -8,7 +8,7 @@ from abc import ABC, abstractmethod
 from functools import partial
 from os import remove
 from pathlib import Path
-from typing import Any, Callable
+from typing import Protocol
 
 import numpy as np
 import pandas as pd
@@ -23,6 +23,11 @@ from folktexts.qa_interface import DirectNumericQA, MultipleChoiceQA
 from folktexts.task import TaskMetadata
 
 from .._utils import hash_dict, hash_function
+
+
+class EncodeRowCallable(Protocol):
+    def __call__(self, row: pd.Series, **kwargs) -> str: ...
+
 
 DEFAULT_CONTEXT_SIZE = 600
 DEFAULT_BATCH_SIZE = 16
@@ -46,11 +51,12 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         self,
         model_name: str,
         task: TaskMetadata | str,
-        encode_row: Callable[..., str] | None = None,
+        encode_row: EncodeRowCallable | None = None,
         threshold: float = 0.5,
         correct_order_bias: bool = True,
         seed: int = 42,
         prompt_config: PromptConfig | None = None,
+        temperature: float | None = None,
         **inference_kwargs,
     ):
         """Creates an LLMClassifier object.
@@ -73,6 +79,14 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
             by default True.
         seed : int, optional
             The random seed - used for reproducibility.
+        temperature : float | None, optional
+            Sampling temperature for text-generation prompting. When ``None``
+            (the default) the question's own default is used: greedy (``0.0``)
+            for non-reasoning models, ``1.0`` in thinking mode; see
+            ``QAInterface.default_temperature``. Has no effect on
+            multiple-choice / direct-numeric prompting, which read the
+            untempered next-token distribution on every backend and never sample.
+            Resolved via :meth:`_resolve_temperature`.
         **inference_kwargs
             Additional keyword arguments to be used at inference time. Options
             include `context_size` and `batch_size`.
@@ -87,7 +101,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
 
         self._prompt_config = prompt_config or PromptConfig.from_dict(pv={}, task=self.task)
 
-        self._encode_row: Callable[..., str] = encode_row or partial(
+        self._encode_row: EncodeRowCallable = encode_row or partial(
             default_encode_row_prompt,
             task=self.task,
             prompt_config=self._prompt_config,
@@ -98,8 +112,19 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         self._threshold_obj = "balanced_accuracy"  ##TODO: remove (but will change benchmark hash)
         self._correct_order_bias = correct_order_bias
         self._seed = seed
+        self._temperature = temperature
 
-        # Default inference kwargs
+        # Default inference kwargs. Reject unknown kwargs instead of silently swallowing
+        # them: prompt-shaping args removed in the refactor (e.g. `custom_prompt_prefix`)
+        # would otherwise land here unused and silently change behavior.
+        unknown = set(inference_kwargs) - set(self.DEFAULT_INFERENCE_KWARGS)
+        if unknown:
+            raise TypeError(
+                f"Unexpected keyword argument(s) {sorted(unknown)}. Valid inference kwargs "
+                f"are {sorted(self.DEFAULT_INFERENCE_KWARGS)}; prompt-shaping options removed "
+                f"in the refactor (e.g. 'custom_prompt_prefix') are now set via `prompt_config` "
+                f"or the CLI `--variation` flag."
+            )
         self._inference_kwargs = self.DEFAULT_INFERENCE_KWARGS.copy()
         self._inference_kwargs.update(inference_kwargs)
 
@@ -117,6 +142,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
             prompt_config_hash=hash(self.prompt_config),
             correct_order_bias=self.correct_order_bias,
             threshold=self.threshold,
+            temperature=self._temperature,
             encode_row_hash=hash_function(self.encode_row),
         )
 
@@ -132,10 +158,11 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
 
     @property
     def prompt_config(self) -> PromptConfig:
+        """The :class:`~folktexts.prompting.PromptConfig` used to render this classifier's prompts."""
         return self._prompt_config
 
     @property
-    def encode_row(self) -> Callable[..., str]:
+    def encode_row(self) -> EncodeRowCallable:
         return self._encode_row
 
     @property
@@ -163,6 +190,46 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
     @property
     def seed(self) -> int:
         return self._seed
+
+    @property
+    def temperature(self) -> float | None:
+        """The explicit sampling-temperature override, or ``None`` to defer to
+        each question type's :attr:`~folktexts.qa_interface.QAInterface.default_temperature`."""
+        return self._temperature
+
+    def _resolve_temperature(
+        self,
+        question: MultipleChoiceQA | DirectNumericQA,
+    ) -> float:
+        """Return the sampling temperature to use when generating text for ``question``.
+
+        Resolution order: an explicit classifier-level override wins; otherwise
+        thinking/reasoning mode forces ``1.0`` (required by the Claude API when
+        ``thinking`` is enabled, and safe for Qwen3/DeepSeek); otherwise the
+        question's ``default_temperature`` (greedy, ``0.0``). Only the
+        text-generation paths call this — multiple-choice / direct-numeric read
+        untempered token probabilities on every backend, so temperature never
+        applies to them.
+        """
+        # TODO (thinking-mode temperature, deferred — see memory
+        # project-thinking-mode-temperature):
+        #  - Blanket 1.0 is *required* by Claude with thinking but only
+        #    acceptable (not optimal ~0.6) for Qwen3/DeepSeek — consider making
+        #    the thinking temperature model-family-aware.
+        #  - logprob + reasoning is rejected up front by
+        #    `Benchmark._validate_config` (thinking needs the text path)
+        #  - Reconsider whether `default_temperature` belongs on the QA interface
+        #    at all (it's a flat 0.0; the meaningful value is classifier-resolved).
+        if self._temperature is not None:
+            return self._temperature
+        reasoning = self.inference_kwargs.get("reasoning", None)
+        if reasoning is not None and reasoning != "0":
+            logging.debug(
+                f"Using reasoning mode '{reasoning}' for question {question.__class__.__name__}; "
+                f"overriding default temperature {question.default_temperature} with 1.0."
+            )
+            return 1.0
+        return question.default_temperature
 
     @property
     def inference_kwargs(self) -> dict:
@@ -309,8 +376,7 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         if predictions_save_path is not None:
             # Check if `predictions_save_path` exists and load predictions if possible
             logging.info(
-                f"Check if predictions_save_path '{predictions_save_path}' exists:"
-                f"{Path(predictions_save_path).exists()}"
+                f"Check if predictions_save_path '{predictions_save_path}' exists:{Path(predictions_save_path).exists()}"
             )
             if Path(predictions_save_path).exists():
                 result = self._load_predictions_from_disk(predictions_save_path, data=data)
@@ -349,12 +415,14 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         *,
         question: MultipleChoiceQA | DirectNumericQA,
         context_size: int = None,
-    ) -> tuple[list[float], list[Any]]:
+    ) -> tuple[np.ndarray, list]:
         """Query model with a batch of prompts and return risk estimates."""
         raise NotImplementedError("Calling an abstract method :: Use one of the subclasses of LLMClassifier.")
 
     def compute_risk_estimates_for_dataframe(
-        self, df: pd.DataFrame, save_intermed: dict = {"path": None, "labels": None}
+        self,
+        df: pd.DataFrame,
+        save_intermed: dict = {"path": None, "labels": None},
     ) -> np.ndarray:
         """Compute risk estimates for a specific dataframe (internal helper function).
 
@@ -405,11 +473,16 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
             batch_data = df.iloc[start_idx:end_idx]
             batch_row_ids = batch_data.index.values
 
+            # Materialize row-Series once per batch; `iterrows()` rebuilds a
+            # Series (with dtype coercion) per row, and under order-bias
+            # correction the inner question loop iterates N_permutations times.
+            batch_rows = [row for _, row in batch_data.iterrows()]
+
             batch_risk_scores = np.empty((len(batch_data), len(questions)))
             for q_idx, q in enumerate(questions):
                 # Encode batch data into natural text prompts
                 # TODO: potential improvement: encode outside loop with question placeholder, only replace placeholder
-                data_texts_batch = [self.encode_row(row, question=q) for _, row in batch_data.iterrows()]
+                data_texts_batch = [self.encode_row(row, question=q) for row in batch_rows]
 
                 # Query the model with the batch of data
                 risk_estimates_batch, responses_batch = self._query_prompt_risk_estimates_batch(
@@ -424,7 +497,8 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
                     for i, resp in enumerate(responses_batch):
                         if resp is not None:
                             extracted_answer = (
-                                q.get_answer_key_from_value(q.get_answer_from_generated_text(resp.get("response")))
+                                # q is narrowed to MultipleChoiceQA by the enclosing isinstance guard
+                                q.get_answer_key_from_value(q.get_answer_from_generated_text(resp.get("response")))  # type: ignore[union-attr]
                                 if resp.get("response") is not None
                                 else ""
                             )
@@ -501,7 +575,6 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         if batch_path is not None and Path(batch_path).exists() and str(batch_path).endswith("_batch.csv"):
             logging.info(f"Removing file '{batch_path}'.")
             remove(batch_path)
-
         return risk_scores
 
     def _save_intermediate_results(

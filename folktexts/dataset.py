@@ -11,7 +11,7 @@ TODO
 from __future__ import annotations
 
 import logging
-from functools import partial
+from typing import Generic, TypeVar
 
 import numpy as np
 import pandas as pd
@@ -19,16 +19,18 @@ import pandas as pd
 from ._utils import hash_dict, is_valid_number
 from .task import TaskMetadata
 
+T_Task = TypeVar("T_Task", bound=TaskMetadata)
+
 DEFAULT_TEST_SIZE = 0.1
 DEFAULT_VAL_SIZE = 0.1
 DEFAULT_SEED = 42
 
 
-class Dataset:
+class Dataset(Generic[T_Task]):
     def __init__(
         self,
         data: pd.DataFrame,
-        task: TaskMetadata,
+        task: T_Task,
         test_size: float = DEFAULT_TEST_SIZE,
         val_size: float = DEFAULT_VAL_SIZE,
         subsampling: float = None,
@@ -55,7 +57,7 @@ class Dataset:
             The random state seed, by default 42.
         """
         self._data = data
-        self._task = task
+        self._task: T_Task = task
 
         # Validate task
         if not isinstance(self._task, TaskMetadata):
@@ -106,11 +108,11 @@ class Dataset:
         return self._data
 
     @property
-    def task(self) -> TaskMetadata:
+    def task(self) -> T_Task:
         return self._task
 
     @task.setter
-    def task(self, new_task: TaskMetadata):
+    def task(self, new_task: T_Task):
         # Check if task columns are in the data
         new_task.check_task_columns_are_available(self.data.columns.to_list())
         self._task = new_task
@@ -297,10 +299,11 @@ class Dataset:
         X, y : tuple[pd.DataFrame, pd.Series]
             The features and target data for the sampled examples.
         """
-        assert composition in ("random", "balanced") or isinstance(composition, list), (
+        assert composition in ("random", "balanced") or isinstance(composition, (list, tuple)), (
             "composition must be 'random', 'balanced', or a list of per-class counts."
         )
 
+        example_indices: list | np.ndarray
         if composition == "random":
             if reuse_examples:
                 example_indices = self._train_indices[:n]
@@ -320,12 +323,13 @@ class Dataset:
                     )
                     for i in range(remaining):
                         per_label_counts[i] += 1
-            elif isinstance(composition, list):
+            elif isinstance(composition, (list, tuple)):
+                # FewShotConfig normalizes per-class `compose` to a tuple, so accept tuples too.
                 assert len(composition) == len(unique_labels), (
                     "Provide a count for every class; they are assigned in label order."
                 )
                 assert sum(composition) == n, "Per-class counts must sum to n."
-                per_label_counts = composition
+                per_label_counts = list(composition)
 
             if any(c < k for c, k in zip(counts, per_label_counts)):
                 raise ValueError(
@@ -340,9 +344,8 @@ class Dataset:
             example_indices_list: list = []
             for label, k in zip(unique_labels, per_label_counts):
                 class_indices = self._train_indices[train_labels == label]
-                selected = (
-                    class_indices[:k] if reuse_examples else self._rng.choice(class_indices, size=k, replace=False)
-                )
+
+                selected = class_indices[:k] if reuse_examples else self._rng.choice(class_indices, size=k, replace=False)
                 example_indices_list.extend(selected)
             example_indices = np.array(example_indices_list)
 
@@ -390,27 +393,3 @@ class Dataset:
         }
 
         return int(hash_dict(hashable_params), 16)
-
-    def convert_split_to_text(
-        self,
-        split: str,
-        prompt_variation: dict | None = None,
-    ) -> pd.DataFrame:
-        from tqdm import tqdm
-
-        from folktexts.prompting import PromptConfig, encode_row_prompt
-
-        tqdm.pandas()
-        assert split in ["test", "train"]
-        X, y = self.get_data_split(split)
-
-        prompt_config = PromptConfig.from_dict(prompt_variation or {}, task=self._task)
-        encode_row = partial(encode_row_prompt, task=self._task, prompt_config=prompt_config)
-        X_text = X.progress_apply(lambda row: encode_row(row), axis=1).to_frame(name="text")
-        if not self._task._use_numeric_qa and self._task.multiple_choice_qa is not None:
-            map_label_to_choice = {
-                choice.data_value: answer for choice, answer in self._task.multiple_choice_qa.choice_to_key.items()
-            }
-            y_text = y.replace(map_label_to_choice)
-            return X_text, y_text
-        return X_text, y

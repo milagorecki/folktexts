@@ -6,7 +6,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from litellm import ModelResponse
@@ -15,14 +15,13 @@ if TYPE_CHECKING:
 
 import dotenv
 import numpy as np
-import pandas as pd
 
 from folktexts.llm_utils import decode_topk_logprobs_to_risk_estimate, get_model_developer
 from folktexts.qa_interface import DirectNumericQA, MultipleChoiceQA
 from folktexts.task import TaskMetadata
 from folktexts.token_tracker import TokenTracker
 
-from .base import LLMClassifier
+from .base import EncodeRowCallable, LLMClassifier
 
 
 @dataclass
@@ -145,7 +144,7 @@ class WebAPILLMClassifier(LLMClassifier):
         self,
         model_name: str,
         task: TaskMetadata | str,
-        encode_row: Callable[[pd.Series], str] = None,
+        encode_row: EncodeRowCallable = None,
         threshold: float = 0.5,
         correct_order_bias: bool = True,
         max_api_rpm: int = _DEFAULT_MAX_RPM,
@@ -210,18 +209,21 @@ class WebAPILLMClassifier(LLMClassifier):
         # Set maximum requests / tokens per minute (env vars take priority over defaults)
         self.max_api_rpm = max(max_api_rpm, model_cfg.max_rpm if model_cfg else 0)
         if rpm_env := os.getenv("MAX_API_RPM"):
-            logging.info(f"MAX_API_RPM env var overrides {self.max_api_rpm} → {rpm_env}.")
+            logging.info(f"MAX_API_RPM env var overrides previous value of{self.max_api_rpm} with {rpm_env}.")
             self.max_api_rpm = int(rpm_env)
 
         self.max_api_tpm = max(max_api_tpm, model_cfg.max_tpm if model_cfg else 0)
         if tpm_env := os.getenv("MAX_API_TPM"):
-            logging.warning(f"MAX_API_TPM env var overrides {self.max_api_tpm} → {tpm_env}.")
+            logging.warning(f"MAX_API_TPM env var overrides previous value of {self.max_api_tpm} with {tpm_env}.")
             self.max_api_tpm = int(tpm_env)
 
         # Check extra dependencies
         assert self.check_webAPI_deps(), "Web API dependencies are not installed."
 
-        # Check OpenAI API key was passed
+        # Check the API key for the endpoint this model actually routes to.
+        # All registry models are Azure-routed: `azure_ai/*` deployments use the
+        # Azure AI inference endpoint (AZURE_AI_API_KEY), everything else uses
+        # Azure OpenAI (AZURE_API_KEY).
         if self.deployment_name.startswith("azure_ai"):
             if "AZURE_AI_API_KEY" not in os.environ:
                 raise ValueError("AZURE_AI_API_KEY not found in environment variables")
@@ -243,7 +245,7 @@ class WebAPILLMClassifier(LLMClassifier):
         # Set API type
         self.api_type = "completion"
 
-        # litellm completion does not seem to provide reasoning with opt-in summary -> switch to responses API
+        # litellm completion does not provide reasoning with opt-in summary -> switch to responses API
         if (
             get_model_developer(self.model_name) == "OpenAI"
             and reasoning is not None
@@ -257,6 +259,13 @@ class WebAPILLMClassifier(LLMClassifier):
 
             self.api_type = "responses"
 
+        # Set-up litellm API client
+        import litellm
+
+        litellm.success_callback = [self.track_cost_callback]
+
+        # from litellm import completion, responses
+
         # Get supported parameters
         from litellm import get_supported_openai_params
 
@@ -265,7 +274,7 @@ class WebAPILLMClassifier(LLMClassifier):
             from litellm import OpenAIResponsesAPIConfig
 
             config = OpenAIResponsesAPIConfig()
-            # merge lists of suppprted parameters (parameters for the completion API should get
+            # merge lists of suppported parameters (parameters for the completion API should get
             # mapped internally by the response API)
             supported_params = list(
                 set(supported_params or []) | set(config.get_supported_openai_params(model=self.deployment_name) or [])
@@ -274,6 +283,7 @@ class WebAPILLMClassifier(LLMClassifier):
         if supported_params is None:
             raise RuntimeError(f"Failed to get supported parameters for model '{self.deployment_name}'.")
         self.supported_params = set(supported_params)
+        self._warned_unsupported_params: set[str] = set()
 
         # Set litellm logger level to WARNING
         logging.getLogger("LiteLLM").setLevel(logging.WARNING)
@@ -324,6 +334,24 @@ class WebAPILLMClassifier(LLMClassifier):
             cls._registry[model_name] = _ModelConfig(**fields)
         logging.info(f"Loaded {len(data)} model config(s) from '{path}'.")
 
+    def _filter_supported_params(self, params: dict) -> dict:
+        """Drop params the model's API doesn't support, warning about each drop.
+
+        Web APIs (notably OpenAI reasoning models such as o1/o3) reject
+        parameters like `temperature`; filtering keeps the request valid
+        instead of raising, while the warning keeps the drop visible.
+        """
+        unsupported = [k for k in params if k not in self.supported_params]
+        if set(unsupported) - self._warned_unsupported_params:  # warn once per param
+            self._warned_unsupported_params.update(unsupported)
+            logging.warning(
+                f"Model '{self.model_name}' does not support API "
+                f"parameter(s) {sorted(unsupported)}; dropping them from the "
+                f"request (this may reduce determinism/reproducibility). "
+                f"Supported params: {sorted(self.supported_params)}."
+            )
+        return {k: v for k, v in params.items() if k in self.supported_params}
+
     def _query_webapi_batch(
         self,
         prompts_batch: list[str],
@@ -332,6 +360,8 @@ class WebAPILLMClassifier(LLMClassifier):
         context_size: int = None,
     ) -> list[ModelResponse]:
         """Query the web API with a batch of prompts and returns the json response.
+
+        TODO! Retry on non-successful API calls (e.g., RPM exceeded).
 
         Parameters
         ----------
@@ -347,29 +377,53 @@ class WebAPILLMClassifier(LLMClassifier):
         responses_batch : list[ModelResponse]
             The returned API responses for each prompt in the batch.
         """
+        # TODO
+        # Handle longer text generation
+        # if isinstance(question, ChainOfThoughtQA):
+        #     api_call_params = dict(
+        #         temperature=self._resolve_temperature(question),
+        #         max_tokens=question.max_new_tokens,
+        #         stream=False,
+        #         seed=self.seed,
+        #     )
+        #     # Use the user-supplied system prompt (via PromptConfig / --system-prompt)
+        #     # when set; otherwise fall back to the default CoT instruction.
+        #     if self.prompt_config.system_prompt is not None:
+        #         system_prompt = self.prompt_config.system_prompt()
+        #     else:
+        #         system_prompt = (
+        #             "You are a helpful assistant. Reason step-by-step about the question "
+        #             "and provide your final probability estimate. Your response MUST end "
+        #             "with 'Probability: X%' where X is a number between 0 and 100."
+        #         )
 
-        # Adapt number of forward passes
-        # > Single token answers should require only one forward pass
+        # Adapt number of forward passes for token-probability based methods.
         if question.num_forward_passes == 1:
+            # Single token answers should require only one forward pass
             num_forward_passes = 1
-
-        # NOTE: Models often generate "0." instead of directly outputting the fractional part
-        # > Therefore: for multi-token answers, extra forward passes may be required
         else:
+            # NOTE: Models often generate "0." instead of directly outputting the fractional part
+            # > Therefore: for multi-token answers, extra forward passes may be required
             # Add extra tokens for textual prefix, e.g., "The probability is: ..."
             num_forward_passes = question.num_forward_passes + 2
 
+        # Build API parameter calls for the two decoding paths
+        # Free-form text generation: sample a full response and parse the answer from the generated text
         if question.use_generated_text:
             api_call_params = dict(
-                temperature=1,
-                max_completion_tokens=self.inference_kwargs["max_new_tokens"],
+                temperature=self._resolve_temperature(question),  # 1
+                max_completion_tokens=self.inference_kwargs["max_new_tokens"],  # question.max_new_tokens,
                 stream=False,
                 seed=self.seed,
             )
         else:
+            # Token-probability decoding: read top_logprobs of the answer tokens
+            # Temperature is always 0 here: MC/numeric decode from the returned
+            # top_logprobs (which OpenAI-style APIs report untempered), so sampling
+            # would only add noise to the multi-pass token trajectory.
             api_call_params = dict(
-                temperature=1,
-                max_completion_tokens=max(num_forward_passes, self.inference_kwargs.get("max_new_tokens", 0)),
+                temperature=0,
+                max_tokens=num_forward_passes,  # max(num_forward_passes, self.inference_kwargs.get("max_new_tokens", 0)),
                 stream=False,
                 seed=self.seed,
                 logprobs=True,
@@ -381,11 +435,13 @@ class WebAPILLMClassifier(LLMClassifier):
             logging.debug("Removed 'seed' from API call parameters for Claude model, as it is not supported.")
 
         # Set extra arguments for reasoning-augmented models
-        _OPENAI_EFFORT_LEVELS = ("none", "minimal", "low", "medium", "high", "xhigh")
+        _OPENAI_EFFORT_LEVELS = ("none", "minimal", "low", "medium", "high", "xhigh", "auto")
         reasoning = self.inference_kwargs.get("reasoning")
         logging.debug(f"reasoning is set to: {reasoning}")
         if reasoning is not None and reasoning != "0":
             if self.model_name.startswith("claude"):
+                # Claude models allow to pass reasoning budget either as number of tokens or as fraction of max_new_tokens
+                # minimum number of tokens is restricted to 1024
                 val = float(reasoning)
                 max_new_tokens = self.inference_kwargs["max_new_tokens"]
                 budget_tokens = int(val * max_new_tokens) if val <= 1.0 else int(val)
@@ -393,7 +449,7 @@ class WebAPILLMClassifier(LLMClassifier):
                 assert budget_tokens <= max_new_tokens, (
                     f"budget_tokens ({budget_tokens}) must not exceed max_new_tokens ({max_new_tokens})"
                 )
-                logging.warning(f"Thinking enabled for Claude model with budget_tokens={budget_tokens}.")
+                logging.info(f"Thinking enabled for Claude model with budget_tokens={budget_tokens}.")
                 api_call_params["thinking"] = {"type": "enabled", "budget_tokens": budget_tokens}
             elif get_model_developer(self.model_name) == "OpenAI":
                 # NOTE: reasoning_effort accepts: "none", "minimal", "low", "medium", "high", "xhigh"
@@ -402,7 +458,7 @@ class WebAPILLMClassifier(LLMClassifier):
                     raise ValueError(
                         f"Invalid reasoning effort '{reasoning}' for OpenAI model. Must be one of: {_OPENAI_EFFORT_LEVELS}"
                     )
-                logging.warning(f"Thinking enabled for OpenAI model with reasoning_effort='{reasoning}'.")
+                logging.info(f"Thinking enabled for OpenAI model with reasoning_effort='{reasoning}'.")
                 if self.api_type == "responses":
                     # summary only available via responses API, but that does not support logprobs
                     # -> only use if extracting answer from generated text
@@ -412,44 +468,51 @@ class WebAPILLMClassifier(LLMClassifier):
                     }
                 else:
                     api_call_params["reasoning_effort"] = reasoning
-        if set(api_call_params.keys()) - self.supported_params:
+
+        api_call_params = self._filter_supported_params(api_call_params)
+
+        # `logprobs` are load-bearing for token-probability decoding: dropping
+        # them would only fail later, deep inside response decoding. Fail fast
+        # instead (e.g. OpenAI o1/o3 don't support logprobs). The generated-text
+        # path parses the answer from text and intentionally omits logprobs.
+        if not question.use_generated_text and "logprobs" not in api_call_params:
             raise RuntimeError(
-                f"Unsupported API parameters for model '{self.deployment_name}': "
-                f"{set(api_call_params.keys()) - self.supported_params}"
+                f"Model '{self.model_name}' does not support `logprobs`, which "
+                f"are required to decode multiple-choice/numeric risk estimates. "
+                f"Use freefrom text generation instead."
             )
 
-        # Get system prompt: use the one from PromptConfig if set, otherwise fall back
-        # to the QA subclass default (None disables the system role entirely).
-        if self.prompt_config is not None and self.prompt_config.system_prompt is not None:
-            system_prompt = self.prompt_config.system_prompt()
-        elif isinstance(question, DirectNumericQA):
-            system_prompt = """Your response MUST end with your probability estimate in the following format:
-                        Probability: X%
-                        where X is a number between 0 and 100.
-                        """
-        elif isinstance(question, MultipleChoiceQA):
-            system_prompt = "Your response MUST be a single letter."
+        # Get system prompt depending on Q&A type
+        if isinstance(question, DirectNumericQA) or isinstance(question, MultipleChoiceQA):
+            # Use the system prompt carried by PromptConfig (always the QA subclass
+            # default unless the caller explicitly cleared it). `None` disables the
+            # system role entirely. Bind unconditionally so it is always defined.
+            system_prompt = self.prompt_config.system_prompt() if self.prompt_config.system_prompt is not None else None
         else:
             raise ValueError(f"Unknown question type '{type(question)}'.")
         logging.debug(f"System prompt: {system_prompt}")
 
         # Query model for each prompt in the batch
-        requests_data = [
-            {
-                "model": self.deployment_name,
-                "api_base": (
-                    os.environ["AZURE_AI_API_BASE"]
-                    if self.deployment_name.startswith("azure_ai")
-                    else os.environ["AZURE_API_BASE"]
-                ),
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt},
-                ],
-                **api_call_params,
-            }
-            for prompt in prompts_batch
-        ]
+        requests_data = []
+        for prompt in prompts_batch:
+            # Construct prompt messages (omit the system role when disabled)
+            messages = []
+            if system_prompt is not None:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": prompt})
+
+            requests_data.append(
+                {
+                    "model": self.deployment_name,
+                    "api_base": (
+                        os.environ["AZURE_AI_API_BASE"]
+                        if self.deployment_name.startswith("azure_ai")
+                        else os.environ["AZURE_API_BASE"]
+                    ),
+                    "messages": messages,
+                    **api_call_params,
+                }
+            )
 
         logging.debug(f"API call parameters: {api_call_params}")
         logging.debug(f"First request data: {requests_data[0]}")
@@ -569,20 +632,27 @@ class WebAPILLMClassifier(LLMClassifier):
             # OpenAI-style API returns string keys; we synthesise an integer ID per
             # unique string so we can share the same scatter/decode helper as the
             # vLLM backend (which provides real token IDs directly).
+            assert choice.logprobs is not None
             token_choices_all_passes = choice.logprobs.content
+            assert token_choices_all_passes is not None
 
             token_logprobs_per_pass = [
                 {token_metadata.token: token_metadata.logprob for token_metadata in top_token_logprobs.top_logprobs}
                 for top_token_logprobs in token_choices_all_passes
             ]
 
+            # Decode model output into risk estimates
+            # 1. Construct vocabulary dict for this response
             all_tokens = sorted({tok for d in token_logprobs_per_pass for tok in d})
             synthetic_vocab = {tok: idx for idx, tok in enumerate(all_tokens)}
 
+            # 2. Parse `token_logprobs_per_pass` into a list of num_passes dicts
+            #    mapping synthetic token ID to log probability
             per_pass_topk = [
                 {synthetic_vocab[tok]: lp for tok, lp in pass_logprobs.items()} for pass_logprobs in token_logprobs_per_pass
             ]
 
+            # Get risk estimate
             risk_estimate = decode_topk_logprobs_to_risk_estimate(
                 per_pass_topk,
                 tokenizer_vocab=synthetic_vocab,
@@ -596,7 +666,8 @@ class WebAPILLMClassifier(LLMClassifier):
                     _match = re.match(r"[-+]?\d*\.\d+|\d+", response_message)
                     if _match is None:
                         raise ValueError(f"No numeric token found in '{response_message}'")
-                    risk_estimate_full_text = float(_match.group())
+                    numeric_response = _match.group()
+                    risk_estimate_full_text = float(numeric_response)
 
                     if not np.isclose(risk_estimate, risk_estimate_full_text, atol=1e-2):
                         logging.info(
@@ -620,7 +691,8 @@ class WebAPILLMClassifier(LLMClassifier):
                         f"Falling back on standard risk estimate of {risk_estimate}."
                     )
 
-            return risk_estimate, token_probs_array
+            return risk_estimate, token_logprobs_per_pass
+            # TODO: consider passing risk_estimate, None - as logprobs carry no additional metadata, and not used downstream
 
     def _query_prompt_risk_estimates_batch(
         self,
@@ -661,41 +733,41 @@ class WebAPILLMClassifier(LLMClassifier):
         )
 
         # Parse API responses and decode model output
-        risk_estimates_batch = []
-        outputs_batch = []
+        risk_estimates_batch: list = []
+        outputs_batch: list = []
         for i, response in enumerate(api_responses_batch):
-            if response:
-                try:
-                    if self.api_type == "completion":
-                        message_content = response.choices[0].message.content
-                    else:
-                        # Responses API
-                        message_content = ""
-                        for item in response.output:
-                            if item.type == "message":
-                                for content in item.content:
-                                    if content.type == "output_text":
-                                        message_content += content.text + "\n"
-                    if message_content is not None:
-                        logging.debug(f"Response {i + 1}: {message_content[:100]}...")  # Print first 100 chars
-                    else:
-                        logging.debug(f"Response {i + 1} is None.")
-                    risk_est, out = self._decode_risk_estimate_from_api_response(response, question)
-                    risk_estimates_batch.append(risk_est)
-                    outputs_batch.append(out)  # if not question.use_generated_text else out.replace(";", ""))
-                except (AttributeError, IndexError, TypeError) as e:
-                    logging.error(f"Response {i + 1}: Could not parse response content. Error: {e}")
-                    logging.error(f"Raw response: {response}")
-                    logging.error("Adding NaN value.")
-                    risk_estimates_batch.append(np.nan)
-                    outputs_batch.append(None)
-            else:
-                logging.error(f"Response {i + 1}: Request failed. Adding NaN value. ")
+            if not response:
+                logging.error(f"Response {i + 1}: Request failed (empty response). Adding NaN value.")
+                risk_estimates_batch.append(np.nan)
+                outputs_batch.append(None)
+                continue
+            try:
+                if self.api_type == "completion":
+                    message_content = response.choices[0].message.content
+                else:
+                    # Responses API
+                    message_content = ""
+                    for item in response.output:
+                        if item.type == "message":
+                            for content in item.content:
+                                if content.type == "output_text":
+                                    message_content += content.text + "\n"
+                if message_content is not None:
+                    logging.debug(f"Response {i + 1}: {message_content[:100]}...")  # Print first 100 chars
+                else:
+                    logging.debug(f"Response {i + 1} is None.")
+                risk_est, out = self._decode_risk_estimate_from_api_response(response, question)
+                risk_estimates_batch.append(risk_est)
+                outputs_batch.append(out)
+            except (AttributeError, IndexError, TypeError, AssertionError, ValueError) as e:
+                logging.error(f"Response {i + 1}: Could not parse response content. Error: {e}")
+                logging.error(f"Raw response: {response}")
+                logging.error("Adding NaN value.")
                 risk_estimates_batch.append(np.nan)
                 outputs_batch.append(None)
 
         self.track_stats(batch_size=len(prompts_batch))
-        return risk_estimates_batch, outputs_batch
+        return np.asarray(risk_estimates_batch), outputs_batch
 
     # def track_cost_callback(
     #     self,

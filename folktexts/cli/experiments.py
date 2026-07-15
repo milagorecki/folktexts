@@ -1,6 +1,5 @@
 """General constants and helper classes to run the main experiments on htcondor."""
 
-# monkey patch for classad
 import base64
 import collections
 import collections.abc
@@ -14,6 +13,7 @@ import htcondor
 
 from folktexts._utils import hash_dict
 
+# monkey patch for classad
 collections.MutableMapping = collections.abc.MutableMapping  # type: ignore[attr-defined]
 
 import classad  # noqa: E402

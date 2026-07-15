@@ -73,9 +73,7 @@ passthrough_preprocessor_config = (
 
 # Map of BRFSS column names to ColumnToText objects
 brfss_columns_map: dict[str, _ColumnToText] = {
-    col_mapper.name: col_mapper
-    for col_mapper in brfss_columns.__dict__.values()
-    if isinstance(col_mapper, _ColumnToText)
+    col_mapper.name: col_mapper for col_mapper in brfss_columns.__dict__.values() if isinstance(col_mapper, _ColumnToText)
 }
 
 
@@ -112,9 +110,7 @@ class TableshiftBRFSSTaskMetadata(TaskMetadata):
         """Create an Tableshift task object from the given parameters."""
         # Resolve target column name
         target_col_name = (
-            target_threshold.apply_to_column_name(target)
-            if target_threshold is not None and target is not None
-            else target
+            target_threshold.apply_to_column_name(target) if target_threshold is not None and target is not None else target
         )
 
         # Get default Q&A interfaces for this task's target column

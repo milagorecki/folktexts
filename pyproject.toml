@@ -32,7 +32,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 
-version = "0.1.1"
+version = "0.7.1"
 requires-python = ">=3.8"
 dynamic = [
     "readme",
@@ -101,6 +101,11 @@ ignore_missing_imports = true
 no_implicit_optional = false
 exclude = ["build", "doc"]
 
+[[tool.mypy.overrides]]
+module = ["transformers.*"]
+ignore_errors = true
+follow_imports = "skip"
+
 # Tox
 [tool.tox]
 legacy_tox_ini = """
@@ -131,6 +136,7 @@ commands = ruff check {posargs:folktexts tests}
 description = run type checks
 deps =
     mypy>=1.9
+    types-requests
 commands =
     mypy {posargs:folktexts tests}
 """

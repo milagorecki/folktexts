@@ -128,9 +128,7 @@ class TaskMetadata:
         missing_cols = set(required_cols) - set(available_cols)
 
         if raise_ and len(missing_cols) > 0:
-            raise ValueError(
-                f"The following required task columns were not found in the dataset: {list(missing_cols)};"
-            )
+            raise ValueError(f"The following required task columns were not found in the dataset: {list(missing_cols)};")
 
         return len(missing_cols) == 0  # Return True if all columns are present
 
@@ -183,9 +181,7 @@ class TaskMetadata:
     @use_numeric_qa.setter
     def use_numeric_qa(self, use_numeric_qa: bool):
         """Setter for whether to use numeric Q&A instead of multiple-choice Q&A prompts."""
-        logging.info(
-            f"Changing Q&A mode for task '{self.name}' to {'numeric' if use_numeric_qa else 'multiple-choice'}."
-        )
+        logging.info(f"Changing Q&A mode for task '{self.name}' to {'numeric' if use_numeric_qa else 'multiple-choice'}.")
         self._use_numeric_qa = use_numeric_qa
 
     @classmethod
@@ -227,7 +223,7 @@ class TaskMetadata:
         return task
 
     @property
-    def question(self) -> QAInterface:
+    def question(self) -> MultipleChoiceQA | DirectNumericQA:
         """Getter for the Q&A interface for this task."""
 
         # Resolve direct numeric Q&A vs multiple-choice Q&A
@@ -251,7 +247,7 @@ class TaskMetadata:
         """Returns a mapping between sensitive attribute values and their descriptions."""
         if self.sensitive_attribute is None:
             logging.warning("No sensitive attribute provided for this task.")
-            return {}
+            return lambda value: str(value)
         return self.cols_to_text[self.sensitive_attribute].value_map
 
     def create_task_with_feature_subset(self, feature_subset: Iterable[str]) -> Self:

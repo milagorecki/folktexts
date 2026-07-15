@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Callable
+from typing import Any, Callable
 
 import pandas as pd
 
@@ -18,7 +18,6 @@ class ColumnToText:
         value_map: dict[object, str] | Callable | None = None,
         question: QAInterface | None = None,
         connector_verb: str = "is",
-        verbalize: Callable = None,  # template sentence, function of value
         missing_value_fill: str = "N/A",
         use_value_map_only: bool = False,
     ):
@@ -41,8 +40,6 @@ class ColumnToText:
         connector_verb : str, optional
             Which verb to use when connecting the column's description to its
             value; by default "is".
-        verbalize : Callable, optional
-            Function of the column value to generate a full sentence as description.
         missing_value_fill : str, optional
             The value to use when the column's value is not found in the
             `value_map`, by default "N/A".
@@ -54,14 +51,13 @@ class ColumnToText:
             of the form:
             `"The [short_description] [connector_verb] [value_map.get(val)]".`
         """
-        self._name = name
-        self._short_description = short_description
-        self._value_map = value_map
-        self._question = question
-        self._connector_verb = connector_verb
-        self._missing_value_fill = missing_value_fill
-        self._use_value_map_only = use_value_map_only
-        self._verbalize = verbalize
+        self._name: str = name
+        self._short_description: str = short_description
+        self._value_map: dict[object, str] | Callable[..., Any] | None = value_map
+        self._question: QAInterface | None = question
+        self._connector_verb: str = connector_verb
+        self._missing_value_fill: str = missing_value_fill
+        self._use_value_map_only: bool = use_value_map_only
 
         # If a `question` was provided and `value_map` was not
         # > infer `value_map` from question (`value_map` is required for `__getitem__`)

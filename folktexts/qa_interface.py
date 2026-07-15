@@ -60,6 +60,17 @@ GEMMA_CHAT_PROMPT = "The provided information suggests that the answer is"
 # space and may degrade calibration for low-probability cases).
 NUMERIC_CHAT_PROMPT = "Answer (between 0 and 1): 0."
 
+# Answer-format instructions appended to the system prompt on the generated-text
+# path so the model emits output the text parsers can extract. Only applied when
+# `use_generated_text=True`: the token-probability path reads logprobs directly
+# and relies on the chat-prompt prefill instead, so a format instruction there
+# would only fight that prefill. Each string matches its parser (MCQ ->
+# `_ANSWER_PATTERNS` "Answer:"; numeric -> `_PROBABILITY_PATTERNS` "Probability: X%").
+MCQ_GENERATED_TEXT_FORMAT = "End your response with 'Answer: X', where X is the letter of your chosen option."
+NUMERIC_GENERATED_TEXT_FORMAT = (
+    "End your response with 'Probability: X%', where X is a number between 0 and 100."
+)
+
 
 @dataclass(frozen=True)
 class QAInterface(ABC):
@@ -74,6 +85,34 @@ class QAInterface(ABC):
     # `None` means "no default" (i.e. no system prompt / no chat prefill).
     default_system_prompt: ClassVar[str | None] = SYSTEM_PROMPT
     default_chat_prompt: ClassVar[str | None] = ANTHROPIC_CHAT_PROMPT
+
+    # Answer-format instruction appended to the default system prompt on the
+    # generated-text path (see `get_default_system_prompt`). `None` = no
+    # instruction. Overridden per concrete question type.
+    format_instruction: ClassVar[str | None] = None
+
+    # Default sampling temperature for *text-generation* prompting, read via
+    # `LLMClassifier._resolve_temperature`. Only meaningful for
+    # text generation: token-probability methods (multiple-choice,
+    # direct-numeric) read the untempered next-token distribution on every
+    # backend and never sample, so temperature does not
+    # apply to them. A `ClassVar` (not a dataclass field) so it does not
+    # affect the frozen dataclass hash / result-cache identity.
+    default_temperature: ClassVar[float] = 0.0
+
+    def get_default_system_prompt(self) -> str | None:
+        """Default system prompt for this question.
+
+        On the generated-text path (`use_generated_text=True`) the answer is
+        parsed from free-form output, so the type's ``format_instruction`` is
+        appended to steer the model into the parser's expected format. The
+        token-probability path omits it (it reads logprobs and relies on the
+        chat-prompt prefill instead).
+        """
+        base = self.default_system_prompt
+        if self.use_generated_text and base is not None and self.format_instruction:
+            return f"{base.rstrip()}\n{self.format_instruction}"
+        return base
 
     def get_answer_prefix(self) -> str:
         """Returns the answer label that follows the question (e.g. 'Answer:')."""
@@ -183,6 +222,7 @@ class DirectNumericQA(QAInterface):
 
     default_system_prompt: ClassVar[str] = NUMERIC_SYSTEM_PROMPT
     default_chat_prompt: ClassVar[str] = NUMERIC_CHAT_PROMPT
+    format_instruction: ClassVar[str | None] = NUMERIC_GENERATED_TEXT_FORMAT
 
     def get_answer_prefix(self) -> str:
         if self.answer_probability:
@@ -315,7 +355,7 @@ class Choice:
 
     def get_numeric_value(self) -> float:
         """Returns the numeric value of the choice."""
-        return self.numeric_value if self.numeric_value is not None else float(str(self.data_value))
+        return self.numeric_value if self.numeric_value is not None else float(str(self.data_value))  # type: ignore
 
 
 @dataclass(frozen=True, eq=True)  # NOTE: kw_only=True requires Python 3.10
@@ -325,6 +365,8 @@ class MultipleChoiceQA(QAInterface):
     num_forward_passes: int = 1  # NOTE: overrides superclass default
     choices: tuple[Choice, ...] = dataclasses.field(default_factory=tuple)
     _answer_keys_source: tuple[str, ...] = dataclasses.field(default_factory=lambda: tuple(_ALPHABET))
+
+    format_instruction: ClassVar[str | None] = MCQ_GENERATED_TEXT_FORMAT
 
     def __post_init__(self):
         if not self.choices:
@@ -414,6 +456,7 @@ class MultipleChoiceQA(QAInterface):
 
         prompt = f"Question: {self.text}\n{choice_str}"
         if not self.use_generated_text and with_answer_prefill:
+            # TODO: check this is right place to filter based on use_generated_text
             prompt += f"\n{self.get_answer_prefix()}"
         return prompt
 

@@ -36,9 +36,9 @@ from .prompting import (
 from .sipp import SIPPDataset, SIPPTaskMetadata
 from .task import TaskMetadata
 
-DEFAULT_SEED = 42
-DEFAULT_FIT_THRESHOLD_N = 100
-DEFAULT_ROOT_RESULTS_DIR = Path(".")
+DEFAULT_SEED: int = 42
+DEFAULT_FIT_THRESHOLD_N: int = 100
+DEFAULT_ROOT_RESULTS_DIR: Path = Path(".")
 
 
 @dataclasses.dataclass(frozen=True, eq=True)
@@ -58,6 +58,8 @@ class BenchmarkConfig:
         models; a float in (0, 1] (fraction of max_new_tokens) or a positive
         integer string for Claude (literal budget_tokens, min 1024). Ignored
         for non-reasoning models. Default is None.
+        #TODO When enabled, calls `apply_chat_template(..., reasoning=value)` and the resulting
+        `<think>...</think>` block is stripped before regex extraction.
     few_shot_config : FewShotConfig | None, optional
         Few-shot prompting configuration (number of shots, composition, example
         order, reuse). ``None`` means zero-shot prompting.
@@ -68,14 +70,13 @@ class BenchmarkConfig:
         The assistant prefill text to use with chat templates. Defaults to
         ``PROMPT_DEFAULT``, which selects the appropriate default from the QA
         subclass (``ANTHROPIC_CHAT_PROMPT`` for MC, ``NUMERIC_CHAT_PROMPT`` for
-        numeric, ``None`` for CoT). Pass ``None`` explicitly to disable the
-        assistant prefill entirely.
+        numeric). Pass ``None`` explicitly to disable the assistant prefill entirely.
     system_prompt : str | None, optional
         System prompt text to use with chat templates. Defaults to
         ``PROMPT_DEFAULT``, which selects the appropriate default from the QA
         subclass (``SYSTEM_PROMPT`` for MC, ``NUMERIC_SYSTEM_PROMPT`` for
-        numeric, ``None`` for CoT). Pass ``None`` explicitly to disable the
-        system role (e.g. for Gemma-style tokenizers that reject it).
+        numeric). Pass ``None`` explicitly to disable the system role
+        (e.g. for Gemma-style tokenizers that reject it).
     batch_size : int | None, optional
         The batch size to use for inference.
     context_size : int | None, optional
@@ -91,6 +92,11 @@ class BenchmarkConfig:
         `{"column_name": "value"}`.
     seed : int, optional
         Random seed -- to set for reproducibility.
+    temperature : float | None, optional
+        Sampling-temperature override for text-generation (chain-of-thought)
+        prompting. When None (default), text generation uses greedy decoding (0.0),
+        or 1.0 in thinking mode. Ignored (with a warning) for multiple-choice /
+        numeric prompting, which reads untempered token probabilities.
     prompt_variation : dict | None, optional
         Dictionary of prompt style overrides (e.g. ``{"format": "bullet",
         "connector": "is"}``). ``None`` means no variation is applied.
@@ -109,6 +115,7 @@ class BenchmarkConfig:
     feature_subset: list[str] | None = None
     population_filter: dict | None = None
     seed: int = DEFAULT_SEED
+    temperature: float | None = None
     prompt_variation: dict | None = None
 
     @classmethod
@@ -134,18 +141,37 @@ class BenchmarkConfig:
 
     @classmethod
     def load_from_disk(cls, path: str | Path):
-        """Load the configuration from disk."""
+        """Load the configuration from disk (tolerant of pre-refactor JSON)."""
         obj = load_json(path)
-        if isinstance(obj, dict):
-            if isinstance(obj.get("few_shot_config"), dict):
-                obj["few_shot_config"] = FewShotConfig(**obj["few_shot_config"])
-            # Restore PROMPT_DEFAULT sentinel from its serialized form.
-            for key in ("system_prompt", "chat_prompt"):
-                if obj.get(key) == "default":
-                    obj[key] = PROMPT_DEFAULT
-            return cls(**obj)
-        else:
+        if not isinstance(obj, dict):
             raise ValueError(f"Invalid configuration file '{path}'.")
+
+        # Back-compat: translate the pre-refactor flat few-shot keys into a FewShotConfig.
+        legacy_n_shots = obj.pop("few_shot", None)
+        legacy_reuse = obj.pop("reuse_few_shot_examples", False)
+        legacy_balance = obj.pop("balance_few_shot_examples", False)
+        if legacy_n_shots and obj.get("few_shot_config") is None:
+            obj["few_shot_config"] = FewShotConfig(
+                n_shots=legacy_n_shots,
+                reuse_examples=legacy_reuse,
+                compose="balanced" if legacy_balance else "random",
+            )
+
+        if isinstance(obj.get("few_shot_config"), dict):
+            obj["few_shot_config"] = FewShotConfig(**obj["few_shot_config"])
+        # Restore PROMPT_DEFAULT sentinel from its serialized form.
+        for key in ("system_prompt", "chat_prompt"):
+            if obj.get(key) == "default":
+                obj[key] = PROMPT_DEFAULT
+
+        # Drop any remaining unknown keys (removed fields, or result-file metadata)
+        # so old config/result JSON still loads instead of raising TypeError.
+        valid = {f.name for f in dataclasses.fields(cls)}
+        unknown = set(obj) - valid
+        if unknown:
+            logging.warning(f"Ignoring unknown config keys when loading '{path}': {sorted(unknown)}")
+            obj = {k: v for k, v in obj.items() if k in valid}
+        return cls(**obj)
 
     def save_to_disk(self, path: str | Path):
         """Save the configuration to disk."""
@@ -164,7 +190,11 @@ class BenchmarkConfig:
         cfg["feature_subset"] = tuple(cfg["feature_subset"]) if cfg["feature_subset"] else None
         cfg["population_filter_hash"] = hash_dict(cfg["population_filter"]) if cfg["population_filter"] else None
         cfg["prompt_variation"] = hash_dict(cfg["prompt_variation"]) if cfg["prompt_variation"] else None
-        cfg["few_shot_config"] = hash(self.few_shot_config) if self.few_shot_config else None
+        # Hash the few-shot config deterministically. Python's builtin hash() is salted
+        # (PYTHONHASHSEED), so hash(self.few_shot_config) gave result-file names a different
+        # name every process; hash_dict (json-based) is stable. cfg["few_shot_config"] is
+        # already the asdict form from the top-level dataclasses.asdict(self) above.
+        cfg["few_shot_config"] = hash_dict(cfg["few_shot_config"]) if cfg["few_shot_config"] else None
         return int(hash_dict(cfg), 16)
 
 
@@ -236,9 +266,11 @@ class Benchmark:
         cnf = dataclasses.asdict(self.config)
         q = self.task.question
         if getattr(self.config, "system_prompt") is PROMPT_DEFAULT:
-            cnf["system_prompt"] = q.default_system_prompt
+            cnf["system_prompt"] = "default"
+            cnf["system_prompt_resolved"] = q.get_default_system_prompt()
         if getattr(self.config, "chat_prompt") is PROMPT_DEFAULT:
-            cnf["chat_prompt"] = q.default_chat_prompt
+            cnf["chat_prompt"] = "default"
+            cnf["chat_prompt_resolved"] = q.default_chat_prompt
 
         # Add info on model, task, and dataset
         cnf["model_name"] = self.model_name
@@ -572,10 +604,9 @@ class Benchmark:
         config = config.update(**kwargs)
 
         # Fetch ACS task and dataset
+        use_numeric_qa = config.numeric_risk_prompting
         acs_task = ACSTaskMetadata.get_task(
-            name=task_name,
-            use_numeric_qa=config.numeric_risk_prompting,
-            use_text_output_for_qa=config.use_generated_text,
+            name=task_name, use_numeric_qa=use_numeric_qa, use_text_output_for_qa=config.use_generated_text
         )
 
         acs_dataset = ACSDataset.make_from_task(task=acs_task, cache_dir=data_dir, **acs_dataset_configs)
@@ -648,7 +679,9 @@ class Benchmark:
         # Update config with any additional kwargs
         config = config.update(**kwargs)
 
-        # Fetch Tableshift task and dataset
+        # Fetch Tableshift task and dataset.
+        # Imported lazily: `tableshift` is an optional, heavy dependency — avoid
+        # paying its import cost on the common ACS-only path.
         from .ts import (  # noqa: PLC0415
             TableshiftBRFSSDataset,
             TableshiftBRFSSTaskMetadata,
@@ -661,7 +694,9 @@ class Benchmark:
         )
 
         tableshift_dataset = TableshiftBRFSSDataset.make_from_task(
-            task=tableshift_task, cache_dir=data_dir, **tableshift_dataset_configs
+            task=tableshift_task,
+            cache_dir=data_dir,
+            **tableshift_dataset_configs,
         )
 
         return cls.make_benchmark(
@@ -671,6 +706,8 @@ class Benchmark:
             tokenizer=tokenizer,
             max_api_rpm=max_api_rpm,
             config=config,
+            backend=backend,
+            model_name_or_path=model_name_or_path,
         )
 
     @classmethod
@@ -746,6 +783,8 @@ class Benchmark:
             tokenizer=tokenizer,
             max_api_rpm=max_api_rpm,
             config=config,
+            backend=backend,
+            model_name_or_path=model_name_or_path,
         )
 
     @staticmethod
@@ -773,20 +812,22 @@ class Benchmark:
 
     @staticmethod
     def _configure_task_question(task: TaskMetadata, config: BenchmarkConfig) -> None:
-        """Pick the Q&A interface (CoT / numeric / multiple-choice) on `task`.
+        """Pick the Q&A interface (numeric / multiple-choice) on `task`.
 
         `TaskMetadata.get_task` returns a cached singleton, so this method must
         also *clear* prior Q&A state when switching to plain MC: without an
-        explicit reset, a chat_mcq config (none of cot/enable_thinking/numeric
-        set) leaves whatever a previous CoT or numeric cell wrote on the task,
+        explicit reset, a chat_mcq config (none of enable_thinking/numeric
+        set) leaves whatever a previous numeric cell wrote on the task,
         and `task.question` keeps returning the stale interface — silently
-        dispatching `ChainOfThoughtQA` (max_new_tokens=8000) for what should be
-        a 1-token MC prediction.
+        dispatching the wrong QA type for what should be a 1-token MC prediction.
         """
         if config.numeric_risk_prompting:
             task.use_numeric_qa = True
         else:
-            # Plain multiple-choice
+            # Plain multiple-choice — clear any leftover state on
+            # the cached singleton. Both flags must be reset explicitly: the
+            # `use_numeric_qa = False` setter doesn't touch `_use_cot_qa`, and
+            # vice versa.
             task.use_numeric_qa = False
 
     @staticmethod
@@ -797,16 +838,43 @@ class Benchmark:
                 "Cannot use both few-shot prompting and chat template formatting. Please choose one or the other."
             )
 
-        if config.use_chat_template:
+        # The `use_generated_text` (CoT) path runs generation via
+        # `generate_text_batch`, which applies the tokenizer's chat template
+        # internally whenever `reasoning` is set (see `_apply_chat_template_batch`:
+        # `reasoning is None` -> raw prompts, no wrap). An outer
+        # `encode_row_prompt_chat` (`use_chat_template`) would then double-wrap.
+        if config.use_chat_template and config.use_generated_text and config.reasoning is not None:
             raise ValueError(
-                "Cannot combine `use_chat_template=True` with `cot_prompting` "
-                "or `enable_thinking`: the CoT path applies the tokenizer's "
-                "chat template internally inside `generate_text_batch`, so an "
-                "outer `encode_row_prompt_chat` would double-wrap the prompt. "
-                "Drop `--use-chat-template` when running with chain-of-thought."
+                "Cannot combine `use_chat_template=True` with "
+                "`use_generated_text=True` and a `reasoning` value: the "
+                "generation path applies the tokenizer's chat template "
+                "internally inside `generate_text_batch`, so an outer "
+                "`encode_row_prompt_chat` would double-wrap the prompt. "
+                "Drop `--use-chat-template` when running generated-text/reasoning."
             )
 
-        if not config.use_chat_template and (config.system_prompt is not None or config.chat_prompt is not None):
+        # Reasoning/thinking is incompatible with token-probability (logprob)
+        # decoding on every backend: thinking emits a trace *before* the answer,
+        # so the multi-pass logprob reader (1-2 forward passes) never sees the
+        # answer token, and Claude/OpenAI don't return logprobs with thinking
+        # enabled anyway. Require the text-extraction path instead of shipping a
+        # doomed request (which would otherwise surface as a temp!=1 / no-logprobs
+        # API error deep in the call).
+        if config.reasoning is not None and config.reasoning != "0" and not config.use_generated_text:
+            raise ValueError(
+                f"Reasoning/thinking (`reasoning={config.reasoning!r}`) requires text-based "
+                "answer extraction (`use_generated_text=True`): the logprob path reads "
+                "untempered top-logprobs over 1-2 forward passes and cannot capture an "
+                "answer that follows a thinking trace (and Claude/OpenAI don't return "
+                "logprobs with thinking). Re-run with --use-generated-text."
+            )
+
+        def _user_set(v) -> bool:
+            # PROMPT_DEFAULT (unset) and None (explicitly disabled) are not user-provided
+            # values, so they must not trigger the chat-only warning.
+            return v is not None and v is not PROMPT_DEFAULT
+
+        if not config.use_chat_template and (_user_set(config.system_prompt) or _user_set(config.chat_prompt)):
             # Warn loudly: chat-only knobs are silently ignored on the
             # zero-shot / few-shot paths, which is rarely what the user wants.
             logging.warning(
@@ -831,7 +899,7 @@ class Benchmark:
         """
         if tokenizer is None:
             raise ValueError("Chat template formatting requires a local tokenizer. It is not supported for web API models.")
-        print("Using chat template prompting.")
+        logging.info("Using chat template prompting.")
 
         system_prompt, chat_prompt = resolve_chat_defaults(
             question=task.question,
@@ -890,14 +958,30 @@ class Benchmark:
                 system_prompt=config.system_prompt,
             )
 
-        logging.info(f"System prompt: {prompt_config.system_prompt() if prompt_config.system_prompt is not None else '(default)'}")
+        logging.info(
+            f"System prompt: {prompt_config.system_prompt() if prompt_config.system_prompt is not None else '(default)'}"
+        )
+
         if config.few_shot_config:
-            logging.info(f"Using few-shot prompting (n={config.few_shot_config.n_shots}).")
+            few_shot_config = config.few_shot_config
+            # When correcting order bias, encode_row is called once per answer-key
+            # permutation for each row. With reuse_examples=False (the default) each
+            # call re-samples fresh training examples, so the averaged score conflates
+            # example-selection variance with ordering variance. Force reuse so that
+            # all permutations of the same row see identical few-shot context.
+            if config.correct_order_bias and not few_shot_config.reuse_examples:
+                logging.warning(
+                    "correct_order_bias=True with reuse_examples=False: forcing "
+                    "reuse_examples=True so all answer-order permutations use the "
+                    "same few-shot examples."
+                )
+                few_shot_config = dataclasses.replace(few_shot_config, reuse_examples=True)
+            logging.info(f"Using few-shot prompting (n={few_shot_config.n_shots}).")
             return partial(
                 encode_row_prompt_few_shot,
                 task=task,
                 dataset=dataset,
-                few_shot_config=config.few_shot_config,
+                few_shot_config=few_shot_config,
                 prompt_config=prompt_config,
             ), prompt_config
 
@@ -958,7 +1042,7 @@ class Benchmark:
         # Update config with any additional kwargs
         config = config.update(**kwargs)
 
-        # Handle TaskMetadata object
+        # Handle TaskMetadata object and configure its Q&A mode from the config.
         if isinstance(task, str):
             task = TaskMetadata.get_task(task)
 
@@ -1002,10 +1086,19 @@ class Benchmark:
         )
 
         # Parse LLMClassifier parameters
+        if config.temperature is not None:  # and not use_generated text
+            logging.warning(
+                "`temperature` only affects text-generation (chain-of-thought) "
+                "prompting; multiple-choice/numeric prompting reads untempered "
+                "token probabilities, so this setting will be ignored."
+            )
+
+        # Parse LLMClassifier parameters
         llm_inference_kwargs: dict[str, Any] = {
             "correct_order_bias": config.correct_order_bias,
             "reasoning": config.reasoning,
             "prompt_config": prompt_config,  # may be patched (e.g. Gemma drops system_prompt)
+            "temperature": config.temperature,
         }
         if config.batch_size is not None:
             llm_inference_kwargs["batch_size"] = config.batch_size
@@ -1016,6 +1109,7 @@ class Benchmark:
 
         # Create LLMClassifier object
         resolved_backend = cls._resolve_backend(backend=backend, model=model)
+
         if resolved_backend == "webapi":
             llm_clf = WebAPILLMClassifier(
                 model_name=model,
@@ -1048,7 +1142,12 @@ class Benchmark:
             logging.info(f"Using local transformers model: {llm_clf.model_name}")
 
         logging.info("Exemplary row encoding")
-        logging.info(llm_clf.encode_row(dataset.sample_n_train_examples(n=1)[0].iloc[0]))
+        logging.info(
+            # reuse_examples=True avoids advancing the dataset's RNG at construction
+            # time, which would shift the random stream for all subsequent few-shot
+            # example draws and threshold fitting.
+            llm_clf.encode_row(dataset.sample_n_train_examples(n=1, reuse_examples=True)[0].iloc[0])
+        )
 
         return cls(
             llm_clf=llm_clf,
