@@ -13,13 +13,13 @@ Tests guard:
 - Tokens absent from the top-K get probability 0 — nothing in the helper
   pretends those tokens have signal.
 """
+
 from __future__ import annotations
 
 import math
 
 import numpy as np
 import pytest
-
 from folktexts.llm_utils import decode_topk_logprobs_to_risk_estimate
 from folktexts.qa_interface import Choice, DirectNumericQA, MultipleChoiceQA
 
@@ -43,16 +43,19 @@ def _numeric_question() -> DirectNumericQA:
 # MultipleChoiceQA: top-K logprobs → choice probability
 # ----------------------------------------------------------------------
 
+
 class TestMultipleChoiceDecoding:
     def test_binary_returns_positive_choice_probability(self):
         # Vocab pins ids for the answer-letter prefix variants. The QA decoder
         # tries multiple prefixes; here only " A" / " B" are populated.
         tokenizer_vocab = {" A": 1, " B": 2, " C": 3}
         # Single forward pass; logprobs ≈ p(A)=0.2, p(B)=0.8.
-        per_pass_topk = [{
-            1: math.log(0.2),
-            2: math.log(0.8),
-        }]
+        per_pass_topk = [
+            {
+                1: math.log(0.2),
+                2: math.log(0.8),
+            }
+        ]
         risk = decode_topk_logprobs_to_risk_estimate(
             per_pass_topk,
             tokenizer_vocab=tokenizer_vocab,
@@ -68,13 +71,17 @@ class TestMultipleChoiceDecoding:
         # other prefixes; decoder should pick the prefix variant with highest
         # total probability mass.
         tokenizer_vocab = {
-            " A": 1, " B": 2,         # space prefix (dominant)
-            "A": 11, "B": 12,         # bare prefix (no mass)
+            " A": 1,
+            " B": 2,  # space prefix (dominant)
+            "A": 11,
+            "B": 12,  # bare prefix (no mass)
         }
-        per_pass_topk = [{
-            1: math.log(0.4),
-            2: math.log(0.6),
-        }]
+        per_pass_topk = [
+            {
+                1: math.log(0.4),
+                2: math.log(0.6),
+            }
+        ]
         risk = decode_topk_logprobs_to_risk_estimate(
             per_pass_topk,
             tokenizer_vocab=tokenizer_vocab,
@@ -101,10 +108,12 @@ class TestMultipleChoiceDecoding:
         # rather than write past the array end. Models with extra tokens
         # beyond model.config.vocab_size (Gemma-3, Llama-3.2) hit this.
         tokenizer_vocab = {" A": 1, " B": 99}  # 99 ≥ vocab_dim=10
-        per_pass_topk = [{
-            1: math.log(0.7),
-            99: math.log(0.3),
-        }]
+        per_pass_topk = [
+            {
+                1: math.log(0.7),
+                99: math.log(0.3),
+            }
+        ]
         risk = decode_topk_logprobs_to_risk_estimate(
             per_pass_topk,
             tokenizer_vocab=tokenizer_vocab,
@@ -118,6 +127,7 @@ class TestMultipleChoiceDecoding:
 # ----------------------------------------------------------------------
 # DirectNumericQA: top-K logprobs across multiple passes → float in [0,1]
 # ----------------------------------------------------------------------
+
 
 class TestNumericDecoding:
     def test_two_passes_concatenate_argmax_digits(self):
@@ -167,8 +177,8 @@ class TestNumericDecoding:
         tokenizer_vocab = {str(d): d for d in range(10)}
         tokenizer_vocab["."] = 11
         per_pass_topk = [
-            {5: math.log(0.9)},     # "5"
-            {11: math.log(0.9)},    # "."
+            {5: math.log(0.9)},  # "5"
+            {11: math.log(0.9)},  # "."
         ]
         risk = decode_topk_logprobs_to_risk_estimate(
             per_pass_topk,
@@ -205,6 +215,7 @@ class TestNumericDecoding:
 # ----------------------------------------------------------------------
 # Helper-level invariants (independent of QA mode)
 # ----------------------------------------------------------------------
+
 
 class TestHelperShapeInvariants:
     def test_zero_logprob_dicts_produce_a_finite_score(self):
@@ -243,11 +254,13 @@ class TestHelperShapeInvariants:
         # nor be counted (numpy's negative indexing would otherwise wrap
         # around silently).
         tokenizer_vocab = {" A": 1, " B": 2}
-        per_pass_topk = [{
-            1: math.log(0.5),
-            2: math.log(0.5),
-            -1: math.log(0.99),
-        }]
+        per_pass_topk = [
+            {
+                1: math.log(0.5),
+                2: math.log(0.5),
+                -1: math.log(0.99),
+            }
+        ]
         risk = decode_topk_logprobs_to_risk_estimate(
             per_pass_topk,
             tokenizer_vocab=tokenizer_vocab,

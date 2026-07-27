@@ -58,6 +58,4 @@ def test_render_fairness_plots(y_true, tmp_path):
         imgs_dir=tmp_path,
     )
 
-    assert {"roc_curve_per_subgroup_path", "calibration_curve_per_subgroup_path"}.issubset(
-        results.keys()
-    )
+    assert {"roc_curve_per_subgroup_path", "calibration_curve_per_subgroup_path"}.issubset(results.keys())
