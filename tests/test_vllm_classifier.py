@@ -15,6 +15,7 @@ import sys
 import types
 from dataclasses import dataclass
 
+import numpy as np
 import pytest
 
 # --------------------------------------------------------------------------
@@ -38,7 +39,13 @@ sys.modules["vllm"] = _fake_vllm
 
 # --- The classifier imports below resolve `vllm` to the stub above. -----
 from folktexts.classifier.vllm_classifier import VLLMClassifier  # noqa: E402
-from folktexts.qa_interface import Choice, DirectNumericQA, MultipleChoiceQA  # noqa: E402
+from folktexts.qa_interface import (  # noqa: E402
+    Choice,
+    DirectNumericQA,
+    MultipleChoiceQA,
+    TextMultipleChoiceQA,
+    TextNumericQA,
+)
 
 # --------------------------------------------------------------------------
 # Stub LLM / tokenizer / output objects
@@ -65,6 +72,13 @@ class _StubTokenizer:
     def add_special_tokens(self, *args, **kwargs):
         # No-op; classifier never touches this directly (load_vllm_model does).
         pass
+
+    def encode(self, text, add_special_tokens=False):
+        # Whitespace tokenization is enough for reasoning-token counting in tests.
+        return text.split()
+
+    def decode(self, token_ids, skip_special_tokens=False):
+        return " ".join(str(t) for t in token_ids)
 
 
 @dataclass
@@ -123,7 +137,14 @@ def _binary_mc_question() -> MultipleChoiceQA:
     )
 
 
-def _make_classifier(llm: _StubLLM, tokenizer: _StubTokenizer, *, vocab_dim: int, temperature: float | None = None):
+def _make_classifier(
+    llm: _StubLLM,
+    tokenizer: _StubTokenizer,
+    *,
+    vocab_dim: int,
+    temperature: float | None = None,
+    reasoning: str | None = None,
+):
     """Build a VLLMClassifier wired against stubs.
 
     We pass `model_name_or_path=None` to skip the AutoConfig.from_pretrained
@@ -137,6 +158,7 @@ def _make_classifier(llm: _StubLLM, tokenizer: _StubTokenizer, *, vocab_dim: int
         task="ACSIncome",
         model_name_or_path=None,
         temperature=temperature,
+        reasoning=reasoning,
     )
     clf._vocab_dim = vocab_dim
     return clf
@@ -262,7 +284,7 @@ class TestDirectNumericPath:
 
 
 class TestTemperatureResolution:
-    def _run(self, question, *, temperature=None):
+    def _run(self, question, *, temperature=None, reasoning=None):
         vocab = {" A": 1, " B": 2, **{str(d): d + 2 for d in range(10)}}
         tokenizer = _StubTokenizer(vocab, vocab_size=20)
         request_output = _StubRequestOutput(
@@ -277,7 +299,7 @@ class TestTemperatureResolution:
             ]
         )
         llm = _StubLLM(script=[[request_output]])
-        clf = _make_classifier(llm, tokenizer, vocab_dim=20, temperature=temperature)
+        clf = _make_classifier(llm, tokenizer, vocab_dim=20, temperature=temperature, reasoning=reasoning)
         clf._query_prompt_risk_estimates_batch(prompts_batch=["p"], question=question)
         return llm.last_sampling_params.temperature
 
@@ -286,6 +308,14 @@ class TestTemperatureResolution:
 
     def test_numeric_defaults_to_zero(self):
         assert self._run(DirectNumericQA(column="PINCP", text="dummy")) == 0.0
+
+    def test_textnumeric_defaults_to_greedy_without_thinking(self):
+        # No reasoning kwarg -> plain generated-text stays greedy.
+        assert self._run(TextNumericQA(column="PINCP", text="dummy")) == 0.0
+
+    def test_textnumeric_bumps_to_one_with_thinking(self):
+        # Thinking is driven by the classifier's `reasoning` kwarg, not a QA field.
+        assert self._run(TextNumericQA(column="PINCP", text="dummy"), reasoning="high") == 1.0
 
     def test_explicit_override_does_not_affect_mcq(self):
         # MC/numeric read the untempered next-token distribution: with vLLM's
@@ -296,6 +326,103 @@ class TestTemperatureResolution:
     def test_explicit_override_does_not_affect_numeric(self):
         q = DirectNumericQA(column="PINCP", text="dummy")
         assert self._run(q, temperature=2.0) == 0.0
+
+    def test_explicit_override_applies_to_generated_text(self):
+        # An explicit temperature overrides the generated-text default (and the
+        # thinking bump). MC/numeric above stay untempered at 0 either way.
+        q = TextNumericQA(column="PINCP", text="dummy")
+        assert self._run(q, temperature=0.25) == 0.25
+        assert self._run(q, temperature=0.25, reasoning="high") == 0.25
+
+
+# --------------------------------------------------------------------------
+# Generated-text path (regex extraction, not logprobs)
+# --------------------------------------------------------------------------
+
+
+class TestGeneratedTextPath:
+    """Text QA types must route to generation + regex, not the logprob path.
+
+    The stub tokenizer has no `chat_template`, so `_apply_chat_template_batch`
+    falls back to raw prompts; the stub LLM returns canned generated `text`.
+    """
+
+    def _run(self, question, generated: str, *, reasoning: str | None = None):
+        tokenizer = _StubTokenizer({" A": 1, " B": 2}, vocab_size=10)
+        request_output = _StubRequestOutput(outputs=[_StubCompletionOutput(text=generated)])
+        llm = _StubLLM(script=[[request_output]])
+        clf = _make_classifier(llm, tokenizer, vocab_dim=10, reasoning=reasoning)
+        risks, outputs = clf._query_prompt_risk_estimates_batch(
+            prompts_batch=["dummy prompt"],
+            question=question,
+        )
+        return risks, outputs, llm
+
+    def test_numeric_text_extracts_probability(self):
+        q = TextNumericQA(column="PINCP", text="dummy")
+        risks, outputs, llm = self._run(q, "I think... Probability: 80%")
+        assert risks[0] == pytest.approx(0.8, abs=1e-6)
+        # Went through generation (not the digit-constrained logprob path).
+        assert llm.last_sampling_params.logprobs is None
+        assert llm.last_sampling_params.allowed_token_ids is None
+        # Per-row response dict is surfaced for the base loop.
+        assert outputs[0]["response"].endswith("Probability: 80%")
+
+    def test_mcq_text_extracts_answer_key(self):
+        q = TextMultipleChoiceQA(
+            column="PINCP",
+            text="Is income above $50k?",
+            choices=(Choice("No", 0, 0.0), Choice("Yes", 1, 1.0)),
+        )
+        risks, outputs, _ = self._run(q, "Reasoning here. Answer: B")
+        assert risks[0] == pytest.approx(1.0, abs=1e-6)  # "B" == "Yes" (positive)
+        assert outputs[0]["response"].endswith("Answer: B")
+
+    def test_generated_text_greedy_by_default(self):
+        # Plain generated-text (no thinking) stays greedy/deterministic.
+        q = TextNumericQA(column="PINCP", text="dummy")
+        _, _, llm = self._run(q, "Probability: 50%")
+        assert llm.last_sampling_params.temperature == 0.0
+
+    def test_generated_text_thinking_bumps_temperature(self):
+        # With thinking/reasoning active, `_resolve_temperature` forces 1.0.
+        q = TextNumericQA(column="PINCP", text="dummy")
+        _, _, llm = self._run(q, "Probability: 50%", reasoning="high")
+        assert llm.last_sampling_params.temperature == 1.0
+
+    def test_strips_thinking_block_when_enabled(self):
+        # In thinking mode the vLLM backend runs `_postprocess_generated_text`,
+        # which drops everything up to and including `</think>`. The "20%" inside
+        # the thinking block must be ignored; only the post-`</think>` response
+        # counts, so the decoder MUST extract 0.85 (not 0.20).
+        tokenizer = _StubTokenizer({" A": 1, " B": 2}, vocab_size=10)
+        full_text = "Lots of reasoning, considering 20%, then more.\n</think>\nFinal answer: Probability: 85%."
+        llm = _StubLLM(script=[[_StubRequestOutput(outputs=[_StubCompletionOutput(text=full_text)])]])
+        clf = _make_classifier(llm, tokenizer, vocab_dim=10, reasoning="high")
+
+        risks, _outputs = clf._query_prompt_risk_estimates_batch(
+            prompts_batch=["dummy"],
+            question=TextNumericQA(column="PINCP", text="dummy"),
+        )
+        assert risks[0] == pytest.approx(0.85, abs=1e-6)
+        assert clf._regex_failed == 0
+
+    def test_failed_extraction_returns_nan(self):
+        # New contract: an unparsable generation yields NaN (not a silent 0.5),
+        # and the failure is tracked via the `_regex_failed`/`_regex_total`
+        # counters (our equivalents of upstream's `_cot_failed`/`_cot_total`) so
+        # the downstream warning logic can fire.
+        tokenizer = _StubTokenizer({" A": 1, " B": 2}, vocab_size=10)
+        llm = _StubLLM(script=[[_StubRequestOutput(outputs=[_StubCompletionOutput(text="No probability stated here")])]])
+        clf = _make_classifier(llm, tokenizer, vocab_dim=10)
+
+        risks, _outputs = clf._query_prompt_risk_estimates_batch(
+            prompts_batch=["dummy"],
+            question=TextNumericQA(column="PINCP", text="dummy"),
+        )
+        assert np.isnan(risks[0])
+        assert clf._regex_failed == 1
+        assert clf._regex_total == 1
 
 
 # --------------------------------------------------------------------------

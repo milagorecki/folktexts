@@ -11,7 +11,7 @@ import pandas as pd
 
 from ._utils import hash_dict
 from .col_to_text import ColumnToText
-from .qa_interface import DirectNumericQA, MultipleChoiceQA, QAInterface
+from .qa_interface import DirectNumericQA, GeneratedTextQA, MultipleChoiceQA, QAInterface
 from .threshold import Threshold
 
 
@@ -51,6 +51,9 @@ class TaskMetadata:
 
     _use_generated_text_for_qa: bool = False
     """Whether to use the text output of the model to extract answers."""
+
+    _cot_prompting: bool = False
+    """Whether to add a chain-of-thought instruction to the generated-text system prompt."""
 
     # _enable_thinking: bool = False
     # """Whether model is used in thinking mode."""
@@ -145,18 +148,17 @@ class TaskMetadata:
 
     def set_question(self, question: QAInterface):
         """Sets the Q&A interface for this task."""
-        logging.info(f"Setting question for task '{self.name}' to '{question.text}'.")
 
+        logging.info(f"Setting question for task '{self.name}' to '{question.text}'.")
         if isinstance(question, MultipleChoiceQA):
             self.multiple_choice_qa = question
             self._use_numeric_qa = False
-            self._use_generated_text_for_qa = question.use_generated_text
         elif isinstance(question, DirectNumericQA):
             self.direct_numeric_qa = question
             self._use_numeric_qa = True
-            self._use_generated_text_for_qa = question.use_generated_text
         else:
             raise ValueError(f"Invalid question type: {type(question).__name__}")
+        self._use_generated_text_for_qa = question.use_generated_text
 
     @property
     def use_text_output_for_qa(self) -> bool:
@@ -170,8 +172,19 @@ class TaskMetadata:
             f"Changing Q&A answer extraction for task '{self.name}' to "
             f"{'text-based' if use_text_output_for_qa else 'based on token-probabilities'}.\n"
         )
-        self.set_question(dataclasses.replace(self.question, use_generated_text=use_text_output_for_qa))
+        # The token-probability vs generated-text distinction is a QA *type*
+        # (base vs GeneratedTextQA subclass). We only record the flag here; the
+        # `question` property derives the matching type from it.
         self._use_generated_text_for_qa = use_text_output_for_qa
+
+    @property
+    def cot_prompting(self) -> bool:
+        """Whether a chain-of-thought instruction is added to the generated-text system prompt."""
+        return self._cot_prompting
+
+    @cot_prompting.setter
+    def cot_prompting(self, cot_prompting: bool):
+        self._cot_prompting = cot_prompting
 
     @property
     def use_numeric_qa(self) -> bool:
@@ -224,7 +237,12 @@ class TaskMetadata:
 
     @property
     def question(self) -> MultipleChoiceQA | DirectNumericQA:
-        """Getter for the Q&A interface for this task."""
+        """Getter for the Q&A interface for this task.
+
+        The two stored slots hold the token-probability (base) interfaces. The
+        `(numeric?, text?)` flags select which one and whether to derive its
+        generated-text variant, so both axes resolve to a single concrete type.
+        """
 
         # Resolve direct numeric Q&A vs multiple-choice Q&A
         q: QAInterface | None
@@ -236,6 +254,10 @@ class TaskMetadata:
         if q is None:
             logging.critical(f"No Q&A interface provided for task {self.name}.")
         assert q is not None
+
+        # Token-probability (base) vs generated-text (subclass) decoding.
+        if self._use_generated_text_for_qa:
+            q = GeneratedTextQA.from_base(q, use_cot=self._cot_prompting)
         return q
 
     def get_row_description(self, row: pd.Series) -> str:

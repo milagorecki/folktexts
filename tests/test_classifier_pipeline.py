@@ -8,7 +8,6 @@ prompts per permutation).
 
 from __future__ import annotations
 
-import dataclasses
 import json
 from functools import partial
 from unittest.mock import patch
@@ -17,7 +16,10 @@ import numpy as np
 import pytest
 from folktexts.benchmark import Benchmark, BenchmarkConfig
 from folktexts.classifier import TransformersLLMClassifier
-from folktexts.prompting import FewShotConfig, PromptConfig, encode_row_prompt, encode_row_prompt_few_shot
+from folktexts.col_to_text import ColumnToText
+from folktexts.prompting import FewShotConfig, PromptConfig, encode_row_prompt_few_shot
+from folktexts.qa_interface import Choice, DirectNumericQA, MultipleChoiceQA, TextNumericQA
+from folktexts.task import TaskMetadata
 
 
 @pytest.fixture(scope="module")
@@ -592,9 +594,179 @@ class TestTemperatureWiring:
     into `generate_text_batch` (greedy for non-reasoning models, 1.0 in thinking mode;
     explicit override wins)."""
 
+    def _run_generated_text(self, tiny_model_and_tokenizer, acs_income_task, **clf_kwargs):
+        """Run the transformers generated-text path with `generate_text_batch`
+        patched to capture the kwargs it is called with (and return a canned
+        response). Thinking is a classifier `reasoning=` kwarg here, not a QA field.
+        """
+        model, tokenizer = tiny_model_and_tokenizer
+        captured: dict = {}
+
+        def fake_generate(text_inputs, **kwargs):
+            captured.update(kwargs)
+            # generate_text_batch now returns the raw per-row generation
+            # ({"text", "token_ids"}); the classifier splits it at its call site.
+            return [{"text": "Probability: 40%", "token_ids": []} for _ in text_inputs]
+
+        with patch(
+            "folktexts.classifier.transformers_classifier.generate_text_batch",
+            side_effect=fake_generate,
+        ):
+            clf = TransformersLLMClassifier(model=model, tokenizer=tokenizer, task=acs_income_task, **clf_kwargs)
+            question = TextNumericQA(column="PINCP", text="dummy")
+            risks, _ = clf._query_prompt_risk_estimates_batch(prompts_batch=["p"], question=question)
+        return captured, risks
+
+    def test_generated_text_defaults_to_greedy_and_threads_seed(self, tiny_model_and_tokenizer, acs_income_task):
+        captured, risks = self._run_generated_text(tiny_model_and_tokenizer, acs_income_task, seed=7)
+        assert captured["temperature"] == 0.0
+        assert captured["seed"] == 7
+        assert risks[0] == pytest.approx(0.4)
+
+    def test_thinking_mode_defaults_to_temperature_one(self, tiny_model_and_tokenizer, acs_income_task):
+        captured, _ = self._run_generated_text(tiny_model_and_tokenizer, acs_income_task, reasoning="high")
+        assert captured["temperature"] == 1.0
+
+    def test_explicit_temperature_override_reaches_generation(self, tiny_model_and_tokenizer, acs_income_task):
+        captured, _ = self._run_generated_text(tiny_model_and_tokenizer, acs_income_task, temperature=0.7)
+        assert captured["temperature"] == 0.7
+
     def test_temperature_changes_classifier_hash(self, tiny_model_and_tokenizer, acs_income_task):
         """An explicit temperature must produce distinct result-cache identity."""
         model, tokenizer = tiny_model_and_tokenizer
         clf_default = TransformersLLMClassifier(model=model, tokenizer=tokenizer, task=acs_income_task)
         clf_override = TransformersLLMClassifier(model=model, tokenizer=tokenizer, task=acs_income_task, temperature=0.7)
         assert hash(clf_default) != hash(clf_override)
+
+
+# ----------------------------------------------------------------------
+# Benchmark._validate_config — chain-of-thought (CoT) prompting rules.
+# ----------------------------------------------------------------------
+
+
+class TestValidateConfigCoT:
+    def test_rejects_cot_without_generated_text(self):
+        # The CoT instruction is only appended on the generated-text path; on the
+        # logprob path it is a silent no-op, so require the text path explicitly.
+        with pytest.raises(ValueError, match="generated"):
+            Benchmark._validate_config(BenchmarkConfig(cot_prompting=True, use_generated_text=False))
+
+    def test_accepts_cot_with_generated_text(self):
+        Benchmark._validate_config(BenchmarkConfig(cot_prompting=True, use_generated_text=True))
+
+    def test_accepts_chat_template_with_cot(self):
+        # Upstream rejected chat_template + CoT because CoT applied the chat
+        # template internally (double-wrap). Here everything routes through
+        # `prompting.apply_chat_template`, so the combination is valid.
+        Benchmark._validate_config(BenchmarkConfig(use_chat_template=True, cot_prompting=True, use_generated_text=True))
+
+
+# ----------------------------------------------------------------------
+# Benchmark._configure_task_question — singleton state reset.
+#
+# `TaskMetadata.get_task` is a class-level cache, so the same task object is
+# reused across benchmark runs. `_configure_task_question` sets all Q&A axes
+# unconditionally, so state from a prior run (e.g. a CoT generated-text cell)
+# cannot leak into a later plain multiple-choice cell.
+# ----------------------------------------------------------------------
+
+
+@pytest.fixture
+def fresh_task() -> TaskMetadata:
+    """A real `TaskMetadata` with both MC and numeric Q&A interfaces wired up,
+    so `_configure_task_question` can be exercised without monkeypatching the
+    singleton cache. Uses a unique name to avoid colliding with the cache."""
+    mc_qa = MultipleChoiceQA(
+        column="TARGET",
+        text="Is the value high?",
+        choices=(
+            Choice("low", data_value=0, numeric_value=0.0),
+            Choice("high", data_value=1, numeric_value=1.0),
+        ),
+    )
+    num_qa = DirectNumericQA(column="TARGET", text="What is the value?")
+    name = f"_test_state_leak_{id(mc_qa)}"
+    task = TaskMetadata(
+        name=name,
+        features=["x"],
+        target="TARGET",
+        cols_to_text={
+            "x": ColumnToText("x", short_description="x"),
+            "TARGET": ColumnToText("TARGET", short_description="target"),
+        },
+        multiple_choice_qa=mc_qa,
+        direct_numeric_qa=num_qa,
+    )
+    yield task
+    TaskMetadata._tasks.pop(name, None)
+
+
+def _cot_numeric_config(**extra) -> BenchmarkConfig:
+    """Upstream's ``ChainOfThoughtQA`` == our ``TextNumericQA``: a numeric answer
+    decoded from generated text, with the CoT instruction toggled on. Unlike
+    upstream (where CoT was its own non-numeric mode), here CoT *is* numeric +
+    generated-text, so `_use_numeric_qa` is True for these configs."""
+    return BenchmarkConfig(
+        numeric_risk_prompting=True,
+        use_generated_text=True,
+        cot_prompting=True,
+        **extra,
+    )
+
+
+class TestConfigureTaskQuestionStateReset:
+    def test_chat_mcq_after_cot_thinking_resets_to_mc(self, fresh_task):
+        # Configure CoT + thinking first, then plain chat MC. Because
+        # _configure_task_question sets every Q&A axis unconditionally, the
+        # leaked TextNumericQA cannot survive into the MC cell.
+        Benchmark._configure_task_question(fresh_task, _cot_numeric_config(reasoning="high"))
+        assert isinstance(fresh_task.question, TextNumericQA)
+        assert fresh_task._cot_prompting is True
+        assert fresh_task._use_numeric_qa is True  # our CoT is numeric + generated-text
+
+        Benchmark._configure_task_question(fresh_task, BenchmarkConfig(use_chat_template=True))
+        assert isinstance(fresh_task.question, MultipleChoiceQA)
+        assert not isinstance(fresh_task.question, TextNumericQA)
+        assert fresh_task._cot_prompting is False
+        assert fresh_task._use_numeric_qa is False
+        assert fresh_task._use_generated_text_for_qa is False
+
+    def test_chat_mcq_after_numeric_resets_to_mc(self, fresh_task):
+        # Symmetric case: numeric (token-prob) -> chat MC must also clear state.
+        Benchmark._configure_task_question(fresh_task, BenchmarkConfig(numeric_risk_prompting=True))
+        assert isinstance(fresh_task.question, DirectNumericQA)
+        assert not isinstance(fresh_task.question, TextNumericQA)
+        assert fresh_task._use_numeric_qa is True
+
+        Benchmark._configure_task_question(fresh_task, BenchmarkConfig(use_chat_template=True))
+        assert isinstance(fresh_task.question, MultipleChoiceQA)
+        assert fresh_task._cot_prompting is False
+        assert fresh_task._use_numeric_qa is False
+
+    def test_chat_mcq_after_cot_resets_to_mc(self, fresh_task):
+        # CoT without thinking -- same leak pattern.
+        Benchmark._configure_task_question(fresh_task, _cot_numeric_config())
+        assert isinstance(fresh_task.question, TextNumericQA)
+
+        Benchmark._configure_task_question(fresh_task, BenchmarkConfig())  # all-default = plain MC
+        assert isinstance(fresh_task.question, MultipleChoiceQA)
+        assert not isinstance(fresh_task.question, TextNumericQA)
+
+    def test_cot_after_numeric_overrides(self, fresh_task):
+        # numeric (token-prob) -> CoT (generated-text) must switch the type.
+        Benchmark._configure_task_question(fresh_task, BenchmarkConfig(numeric_risk_prompting=True))
+        Benchmark._configure_task_question(fresh_task, _cot_numeric_config())
+        assert isinstance(fresh_task.question, TextNumericQA)
+        # Inverted vs upstream: our CoT stays numeric (TextNumericQA <: DirectNumericQA).
+        assert fresh_task._use_numeric_qa is True
+        assert fresh_task._cot_prompting is True
+
+    def test_numeric_after_cot_thinking_overrides(self, fresh_task):
+        # CoT + thinking -> numeric (token-prob) must clear the CoT/text flags.
+        Benchmark._configure_task_question(fresh_task, _cot_numeric_config(reasoning="high"))
+        Benchmark._configure_task_question(fresh_task, BenchmarkConfig(numeric_risk_prompting=True))
+        assert isinstance(fresh_task.question, DirectNumericQA)
+        assert not isinstance(fresh_task.question, TextNumericQA)
+        assert fresh_task._cot_prompting is False
+        assert fresh_task._use_numeric_qa is True
+        assert fresh_task._use_generated_text_for_qa is False

@@ -19,9 +19,18 @@ Structural properties this file guards:
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
-from folktexts.qa_interface import Choice, DirectNumericQA, MultipleChoiceQA
+from folktexts.classifier.base import InferenceConfig, LLMClassifier
+from folktexts.qa_interface import (
+    Choice,
+    DirectNumericQA,
+    MultipleChoiceQA,
+    TextMultipleChoiceQA,
+    TextNumericQA,
+)
 
 # ----------------------------------------------------------------------
 # DirectNumericQA.get_question_prompt
@@ -229,3 +238,310 @@ class TestGetAnswerFromModelOutputDerivesVocabDim:
         # `answer_probability=True` ⇒ "0." prefill + "4" → 0.4.
         ans = self._q().get_answer_from_model_output(probs, vocab)
         assert ans == pytest.approx(0.4)
+
+
+# ----------------------------------------------------------------------
+# QA-type consistency matrix
+#
+# The decode axis (token-probability vs generated-text) is expressed by the QA
+# *type*, not a runtime flag. This matrix pins the invariants across all four
+# types so any future drift (e.g. a scoring prefill leaking onto a text type)
+# fails a test.
+# ----------------------------------------------------------------------
+
+_CHOICES = (Choice("No", 0, 0.0), Choice("Yes", 1, 1.0))
+
+
+def _make_qa(cls):
+    if issubclass(cls, MultipleChoiceQA):
+        return cls(column="X", text="Q?", num_forward_passes=1, choices=_CHOICES)
+    return cls(column="X", text="Q?")
+
+
+# (type, is_text, is_numeric)
+_QA_MATRIX = [
+    (DirectNumericQA, False, True),
+    (MultipleChoiceQA, False, False),
+    (TextNumericQA, True, True),
+    (TextMultipleChoiceQA, True, False),
+]
+
+
+@pytest.mark.parametrize("cls,is_text,is_numeric", _QA_MATRIX)
+class TestQATypeConsistency:
+    def test_use_generated_text_matches_type(self, cls, is_text, is_numeric):
+        assert _make_qa(cls).use_generated_text is is_text
+
+    def test_chat_prefill_present_iff_scoring(self, cls, is_text, is_numeric):
+        # The scoring prefill (assistant turn) exists only on token-probability
+        # types; generated-text types must carry none (it would fight the
+        # answer-format instruction).
+        assert (_make_qa(cls).default_chat_prompt is None) is is_text
+
+    def test_format_instruction_present_iff_text(self, cls, is_text, is_numeric):
+        # `format_instruction` lives on the generated-text mixin only; scoring
+        # types don't declare it, so read defensively.
+        assert (getattr(_make_qa(cls), "format_instruction", None) is not None) is is_text
+
+    def test_system_prompt_appends_format_instruction_iff_text(self, cls, is_text, is_numeric):
+        q = _make_qa(cls)
+        sys_prompt = q.get_default_system_prompt()
+        if is_text:
+            assert q.format_instruction in sys_prompt
+        else:
+            assert sys_prompt == q.default_system_prompt
+
+    def test_answer_prefix_empty_iff_text(self, cls, is_text, is_numeric):
+        # Generated-text types have no scoring prefill, so no answer prefix.
+        assert (_make_qa(cls).get_answer_prefix() == "") is is_text
+
+    def test_answer_prefill_absent_iff_text(self, cls, is_text, is_numeric):
+        # Generated-text types never bake an answer prefill into the question
+        # (the model must produce free-form text to parse); scoring types do.
+        base_cls = DirectNumericQA if is_numeric else MultipleChoiceQA
+        base_prefix = _make_qa(base_cls).get_answer_prefix()
+        prompt = _make_qa(cls).get_question_prompt().rstrip()
+        assert prompt.endswith(base_prefix) is (not is_text)
+
+    def test_model_output_decodes_via_the_right_path(self, cls, is_text, is_numeric):
+        q = _make_qa(cls)
+        if is_text:
+            # Text types decode from `text`; passing only token probs must fail.
+            answer = q.get_answer_from_model_output(text=("Probability: 80%" if is_numeric else "Answer: B"))
+            assert answer == pytest.approx(0.8 if is_numeric else 1.0, abs=1e-6)
+            with pytest.raises(ValueError):
+                q.get_answer_from_model_output(text=None)
+        else:
+            # Scoring types decode from token probs; passing only `text` must fail.
+            with pytest.raises(ValueError):
+                q.get_answer_from_model_output(text="Probability: 80%")
+
+
+# ======================================================================
+# Generated-text QA types (TextNumericQA / TextMultipleChoiceQA)
+#
+# Port of upstream's `test_cot_qa.py` (`ChainOfThoughtQA`) to this branch's
+# terminology: upstream's single CoT type maps to `TextNumericQA` (numeric
+# answer + generated-text decoding); chain-of-thought is the `use_cot=True`
+# modifier. Contract differences asserted here as the *new* behaviour:
+#   * extraction failure -> NaN (not a silent 0.5)
+#   * the extraction anchor lives in the *system prompt*, not the question
+#   * plain generated-text is greedy; the thinking bump is in the classifier
+# ======================================================================
+
+
+@pytest.fixture
+def text_numeric_qa() -> TextNumericQA:
+    return TextNumericQA(
+        column="PINCP",
+        text="What is this person's estimated yearly income?",
+    )
+
+
+class TestTextNumericQA:
+    # Numeric answer + generated-text decoding. Mirrors TestTextMultipleChoiceQA.
+
+    # --- question prompt: `with_answer_prefill` kwarg accepted for interface
+    # compatibility (Liskov substitution) but ignored — generated-text prompts
+    # carry no answer prefill to strip ----------------------------------------
+    def test_returns_non_empty_string(self, text_numeric_qa: TextNumericQA):
+        assert isinstance(text_numeric_qa.get_question_prompt(), str)
+        assert text_numeric_qa.get_question_prompt().strip()
+
+    def test_with_answer_prefill_kwarg_accepted(self, text_numeric_qa: TextNumericQA):
+        with_prefill = text_numeric_qa.get_question_prompt(with_answer_prefill=True)
+        without_prefill = text_numeric_qa.get_question_prompt(with_answer_prefill=False)
+        assert with_prefill == without_prefill
+
+    def test_question_prompt_excludes_extraction_anchor(self, text_numeric_qa: TextNumericQA):
+        # The "Probability: X%" anchor lives in the system prompt, not the question.
+        assert "Probability: X%" not in text_numeric_qa.get_question_prompt()
+
+    # --- system prompt: format instruction + optional CoT --------------------
+    def test_system_prompt_includes_extraction_anchor(self, text_numeric_qa: TextNumericQA):
+        # The system prompt must carry the "Probability: X%" anchor so the regex
+        # extractor has a consistent target. If this anchor changes, the numeric
+        # extraction patterns must be updated in lockstep.
+        assert "Probability: X%" in text_numeric_qa.get_default_system_prompt()
+
+    def test_cot_instruction_absent_by_default(self, text_numeric_qa: TextNumericQA):
+        assert text_numeric_qa.use_cot is False
+        assert text_numeric_qa.cot_instruction not in text_numeric_qa.get_default_system_prompt()
+
+    def test_cot_present_and_precedes_format_when_enabled(self):
+        # Reason first, then emit the parser-friendly answer: the CoT text must
+        # appear before the format instruction in the assembled system prompt.
+        q = TextNumericQA(column="PINCP", text="income?", use_cot=True)
+        sys_prompt = q.get_default_system_prompt()
+        assert q.cot_instruction in sys_prompt
+        assert sys_prompt.index(q.cot_instruction) < sys_prompt.index(q.format_instruction)
+
+    def test_use_cot_changes_identity(self):
+        # `use_cot` is a real field, so it participates in QA identity (hash),
+        # keeping cached results distinct.
+        plain = TextNumericQA(column="PINCP", text="income?", use_cot=False)
+        cot = TextNumericQA(column="PINCP", text="income?", use_cot=True)
+        assert hash(plain) != hash(cot)
+
+    # --- extract_probability_from_text: the regex pyramid (matches upstream) --
+    @pytest.mark.parametrize(
+        "text,expected",
+        [
+            ("Probability: 75%", 0.75),
+            ("probability: 75%", 0.75),
+            ("Probability: 0.75", 0.75),
+            ("Probability is 80%", 0.80),
+            ("Probability of 0.42", 0.42),
+            ("After thinking: 25%", 0.25),
+            ("The answer is 50 percent.", 0.50),
+            ("My estimate is 0.33", 0.33),
+        ],
+    )
+    def test_extracts_supported_formats(self, text: str, expected: float):
+        assert TextNumericQA.extract_probability_from_text(text) == pytest.approx(expected, abs=1e-6)
+
+    def test_uses_last_explicit_match(self):
+        # The model may revise its estimate mid-reasoning; we trust the final
+        # "Probability: X" line.
+        text = "Probability: 30%. Wait, on reflection, Probability: 65%."
+        assert TextNumericQA.extract_probability_from_text(text) == pytest.approx(0.65)
+
+    def test_returns_none_when_no_signal(self):
+        assert TextNumericQA.extract_probability_from_text("the answer is unclear") is None
+
+    def test_rejects_out_of_range_probability(self):
+        # A bare 150% must not be treated as a probability via the explicit
+        # "Probability:" pattern; the function falls through and returns None.
+        assert TextNumericQA.extract_probability_from_text("Probability: 150%") is None
+
+    # --- get_answer_from_model_output: failure -> NaN (not upstream's 0.5) ----
+    def test_returns_extracted_value(self, text_numeric_qa: TextNumericQA):
+        assert text_numeric_qa.get_answer_from_model_output(text="Probability: 80%") == pytest.approx(0.80)
+
+    def test_returns_nan_on_extraction_failure(self, text_numeric_qa: TextNumericQA):
+        # NaN (not 0.5) marks a parse failure so the caller can distinguish it
+        # from a genuine 0.5 and drop / hedge / impute it downstream.
+        result = text_numeric_qa.get_answer_from_model_output(text="nonsense with no probability")
+        assert np.isnan(result)
+
+    def test_requires_text(self, text_numeric_qa: TextNumericQA):
+        # Generated-text types decode from `text`, never from token probs.
+        with pytest.raises(ValueError, match="text must be provided"):
+            text_numeric_qa.get_answer_from_model_output()
+
+    def test_default_temperature_is_greedy(self, text_numeric_qa: TextNumericQA):
+        assert text_numeric_qa.default_temperature == 0.0
+
+
+class TestGeneratedTextTemperature:
+    # Plain generated-text is greedy (per-type default asserted in the type
+    # classes); the bump to 1.0 under thinking is resolved by
+    # `LLMClassifier._resolve_temperature`, not baked into the QA type.
+    def test_token_probability_modes_stay_greedy(self):
+        assert DirectNumericQA(column="PINCP", text="dummy").default_temperature == 0.0
+        mcq = MultipleChoiceQA(
+            column="PINCP",
+            text="dummy",
+            choices=(Choice("Yes", 1), Choice("No", 0)),
+        )
+        assert mcq.default_temperature == 0.0
+
+    @pytest.mark.parametrize(
+        "reasoning,expected",
+        [
+            (None, 0.0),  # plain, non-reasoning model -> greedy
+            ("0", 1.0),  # reasoning-capable model, thinking toggled off -> still sampled
+            ("high", 1.0),  # thinking on -> forced sampling
+            ("low", 1.0),
+            ("512", 1.0),  # Claude budget-tokens -> thinking on
+        ],
+    )
+    def test_resolve_temperature_bumps_when_reasoning_set(self, text_numeric_qa, reasoning, expected):
+        # `_resolve_temperature` only reads `self._inference`, so a duck-typed
+        # stub with an InferenceConfig exercises the contract without a real model.
+        stub = SimpleNamespace(_inference=InferenceConfig(temperature=None, reasoning=reasoning))
+        assert LLMClassifier._resolve_temperature(stub, text_numeric_qa) == expected
+
+    def test_explicit_override_wins_over_reasoning(self, text_numeric_qa):
+        stub = SimpleNamespace(_inference=InferenceConfig(temperature=0.3, reasoning="high"))
+        assert LLMClassifier._resolve_temperature(stub, text_numeric_qa) == 0.3
+
+
+@pytest.fixture
+def text_mcq() -> TextMultipleChoiceQA:
+    # Binary choice: A -> "No" (0.0), B -> "Yes" (1.0). Risk = P(positive) so
+    # picking "Yes" (B) yields 1.0 and "No" (A) yields 0.0.
+    return TextMultipleChoiceQA(
+        column="PINCP",
+        text="Is this person's income above $50k?",
+        choices=(Choice("No", 0, 0.0), Choice("Yes", 1, 1.0)),
+    )
+
+
+class TestTextMultipleChoiceQA:
+    # The multiple-choice sibling of TextNumericQA: same generated-text contract,
+    # but the answer is a choice letter (`Answer: X`) mapped to a risk estimate.
+    def test_question_prompt_lsp_kwarg_identical(self, text_mcq):
+        assert text_mcq.get_question_prompt(with_answer_prefill=True) == text_mcq.get_question_prompt(
+            with_answer_prefill=False
+        )
+
+    def test_question_prompt_excludes_answer_anchor(self, text_mcq):
+        # The "Answer: X" anchor lives in the system prompt, not the question.
+        assert "Answer: X" not in text_mcq.get_question_prompt()
+
+    def test_system_prompt_includes_answer_anchor(self, text_mcq):
+        assert "Answer: X" in text_mcq.get_default_system_prompt()
+
+    def test_cot_absent_by_default(self, text_mcq):
+        assert text_mcq.use_cot is False
+        assert text_mcq.cot_instruction not in text_mcq.get_default_system_prompt()
+
+    def test_cot_present_and_precedes_format_when_enabled(self):
+        q = TextMultipleChoiceQA(
+            column="PINCP",
+            text="q?",
+            choices=(Choice("No", 0, 0.0), Choice("Yes", 1, 1.0)),
+            use_cot=True,
+        )
+        sys_prompt = q.get_default_system_prompt()
+        assert q.cot_instruction in sys_prompt
+        assert sys_prompt.index(q.cot_instruction) < sys_prompt.index(q.format_instruction)
+
+    @pytest.mark.parametrize(
+        "text,expected_risk",
+        [
+            ("Answer: B", 1.0),  # B == "Yes" (positive)
+            ("Answer: A", 0.0),  # A == "No"
+            ("Lots of reasoning here.\nAnswer: B", 1.0),  # anchored, after a trace
+        ],
+    )
+    def test_extracts_answer_key(self, text_mcq, text, expected_risk):
+        assert text_mcq.get_answer_from_model_output(text=text) == pytest.approx(expected_risk)
+
+    def test_uses_last_same_tier_match(self, text_mcq):
+        # Both mentions are the same (key + trailing punctuation) tier, so the
+        # last one wins — the model's revised final answer.
+        text = "First I leaned Answer: A. On reflection, Answer: B."
+        assert text_mcq.get_answer_from_model_output(text=text) == pytest.approx(1.0)
+
+    def test_returns_nan_on_extraction_failure(self, text_mcq):
+        # No answer key and no choice-text word present -> NaN (not a silent 0.5).
+        assert np.isnan(text_mcq.get_answer_from_model_output(text="the outcome is unclear"))
+
+    @pytest.mark.parametrize("text", ["I cannot determine this", "nothing is certain here"])
+    def test_choice_word_inside_other_word_does_not_match(self, text_mcq, text):
+        # Regression: the unanchored choice-text tier is word-bounded, so the
+        # short choice "No" must not match inside "cannot"/"nothing" -> NaN.
+        assert np.isnan(text_mcq.get_answer_from_model_output(text=text))
+
+    def test_unanchored_standalone_choice_word_still_matches(self, text_mcq):
+        # Word boundaries keep genuine standalone choice words working.
+        assert text_mcq.get_answer_from_model_output(text="The answer is Yes") == pytest.approx(1.0)
+
+    def test_requires_text(self, text_mcq):
+        with pytest.raises(ValueError, match="text must be provided"):
+            text_mcq.get_answer_from_model_output()
+
+    def test_default_temperature_is_greedy(self, text_mcq):
+        assert text_mcq.default_temperature == 0.0

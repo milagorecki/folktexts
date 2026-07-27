@@ -194,12 +194,9 @@ class WebAPILLMClassifier(LLMClassifier):
         model_cfg = self._registry.get(model_name)
         self.deployment_name = (model_cfg.deployment_name or model_name) if model_cfg else model_name
 
-        # Initialize total cost of API calls
-        self._total_cost = 0.0
-        self._total_prompt_tokens = 0
-        self._total_completion_tokens = 0
-        self._num_api_calls = 0
-        self._total_response_time = 0.0
+        # Cost / token / call-count / timing stats are owned by the APIClient's
+        # tracker (`self.client.tracker`); read them via `track_stats`. No
+        # classifier-level mirrors — they were never updated (see `__init__`).
 
         # Optional token tracker; previous cumulative totals used to compute per-batch deltas
         self.token_tracker = token_tracker
@@ -236,7 +233,7 @@ class WebAPILLMClassifier(LLMClassifier):
                 raise ValueError("AZURE_API_BASE not found in environment variables")
 
         # Validate reasoning argument for known reasoning models
-        reasoning = self.inference_kwargs.get("reasoning")
+        reasoning = self.reasoning
         if (model_cfg and model_cfg.is_reasoning_model) and reasoning is None:
             raise ValueError(
                 f"Model '{self.model_name}' is a reasoning model — please specify --reasoning (e.g. 'medium', '0.25', '0')."
@@ -259,12 +256,11 @@ class WebAPILLMClassifier(LLMClassifier):
 
             self.api_type = "responses"
 
-        # Set-up litellm API client
-        import litellm
-
-        litellm.success_callback = [self.track_cost_callback]
-
-        # from litellm import completion, responses
+        # NOTE: cost tracking is owned entirely by the APIClient's tracker,
+        # constructed below. Its `set_up_litellm_cost_tracking()` registers the
+        # single `litellm.success_callback`, so we must NOT register one here (it
+        # would be overwritten by APIClient anyway). Totals are read back from
+        # `self.client.tracker` in `track_stats`.
 
         # Get supported parameters
         from litellm import get_supported_openai_params
@@ -377,26 +373,6 @@ class WebAPILLMClassifier(LLMClassifier):
         responses_batch : list[ModelResponse]
             The returned API responses for each prompt in the batch.
         """
-        # TODO
-        # Handle longer text generation
-        # if isinstance(question, ChainOfThoughtQA):
-        #     api_call_params = dict(
-        #         temperature=self._resolve_temperature(question),
-        #         max_tokens=question.max_new_tokens,
-        #         stream=False,
-        #         seed=self.seed,
-        #     )
-        #     # Use the user-supplied system prompt (via PromptConfig / --system-prompt)
-        #     # when set; otherwise fall back to the default CoT instruction.
-        #     if self.prompt_config.system_prompt is not None:
-        #         system_prompt = self.prompt_config.system_prompt()
-        #     else:
-        #         system_prompt = (
-        #             "You are a helpful assistant. Reason step-by-step about the question "
-        #             "and provide your final probability estimate. Your response MUST end "
-        #             "with 'Probability: X%' where X is a number between 0 and 100."
-        #         )
-
         # Adapt number of forward passes for token-probability based methods.
         if question.num_forward_passes == 1:
             # Single token answers should require only one forward pass
@@ -412,7 +388,7 @@ class WebAPILLMClassifier(LLMClassifier):
         if question.use_generated_text:
             api_call_params = dict(
                 temperature=self._resolve_temperature(question),  # 1
-                max_completion_tokens=self.inference_kwargs["max_new_tokens"],  # question.max_new_tokens,
+                max_completion_tokens=self.max_new_tokens,
                 stream=False,
                 seed=self.seed,
             )
@@ -436,14 +412,14 @@ class WebAPILLMClassifier(LLMClassifier):
 
         # Set extra arguments for reasoning-augmented models
         _OPENAI_EFFORT_LEVELS = ("none", "minimal", "low", "medium", "high", "xhigh", "auto")
-        reasoning = self.inference_kwargs.get("reasoning")
+        reasoning = self.reasoning
         logging.debug(f"reasoning is set to: {reasoning}")
-        if reasoning is not None and reasoning != "0":
+        if reasoning is not None and str(reasoning) != "0":
             if self.model_name.startswith("claude"):
                 # Claude models allow to pass reasoning budget either as number of tokens or as fraction of max_new_tokens
                 # minimum number of tokens is restricted to 1024
                 val = float(reasoning)
-                max_new_tokens = self.inference_kwargs["max_new_tokens"]
+                max_new_tokens = self.max_new_tokens
                 budget_tokens = int(val * max_new_tokens) if val <= 1.0 else int(val)
                 budget_tokens = max(budget_tokens, 1024)
                 assert budget_tokens <= max_new_tokens, (
@@ -524,32 +500,53 @@ class WebAPILLMClassifier(LLMClassifier):
 
         return responses_batch
 
-    @staticmethod
-    def _extract_reasoning_tokens(response: ModelResponse | ResponsesAPIResponse) -> int | None:
+    def _get_num_reasoning_tokens(
+        self,
+        response: ModelResponse | ResponsesAPIResponse,
+        reasoning_content: str = "",
+    ) -> int | None:
         """Extract the number of reasoning tokens used from an API response.
 
-        The field lives under a different attribute depending on the backend:
-        the responses API (OpenAI reasoning models) exposes
+        Preferred source is the provider's usage metadata: the responses API
+        (OpenAI reasoning models) exposes
         ``usage.output_tokens_details.reasoning_tokens`` while the completion API
-        (Claude, DeepSeek, Kimi, etc.) exposes
-        ``usage.completion_tokens_details.reasoning_tokens``. Returns ``None`` if
-        the information is not available.
+        (DeepSeek, Kimi, etc.) exposes ``usage.completion_tokens_details.reasoning_tokens``.
+
+        Some providers (notably Anthropic/Claude) bill thinking as ordinary output
+        tokens and do not populate a ``reasoning_tokens`` detail field. When the
+        usage metadata is missing but the response carried reasoning *text*, fall
+        back to counting that text with ``litellm.token_counter`` (which routes to
+        the model's tokenizer / Anthropic's ``count_tokens`` endpoint). Returns
+        ``None`` if the count cannot be determined.
         """
         usage = getattr(response, "usage", None)
-        if usage is None:
-            return None
-        for details_attr in ("output_tokens_details", "completion_tokens_details"):
-            details = getattr(usage, details_attr, None)
-            if details is not None:
-                reasoning_tokens = getattr(details, "reasoning_tokens", None)
-                if reasoning_tokens is not None:
-                    return reasoning_tokens
+        if usage is not None:
+            for details_attr in ("output_tokens_details", "completion_tokens_details"):
+                details = getattr(usage, details_attr, None)
+                if details is not None:
+                    reasoning_tokens = getattr(details, "reasoning_tokens", None)
+                    if reasoning_tokens is not None:
+                        return reasoning_tokens
+
+        # Fallback: the provider reported no reasoning-token count (e.g. Claude,
+        # which bills thinking as output tokens). Count the reasoning text itself
+        # if we have it — litellm routes to the model's tokenizer / count_tokens
+        # endpoint, so no local tokenizer is required.
+        if reasoning_content:
+            try:
+                import litellm
+
+                return litellm.token_counter(model=self.deployment_name, text=reasoning_content)
+            except Exception as error:
+                logging.debug(f"Could not count reasoning tokens via litellm.token_counter: {error}")
+
         return None
 
     def _decode_risk_estimate_from_api_response(
         self,
         response: ModelResponse | ResponsesAPIResponse,
         question: MultipleChoiceQA | DirectNumericQA,
+        prompt: str = "",
     ) -> tuple[float, Any]:
         """Decode model output from API response to get risk estimate.
 
@@ -559,6 +556,9 @@ class WebAPILLMClassifier(LLMClassifier):
             The response from the API call.
         question : MultipleChoiceQA | DirectNumericQA
             The question (`QAInterface`) object to use for querying the model.
+        prompt : str, optional
+            The user prompt for this response; used only for the logprob-path
+            debug log (`_maybe_log_logprobs`).
 
         Returns
         -------
@@ -579,7 +579,7 @@ class WebAPILLMClassifier(LLMClassifier):
                     reasoning_content = choice.message.reasoning_content
                     logging.debug(f"Received reasoning content: {reasoning_content}")
 
-                if self.inference_kwargs.get("reasoning") not in (None, "0") and len(reasoning_content) == 0:
+                if (self.reasoning is not None and str(self.reasoning) != "0") and len(reasoning_content) == 0:
                     logging.debug("Reasoning enabled, but no reasoning content found in response.")
             else:
                 # response API
@@ -595,7 +595,7 @@ class WebAPILLMClassifier(LLMClassifier):
                                 reasoning_content += summary.text + "\n"
 
                 response_message = "\n".join(output_texts) if len(output_texts) > 0 else ""
-                if self.inference_kwargs.get("reasoning") not in (None, "0"):
+                if (self.reasoning is not None and str(self.reasoning) != "0"):
                     if len(reasoning_content) == 0:
                         logging.debug("Reasoning enabled, but no summary returned.")
                     else:
@@ -611,7 +611,7 @@ class WebAPILLMClassifier(LLMClassifier):
             risk_estimate = question.get_answer_from_model_output(
                 text=response_message,
             )
-            reasoning_tokens = self._extract_reasoning_tokens(response)
+            reasoning_tokens = self._get_num_reasoning_tokens(response, reasoning_content)
             return (
                 risk_estimate,
                 {
@@ -660,6 +660,14 @@ class WebAPILLMClassifier(LLMClassifier):
                 question=question,
             )
 
+            if self._should_log_generation():
+                # Logprob-path debug log: the API returns token strings directly.
+                self._maybe_log_logprobs(
+                    prompt,
+                    [{tok: float(np.exp(lp)) for tok, lp in pass_lp.items()} for pass_lp in token_logprobs_per_pass],
+                    risk_estimate,
+                )
+
             # Sanity check numeric answers based on global model response:
             if isinstance(question, DirectNumericQA):
                 try:
@@ -691,7 +699,7 @@ class WebAPILLMClassifier(LLMClassifier):
                         f"Falling back on standard risk estimate of {risk_estimate}."
                     )
 
-            return risk_estimate, token_logprobs_per_pass
+            return risk_estimate, [None]
             # TODO: consider passing risk_estimate, None - as logprobs carry no additional metadata, and not used downstream
 
     def _query_prompt_risk_estimates_batch(
@@ -756,9 +764,17 @@ class WebAPILLMClassifier(LLMClassifier):
                     logging.debug(f"Response {i + 1}: {message_content[:100]}...")  # Print first 100 chars
                 else:
                     logging.debug(f"Response {i + 1} is None.")
-                risk_est, out = self._decode_risk_estimate_from_api_response(response, question)
+                risk_est, out = self._decode_risk_estimate_from_api_response(response, question, prompt=prompts_batch[i])
                 risk_estimates_batch.append(risk_est)
                 outputs_batch.append(out)
+                if question.use_generated_text:
+                    # Extraction-failure tracking + debug logging, mirroring the local
+                    # backends (get_answer_from_model_output returns NaN on parse failure).
+                    self._regex_total += 1
+                    if np.isnan(risk_est):
+                        self._regex_failed += 1
+                    self._maybe_warn_regex_extraction_failure_rate()
+                    self._maybe_log_generation(prompts_batch[i], (out or {}).get("response", ""), risk_est)
             except (AttributeError, IndexError, TypeError, AssertionError, ValueError) as e:
                 logging.error(f"Response {i + 1}: Could not parse response content. Error: {e}")
                 logging.error(f"Raw response: {response}")
@@ -768,21 +784,6 @@ class WebAPILLMClassifier(LLMClassifier):
 
         self.track_stats(batch_size=len(prompts_batch))
         return np.asarray(risk_estimates_batch), outputs_batch
-
-    # def track_cost_callback(
-    #     self,
-    #     kwargs,
-    #     completion_response,
-    #     start_time,
-    #     end_time,
-    # ):
-    #     """Callback function to cost of API calls."""
-    #     try:
-    #         response_cost = kwargs.get("response_cost", 0)
-    #         self._total_cost += response_cost
-
-    #     except Exception as e:
-    #         logging.error(f"Failed to track cost of API calls: {e}")
 
     def track_stats(self, batch_size: int = 1):
         # get all tracker attributes with defaults
@@ -814,45 +815,15 @@ class WebAPILLMClassifier(LLMClassifier):
             self._prev_tracker_prompt_tokens = total_prompt_tokens
             self._prev_tracker_completion_tokens = total_completion_tokens
 
-    def track_cost_callback(
-        self,
-        kwargs,
-        completion_response,
-        start_time,
-        end_time,
-    ):
-        """Callback function to track cost of API calls."""
-        try:
-            # Extract cost properly
-            response_cost = 0
-
-            # Try different ways to get cost
-            if "response_cost" in kwargs:
-                response_cost = kwargs["response_cost"]
-            elif hasattr(completion_response, "cost"):
-                response_cost = getattr(completion_response, "cost", 0)
-            elif isinstance(completion_response, dict) and "cost" in completion_response:
-                response_cost = completion_response["cost"]
-
-            # Update total cost
-            self._total_cost += response_cost
-
-            # Update tracker if it has update_stats method
-            if hasattr(self.client.tracker, "update_stats"):
-                self.client.tracker.update_stats(
-                    response_cost=response_cost,
-                    start_time=start_time,
-                    end_time=end_time,
-                )
-            elif hasattr(self.client.tracker, "add_cost"):
-                self.client.tracker.add_cost(response_cost)
-
-        except Exception as e:
-            logging.error(f"Failed to track cost of API calls: {e}")
-            logging.exception("Full traceback:")
-
     def __del__(self):
-        """Destructor to report total cost of API calls."""
-        msg = f"Total cost of API calls: ${self._total_cost:.2f}"
+        """Report the total cost of API calls, read from the APIClient tracker.
+
+        Guarded because `__del__` may run after a partially-constructed instance
+        (e.g. `__init__` raised before `self.client` was set) or during
+        interpreter shutdown.
+        """
+        tracker = getattr(getattr(self, "client", None), "tracker", None)
+        total_cost = getattr(tracker, "total_cost", 0.0) or 0.0
+        msg = f"Total cost of API calls: ${total_cost:.2f}"
         print(msg)
         logging.info(msg)

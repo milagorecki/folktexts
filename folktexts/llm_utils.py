@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
-from jinja2 import TemplateError
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 if TYPE_CHECKING:
@@ -19,149 +18,168 @@ if TYPE_CHECKING:
 PROB_WARN_THR = 0.5
 
 
-def _apply_chat_template_batch(
-    inputs: list[str],
-    *,
-    tokenizer: AutoTokenizer,
-    enable_thinking: bool | None,
-    system_prompt: str | None = None,
-) -> list[str]:
-    """Apply tokenizer chat template to a list of prompts, if requested.
+def reasoning_to_enable_thinking(reasoning: str | None) -> bool | None:
+    """Translate the ``reasoning`` config knob into the chat template's
+    ``enable_thinking`` switch.
 
-    Parameters
-    ----------
-    inputs : list[str]
-        Raw (non-chat) prompts.
-    tokenizer : AutoTokenizer
-        Tokenizer used to apply the chat template.
-    enable_thinking : bool | None
-        If None, no chat template is applied. If True/False, chat template is
-        applied and (if supported) the `enable_thinking` kwarg is forwarded.
-    system_prompt : str | None, optional
-        System prompt to prepend as a system role message. Ignored when
-        ``enable_thinking`` is None (no chat template applied).
+    - ``None`` (reasoning unset)              -> ``None``  (omit the kwarg; template default)
+    - ``"0"`` / ``0`` (thinking disabled)     -> ``False``
+    - any other value (effort/budget)         -> ``True``
 
-    Returns
-    -------
-    formatted_inputs : list[str]
-        Prompts formatted using the tokenizer's chat template when requested.
+    ``reasoning`` also encodes *how much* effort/budget for other model families
+    (OpenAI ``reasoning_effort``, Claude ``budget_tokens``); this collapse to a
+    tri-state boolean is only for the local chat-template ``enable_thinking``
+    kwarg. Note it does **not** decide whether a template is applied — that
+    depends on the tokenizer having a ``chat_template`` (base vs instruction).
+
+    The ``"0"`` sentinel is compared as a string because the CLI's
+    int-or-float-or-str parser may hand us the integer ``0`` for ``--reasoning=0``.
     """
-    if enable_thinking is None:
-        return inputs
+    if reasoning is None:
+        return None
+    return str(reasoning) != "0"
 
-    # Base models (e.g. raw Llama-3-8B, GPT-2) have no chat template; falling
-    # through to apply_chat_template would raise ValueError mid-batch. Use the
-    # raw prompts instead - CHECK!
-    if getattr(tokenizer, "chat_template", None) is None:
-        if enable_thinking:
-            logging.warning(
-                "Tokenizer has no chat_template; cannot honor enable_thinking=True. Falling back to raw prompts (base model)."
-            )
-        else:
-            logging.info("Tokenizer has no chat_template; using raw prompts (base model).")
-        return inputs
 
-    processed: list[str] = []
-    for text in inputs:
-        # Two features may be unsupported by a given tokenizer; track each
-        # independently and strip on the first exception that names it.
-        use_system = system_prompt is not None
-        use_thinking: bool | None = enable_thinking  # set to None if TypeError is raised
+THINK_START_MARKER = "<think>"
+THINK_END_MARKER = "</think>"
 
-        while True:
-            msgs = (
-                [{"role": "system", "content": system_prompt}, {"role": "user", "content": text}]
-                if use_system
-                else [{"role": "user", "content": text}]
-            )
-            kw = {} if use_thinking is None else {"enable_thinking": use_thinking}
-            # TODO:  get_thinking_kwargs(tokenizer=tokenizer, enable=enable_thinking)
-            try:
-                processed.append(tokenizer.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True, **kw))
-                break
-            except TypeError:
-                # `enable_thinking` kwarg not accepted — strip it and retry.
-                if use_thinking is not None:
-                    if use_thinking:
-                        logging.warning(
-                            "Tokenizer does not support 'enable_thinking'; falling back to standard chat template."
-                        )
-                    use_thinking = None
-                else:
-                    raise
-            except (TemplateError, ValueError):
-                # System role rejected (e.g. Gemma) — drop it and retry.
-                if use_system:
-                    logging.warning("Tokenizer does not support system role; dropping system prompt for text generation.")
-                    use_system = False
-                else:
-                    raise
-
-    logging.debug(f"Applied chat template (enable_thinking={enable_thinking})")
-    return processed
+# How to locate the end-of-thinking boundary when stripping a `<think>...</think>`
+# block from a generation:
+#   - "token_id": split on the `</think>` *token* (robust — a literal `</think>`
+#     appearing inside the reasoning text can't fool it; needs the token ids +
+#     tokenizer, and yields the reasoning-token count for free).
+#   - "string": split on the literal `</think>` marker in the decoded text (works
+#     with only the text, e.g. a backend that surfaces no token ids).
+# Both split on the LAST occurrence of the boundary. This is the single toggle
+# shared by every local backend; token-id mode gracefully degrades to string mode
+# when token ids/tokenizer are unavailable.
+DEFAULT_THINKING_SPLIT_MODE = "token_id"
 
 
 def _postprocess_generated_text(
-    full_text: str,
     *,
     enable_thinking: bool | None,
     i: int,
     n: int,
-) -> str:
-    """Return the content to use for downstream extraction.
+    split_by: str = DEFAULT_THINKING_SPLIT_MODE,
+    text: str | None = None,
+    token_ids: list[int] | None = None,
+    tokenizer: AutoTokenizer | None = None,
+    thinking_end_token_id: int | None = None,
+) -> dict:
+    """Split a generation into response / reasoning for downstream extraction.
 
-    In thinking mode, the model may emit a `<think> ... </think>` block. We log
-    the thinking content (debug) but return only the response content after
-    `</think>` for extraction.
+    In thinking mode the model emits a `<think> ... </think>` block before the
+    answer. We keep only what follows the LAST `</think>` for extraction and
+    return the reasoning (everything before it) separately for logging/metadata.
+    Outside thinking mode the whole generation is the response.
 
     Parameters
     ----------
-    full_text : str
-        Full decoded generation (new tokens only).
     enable_thinking : bool | None
-        Whether thinking mode is enabled.
-    i : int
-        Index of this generation in the batch (0-based).
-    n : int
-        Total number of generations in the batch.
+        Whether thinking mode is enabled. Only ``True`` triggers a split.
+    i, n : int
+        Position / size of this generation in the batch (for debug logging).
+    split_by : {"token_id", "string"}
+        How to locate the `</think>` boundary (see ``DEFAULT_THINKING_SPLIT_MODE``).
+        ``"token_id"`` needs ``token_ids`` + ``tokenizer`` and degrades to
+        ``"string"`` if either is missing.
+    text : str, optional
+        Decoded generation (new tokens only). Required for ``split_by="string"``;
+        also the no-marker fallback text in either mode.
+    token_ids : list[int], optional
+        Generated token ids (prompt excluded). Required for ``split_by="token_id"``.
+    tokenizer : AutoTokenizer, optional
+        Needed to decode in ``token_id`` mode, to resolve the marker id, and to
+        count reasoning tokens in ``string`` mode.
+    thinking_end_token_id : int, optional
+        The `</think>` token id; resolved from ``tokenizer`` when omitted.
 
     Returns
     -------
-    response_text : str
-        Text to be used for probability extraction.
+    dict with keys ``response`` (str, for extraction), ``reasoning`` (str) and
+    ``reasoning_tokens`` (int | None — ``None`` only when it cannot be counted).
     """
-    if enable_thinking is not True:
+    if split_by not in ("token_id", "string"):
+        raise ValueError(f"Unknown split_by={split_by!r}; expected 'token_id' or 'string'.")
+
+    # Full decoded generation (marker not yet stripped) — for logging and the
+    # non-thinking / no-marker fallback paths.
+    if text is not None:
+        full_text = text
+    elif token_ids is not None and tokenizer is not None:
+        full_text = tokenizer.decode(token_ids, skip_special_tokens=True)
+    else:
+        raise ValueError("Provide `text` (string mode) or `token_ids`+`tokenizer` (token_id mode).")
+
+    def _count_tokens(s: str) -> int | None:
+        if not s:
+            return 0
+        if tokenizer is None:
+            return None
+        return len(tokenizer.encode(s, add_special_tokens=False))
+
+    def _finish(response: str, reasoning: str, reasoning_tokens: int | None) -> dict:
+        # Drop the wrapping `<think>`/`</think>` markers from the stored reasoning
+        # so the `reasoning` column holds only the thinking content. (The token-id
+        # slice includes the trailing `</think>` token, and both split paths keep
+        # the leading `<think>`.) `reasoning_tokens` still counts the raw slice.
+        reasoning = reasoning.strip()
+        if reasoning.startswith(THINK_START_MARKER):
+            reasoning = reasoning[len(THINK_START_MARKER) :]
+        if reasoning.endswith(THINK_END_MARKER):
+            reasoning = reasoning[: -len(THINK_END_MARKER)]
+        reasoning = reasoning.strip()
+        logging.debug(f"=== Generated output {i + 1}/{n} ===")
+        logging.debug(f"Thinking content ({len(reasoning)} chars) [IGNORED for extraction]:")
+        logging.debug(f"{reasoning[:500]}..." if len(reasoning) > 500 else reasoning)
+        logging.debug(f"Response content ({len(response)} chars) [USED for extraction]:")
+        logging.debug(response)
+        if not response:
+            logging.warning(
+                "Response content after </think> is empty. "
+                "Model may not have generated a proper response after reasoning. "
+                "Probability extraction will likely fail."
+            )
+        return {"response": response, "reasoning": reasoning, "reasoning_tokens": reasoning_tokens}
+
+    def _no_thinking() -> dict:
         logging.debug(f"=== Generated output {i + 1}/{n} ===")
         logging.debug(f"Content ({len(full_text)} chars):\n{full_text[:500]}...")
-        return full_text.strip()
+        return {"response": full_text.strip(), "reasoning": "", "reasoning_tokens": 0}
 
-    think_end_marker = "</think>"
-    if think_end_marker not in full_text:
+    # A `</think>` block may be present even when thinking was NOT requested — a
+    # model can emit one regardless (e.g. `reasoning='0'` that it doesn't fully
+    # honor). Strip it whenever it is actually present so reasoning never leaks
+    # into the extracted response; `enable_thinking` only drives the
+    # expected-but-missing warning below.
+
+    # Token-id split (preferred): operate on the token stream, last `</think>`.
+    if split_by == "token_id" and token_ids is not None and tokenizer is not None:
+        if thinking_end_token_id is None:
+            thinking_end_token_id = get_thinking_end_token_id(tokenizer=tokenizer)
+        if thinking_end_token_id is not None and thinking_end_token_id in token_ids:
+            # Index just past the LAST `</think>` token (search from the end).
+            index = len(token_ids) - token_ids[::-1].index(thinking_end_token_id)
+            reasoning = tokenizer.decode(token_ids[:index], skip_special_tokens=True).strip()
+            response = tokenizer.decode(token_ids[index:], skip_special_tokens=True).strip()
+            # Reasoning-token count is free from the slice (incl. the marker token).
+            return _finish(response, reasoning, index)
+        # No marker in the token stream → fall through to the string/fallback path.
+
+    # String split (or token-id fallback): split the decoded text on the last marker.
+    if THINK_END_MARKER in full_text:
+        reasoning, _sep, response = full_text.rpartition(THINK_END_MARKER)
+        reasoning, response = reasoning.strip(), response.strip()
+        return _finish(response, reasoning, _count_tokens(reasoning))
+
+    # No `</think>` present → the whole generation is the response.
+    if enable_thinking is True:
         logging.warning(
             f"</think> marker not found in output (thinking mode was enabled). "
             f"Using full generated text ({len(full_text)} chars)."
         )
-        return full_text.strip()
-
-    parts = full_text.split(think_end_marker, 1)
-    thinking_content = parts[0].strip()
-    response_content = parts[1].strip() if len(parts) > 1 else ""
-
-    logging.debug(f"=== Generated output {i + 1}/{n} ===")
-    logging.debug(f"Thinking content ({len(thinking_content)} chars) [IGNORED for extraction]:")
-    logging.debug(f"{thinking_content[:500]}..." if len(thinking_content) > 500 else thinking_content)
-    logging.debug(f"Response content ({len(response_content)} chars) [USED for extraction]:")
-    logging.debug(response_content)
-
-    if response_content:
-        return response_content
-
-    logging.warning(
-        "Response content after </think> is empty. "
-        "Model may not have generated a proper response. "
-        "Probability extraction will likely fail."
-    )
-    return ""
+    return _no_thinking()
 
 
 def query_model_batch(
@@ -385,16 +403,15 @@ def generate_text_batch(
     text_inputs: list[str],
     model: AutoModelForCausalLM,
     tokenizer: AutoTokenizer,
-    max_new_tokens: int,  # = 1024,
+    max_new_tokens: int,
     context_size: int = None,
-    reasoning: str = None,
-    # enable_thinking: bool = None,
-    thinking_end_token_id: int = None,
-    system_prompt: str | None = None,
     temperature: float = 0.0,
     seed: int | None = None,
-) -> list[dict[str, str]]:
+) -> list[dict]:
     """Generate text completions for a batch of prompts.
+
+    The chat template (if any) is applied upstream by the encode_row function;
+    this tokenizes ``text_inputs`` as-is and generates.
 
     Uses the model's generate() method for autoregressive text generation,
     particularly suitable for reasoning models and chain-of-thought Q&A where
@@ -416,20 +433,6 @@ def generate_text_batch(
     context_size : int, optional
         The maximum context size for input tokens. If None, no truncation
         is applied to inputs.
-    reasoning : str, optional
-        Reasoning effort string from inference kwargs. '0' explicitly disables
-        thinking mode; any other non-None value enables it. None (default) means
-        no chat template formatting is applied.
-    enable_thinking : bool, optional
-    # TODO: remove/merge with ``reasoning``
-        Controls chat template application and thinking mode:
-        - None: Do not apply chat template (use raw prompts, for base models)
-        - False: Apply chat template WITHOUT thinking mode (for instruction-tuned models)
-        - True: Apply chat template WITH thinking mode, and extract response
-          content after </think> marker (for thinking models like Qwen3)
-    system_prompt : str | None, optional
-        System prompt to inject as a system role message when applying the
-        chat template. Ignored when ``enable_thinking`` is None.
     temperature : float, optional
         Sampling temperature. Values <= 0 use greedy decoding; values > 0
         enable sampling at the given temperature. Defaults to 0.0.
@@ -439,9 +442,11 @@ def generate_text_batch(
 
     Returns
     -------
-    generated_texts : list[dict[str, str]]
-        The generated text completions for each input prompt. Only the
-        newly generated tokens are returned (not the input prompt).
+    generations : list[dict]
+        One raw generation per prompt with keys ``text`` (the full decoded
+        generation) and ``token_ids`` (the new token ids). Only newly generated
+        tokens are considered (the input prompt is excluded). The `<think>`
+        split is left to the caller via `_postprocess_generated_text`.
     """
     model_device = next(model.parameters()).device
 
@@ -454,21 +459,13 @@ def generate_text_batch(
     tokenizer.padding_side = "left"
     tokenizer.truncation_side = "left"
 
-    # Convert reasoning string to bool for apply_chat_template
-    enable_thinking = None if reasoning is None else (reasoning != "0")
+    # The chat template (if any) is already applied upstream by the encode_row
+    # function, so the prompts are tokenized as-is.
 
     try:
-        # chat_kwargs = get_thinking_kwargs(tokenizer=tokenizer, enable=enable_thinking) #TODO: integrate?
-        formatted_inputs = _apply_chat_template_batch(
-            text_inputs,
-            tokenizer=tokenizer,
-            enable_thinking=enable_thinking,
-            system_prompt=system_prompt,
-        )
-
-        # tokenize inputs
+        # tokenize inputs (already chat-formatted, or raw for base models)
         tokenized = tokenizer(
-            formatted_inputs,
+            text_inputs,
             return_tensors="pt",
             padding=True,
             truncation=True if context_size else False,
@@ -497,56 +494,22 @@ def generate_text_batch(
                 torch.manual_seed(seed)
             outputs = model.generate(**generate_kwargs)
 
-        # Decode generated tokens (excluding input prompt)
-        generated_texts: list[dict[str, str]] = []
-        n = len(outputs)
-
-        for i, output in enumerate(outputs):
+        # Return the raw per-row generations (full decoded text + new token ids).
+        # The `<think>...</think>` split is done by the caller at its call site via
+        # `_postprocess_generated_text`, mirroring the vLLM backend so both
+        # classifiers share one post-processing path (and each holds the full
+        # generated text locally for logging).
+        generations: list[dict] = []
+        for output in outputs:
             generated_tokens = output[input_seq_length:].tolist()
+            generations.append(
+                {
+                    "text": tokenizer.decode(generated_tokens, skip_special_tokens=True),
+                    "token_ids": generated_tokens,
+                }
+            )
 
-            # TODO: use _postprocess_generated_text here? outsource bulky logging into helper
-            # If thinking mode was enabled, separate thinking content from response content
-            # The </think> token (ID 151668) marks the end of thinking content
-            if enable_thinking:
-                if not thinking_end_token_id:
-                    thinking_end_token_id = get_thinking_end_token_id(tokenizer=tokenizer)
-                if thinking_end_token_id is None:
-                    logging.warning(
-                        "Could not identify </think> token ID. Thinking content will not be separated from response."
-                    )
-                    generated_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
-                    generated_texts.append({"response": generated_text})
-                    continue
-                try:
-                    # Find the </think> token from the end (in case there are multiple)
-                    index = len(generated_tokens) - generated_tokens[::-1].index(thinking_end_token_id)
-                    # Only decode content after </think>
-                    content_tokens = generated_tokens[index:]
-                    thinking_tokens = generated_tokens[:index]
-
-                    thinking_content = tokenizer.decode(thinking_tokens, skip_special_tokens=True).strip("\n")
-                    content = tokenizer.decode(content_tokens, skip_special_tokens=True).strip("\n")
-
-                    # Log all decoded tokens at debug level
-                    logging.debug(f"=== Generated output {i + 1}/{n} ===")
-                    logging.debug(f"Thinking content ({len(thinking_content)} chars):\n{thinking_content}")
-                    logging.debug(f"Response content ({len(content)} chars):\n{content}")
-
-                    generated_texts.append({"reasoning": thinking_content, "response": content})
-                except ValueError:
-                    # </think> token not found - decode entire output
-                    logging.warning("</think> token not found in output. Using full generated text.")
-                    generated_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
-                    logging.debug(f"=== Generated output {i + 1}/{n} (no thinking separation) ===")
-                    logging.debug(f"Full content ({len(generated_text)} chars):\n{generated_text}")
-                    generated_texts.append({"response": generated_text})
-            else:
-                generated_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
-                logging.debug(f"=== Generated output {i + 1}/{n} ===")
-                logging.debug(f"Content ({len(generated_text)} chars):\n{generated_text}")
-                generated_texts.append({"response": generated_text})
-
-        return generated_texts
+        return generations
 
     finally:
         tokenizer.padding_side = original_padding_side
@@ -582,6 +545,14 @@ def load_model_tokenizer(
     ----------
     model_name_or_path : str | Path
         Model name or local path to the model folder.
+    padding_side : {"left", "right"}, optional
+        Initial tokenizer padding side. Normally unnecessary: the inference
+        paths each set the side they require and restore it per call
+        (`query_model_batch_multiple_passes` forces "right" for the last-token
+        read; `generate_text_batch` forces "left" for decoder-only generation),
+        so the load-time value is overridden either way. Left as an escape hatch
+        for callers that tokenize directly. If None, the tokenizer's own default
+        is kept.
     kwargs : dict
         Additional keyword arguments to pass to the model `from_pretrained` call.
 
@@ -600,7 +571,7 @@ def load_model_tokenizer(
 
     # Set default keyword arguments for loading the pretrained model
     model_kwargs = dict(
-        torch_dtype=torch.bfloat16 if is_bf16_compatible() else torch.float16,
+        dtype=torch.bfloat16 if is_bf16_compatible() else torch.float16,
         trust_remote_code=True,
         device_map="auto",
     )
@@ -716,6 +687,15 @@ def load_vllm_model(
     # defaults to the raw distribution either way; numeric is the only mode this
     # affects.
     kwargs.setdefault("logprobs_mode", "processed_logprobs")
+
+    # `VLLM_ENFORCE_EAGER=1` disables torch.compile + CUDA-graph capture. vLLM
+    # itself doesn't read this env var, so honor it here: it sidesteps the
+    # inductor -> Triton -> gcc JIT build that crashes on nodes with a broken
+    # toolchain / unlinkable libcuda.so.1 (see scripts/check_gcc.sh). An explicit
+    # caller-supplied `enforce_eager` kwarg still wins.
+    if os.environ.get("VLLM_ENFORCE_EAGER", "").lower() in ("1", "true", "yes"):
+        kwargs.setdefault("enforce_eager", True)
+
     logging.info(f"Loading vLLM model '{model_name_or_path}'")
     llm = LLM(
         model=str(model_name_or_path),
@@ -754,31 +734,15 @@ def get_model_size_B(model_name: str, default: int = None) -> int | float | None
 
 
 def get_thinking_end_token_id(tokenizer: AutoTokenizer) -> int | None:
-    think_id = tokenizer.encode("</think>", add_special_tokens=False)
+    try:
+        think_id = tokenizer.encode("</think>", add_special_tokens=False)
+    except Exception:
+        # Tokenizer can't encode it (e.g. a minimal stub) -> no thinking token.
+        return None
     if len(think_id) == 1:
         return think_id[0]
-    else:
-        logging.debug("Could not identify token id marking the end of thinking content.")
-        return None
-
-
-_THINKING_PARAM_NAMES = ("enable_thinking",)
-
-
-def get_thinking_kwargs(tokenizer: AutoTokenizer, enable: bool) -> dict:
-    for param in _THINKING_PARAM_NAMES:
-        try:
-            tokenizer.apply_chat_template(
-                [{"role": "user", "content": "test"}],
-                tokenize=False,
-                add_generation_prompt=False,
-                **{param: False},
-            )
-            return {param: enable}
-        except TypeError:
-            continue
-    logging.warning("Tokenizer does not support any known parameter. Falling back to standard chat template.")
-    return {}
+    logging.debug("Could not identify token id marking the end of thinking content.")
+    return None
 
 
 def get_model_developer(model_name: str):

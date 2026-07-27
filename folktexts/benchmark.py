@@ -22,6 +22,7 @@ from .classifier import (
 )
 from .dataset import Dataset
 from .evaluation import evaluate_predictions
+from .llm_utils import reasoning_to_enable_thinking
 from .plotting import render_evaluation_plots, render_fairness_plots
 from .prompting import (
     PROMPT_DEFAULT,
@@ -32,6 +33,7 @@ from .prompting import (
     encode_row_prompt_few_shot,
     resolve_chat_defaults,
     tokenizer_supports_system_prompt,
+    tokenizer_supports_thinking,
 )
 from .sipp import SIPPDataset, SIPPTaskMetadata
 from .task import TaskMetadata
@@ -52,14 +54,16 @@ class BenchmarkConfig:
         Q&A, by default False.
     use_generated_text : bool | False, optional
         Whether to  extract answer from generated text.  Default is False.
+    cot_prompting : bool, optional
+        Whether to prepend a chain-of-thought instruction to the system prompt
+        (before the answer-format instruction) on the generated-text path. Only
+        takes effect when `use_generated_text=True`. Default is False.
     reasoning : str | None, optional
         Reasoning/thinking effort for reasoning models. Use '0' for Qwen3 to
         explicitly disable thinking; 'low'/'medium'/'high' for OpenAI reasoning
         models; a float in (0, 1] (fraction of max_new_tokens) or a positive
         integer string for Claude (literal budget_tokens, min 1024). Ignored
         for non-reasoning models. Default is None.
-        #TODO When enabled, calls `apply_chat_template(..., reasoning=value)` and the resulting
-        `<think>...</think>` block is stripped before regex extraction.
     few_shot_config : FewShotConfig | None, optional
         Few-shot prompting configuration (number of shots, composition, example
         order, reuse). ``None`` means zero-shot prompting.
@@ -97,6 +101,12 @@ class BenchmarkConfig:
         prompting. When None (default), text generation uses greedy decoding (0.0),
         or 1.0 in thinking mode. Ignored (with a warning) for multiple-choice /
         numeric prompting, which reads untempered token probabilities.
+    impute_failed_as_uniform : bool, optional
+        How to handle rows whose risk score could not be parsed (NaN, e.g. a
+        failed generated-text extraction or API call). When True, such scores are
+        set to 0.5 (the uniform / max-entropy prior) and kept, preserving the
+        sample size. When False (default), the rows are dropped from every metric.
+        Either way the count is recorded as ``num_failed_scores``. Default is False.
     prompt_variation : dict | None, optional
         Dictionary of prompt style overrides (e.g. ``{"format": "bullet",
         "connector": "is"}``). ``None`` means no variation is applied.
@@ -104,6 +114,7 @@ class BenchmarkConfig:
 
     numeric_risk_prompting: bool = False
     use_generated_text: bool = False
+    cot_prompting: bool = False
     reasoning: str | None = None
     few_shot_config: FewShotConfig | None = None
     use_chat_template: bool = False
@@ -116,6 +127,7 @@ class BenchmarkConfig:
     population_filter: dict | None = None
     seed: int = DEFAULT_SEED
     temperature: float | None = None
+    impute_failed_as_uniform: bool = False
     prompt_variation: dict | None = None
 
     @classmethod
@@ -391,39 +403,45 @@ class Benchmark:
                 predictions_save_path=self._get_predictions_save_path("train"),
                 labels=y_train,
                 threshold_obj=threshold_obj,
+                impute_failed_as_uniform=self.config.impute_failed_as_uniform,
             )
 
-        # Evaluate test risk scores
-        count_nan = np.isnan(self._y_test_scores).sum()
-        if count_nan > 0:
-            logging.warning(f"Predicted scores contain NaN values, dropping {count_nan} indices.")
-            # Get indices of NaNs
-            nan_indices = np.where(np.isnan(self._y_test_scores))[0]
-            nan_mask = ~np.isnan(self._y_test_scores)
-            logging.info(f"Indices with NaN values: {nan_indices}")
-            s_arr = s_test.to_numpy() if s_test is not None else None
+        # Evaluate the test risk scores.
+        # Resolve failed (NaN) risk scores per the configured policy: impute with
+        # 0.5 (uniform prior, keeps the sample size) or drop them from every
+        # metric. `num_failed_scores` records how many failed either way; the
+        # keep-mask is all-True under imputation, so both cases share one path.
+        y_true = y_test.to_numpy()
+        s_arr = s_test.to_numpy() if s_test is not None else None
+        self._y_test_scores, nan_mask, n_failed = self.llm_clf._apply_nan_policy(
+            self._y_test_scores, self.config.impute_failed_as_uniform
+        )
+        n_dropped = int((~nan_mask).sum())
+        if n_dropped > 0:
+            logging.warning(f"Predicted scores contain NaN values, dropping {n_dropped} indices.")
+            logging.info(f"Indices with NaN values: {np.where(~nan_mask)[0]}")
             logging.info(
                 "New shapes:"
-                f"y_test: {y_test.to_numpy().shape} -> {y_test.to_numpy()[nan_mask].shape},"
+                f"y_test: {y_true.shape} -> {y_true[nan_mask].shape},"
                 f"y_test_scores: {self._y_test_scores.shape} -> {self._y_test_scores[nan_mask].shape},"
                 + ("\ns_test: " + f"{s_arr.shape} -> {s_arr[nan_mask].shape}" if s_arr is not None else "")
             )
-            self._results = evaluate_predictions(
-                y_true=y_test.to_numpy()[nan_mask],
-                y_pred_scores=self._y_test_scores[nan_mask],
-                sensitive_attribute=s_arr[nan_mask] if s_arr is not None else None,
-                threshold=self.llm_clf.threshold,
-                model_name=self.llm_clf.model_name,
-            )
 
-        else:
-            self._results = evaluate_predictions(
-                y_true=y_test.to_numpy(),
-                y_pred_scores=self._y_test_scores,
-                sensitive_attribute=s_test,
-                threshold=self.llm_clf.threshold,
-                model_name=self.llm_clf.model_name,
-            )
+        self._results = evaluate_predictions(
+            y_true=y_true[nan_mask],
+            y_pred_scores=self._y_test_scores[nan_mask],
+            sensitive_attribute=s_arr[nan_mask] if s_arr is not None else None,
+            threshold=self.llm_clf.threshold,
+            model_name=self.llm_clf.model_name,
+        )
+
+        # Record number of *fully-failed* rows (all question permutation NaN). Partial
+        # failures are hedged to 0.5 during averaging and are NOT counted here
+        # (see the per-pass `_regex_*` counters for those).
+        # Under the drop policy these rows are excluded (`num_samples` is the
+        # survivors), under imputation they are the 0.5-imputed rows. Either way this
+        # keeps the original N and the total-failure rate recoverable.
+        self._results["num_failed_scores"] = n_failed
 
         self._results["threshold_fitted_on"] = self.llm_clf._threshold_fitted_on
         self._results["threshold_obj"] = self.llm_clf._threshold_obj if self.llm_clf._threshold_fitted_on > 0 else None
@@ -812,23 +830,19 @@ class Benchmark:
 
     @staticmethod
     def _configure_task_question(task: TaskMetadata, config: BenchmarkConfig) -> None:
-        """Pick the Q&A interface (numeric / multiple-choice) on `task`.
+        """Configure the task's Q&A interface from the config.
 
-        `TaskMetadata.get_task` returns a cached singleton, so this method must
-        also *clear* prior Q&A state when switching to plain MC: without an
-        explicit reset, a chat_mcq config (none of enable_thinking/numeric
-        set) leaves whatever a previous numeric cell wrote on the task,
-        and `task.question` keeps returning the stale interface — silently
-        dispatching the wrong QA type for what should be a 1-token MC prediction.
+        The Q&A interface has two independent axes — numeric vs multiple-choice
+        (`numeric_risk_prompting`) and token-probability vs generated-text
+        decoding (`use_generated_text`) — which together select one of the four
+        concrete QA types. `TaskMetadata.get_task` returns a cached singleton, so
+        both axes are set *unconditionally* here to clear any state a previous
+        benchmark cell left on the task; otherwise `task.question` could return a
+        stale interface.
         """
-        if config.numeric_risk_prompting:
-            task.use_numeric_qa = True
-        else:
-            # Plain multiple-choice — clear any leftover state on
-            # the cached singleton. Both flags must be reset explicitly: the
-            # `use_numeric_qa = False` setter doesn't touch `_use_cot_qa`, and
-            # vice versa.
-            task.use_numeric_qa = False
+        task.use_numeric_qa = config.numeric_risk_prompting
+        task.use_text_output_for_qa = config.use_generated_text
+        task.cot_prompting = config.cot_prompting
 
     @staticmethod
     def _validate_config(config: BenchmarkConfig) -> None:
@@ -838,21 +852,6 @@ class Benchmark:
                 "Cannot use both few-shot prompting and chat template formatting. Please choose one or the other."
             )
 
-        # The `use_generated_text` (CoT) path runs generation via
-        # `generate_text_batch`, which applies the tokenizer's chat template
-        # internally whenever `reasoning` is set (see `_apply_chat_template_batch`:
-        # `reasoning is None` -> raw prompts, no wrap). An outer
-        # `encode_row_prompt_chat` (`use_chat_template`) would then double-wrap.
-        if config.use_chat_template and config.use_generated_text and config.reasoning is not None:
-            raise ValueError(
-                "Cannot combine `use_chat_template=True` with "
-                "`use_generated_text=True` and a `reasoning` value: the "
-                "generation path applies the tokenizer's chat template "
-                "internally inside `generate_text_batch`, so an outer "
-                "`encode_row_prompt_chat` would double-wrap the prompt. "
-                "Drop `--use-chat-template` when running generated-text/reasoning."
-            )
-
         # Reasoning/thinking is incompatible with token-probability (logprob)
         # decoding on every backend: thinking emits a trace *before* the answer,
         # so the multi-pass logprob reader (1-2 forward passes) never sees the
@@ -860,13 +859,23 @@ class Benchmark:
         # enabled anyway. Require the text-extraction path instead of shipping a
         # doomed request (which would otherwise surface as a temp!=1 / no-logprobs
         # API error deep in the call).
-        if config.reasoning is not None and config.reasoning != "0" and not config.use_generated_text:
+        if config.reasoning is not None and str(config.reasoning) != "0" and not config.use_generated_text:
             raise ValueError(
                 f"Reasoning/thinking (`reasoning={config.reasoning!r}`) requires text-based "
                 "answer extraction (`use_generated_text=True`): the logprob path reads "
                 "untempered top-logprobs over 1-2 forward passes and cannot capture an "
                 "answer that follows a thinking trace (and Claude/OpenAI don't return "
                 "logprobs with thinking). Re-run with --use-generated-text."
+            )
+
+        # The chain-of-thought instruction is only appended on the generated-text
+        # path (it steers free-form output the regex parser then reads); on the
+        # logprob path it would be a silent no-op, so require the text path.
+        if config.cot_prompting and not config.use_generated_text:
+            raise ValueError(
+                "Chain-of-thought prompting (`cot_prompting=True`) requires text-based "
+                "answer extraction (`use_generated_text=True`): the CoT instruction only "
+                "applies on the generated-text path. Re-run with --use-generated-text."
             )
 
         def _user_set(v) -> bool:
@@ -881,6 +890,41 @@ class Benchmark:
                 "`system_prompt` / `chat_prompt` were provided but "
                 "`use_chat_template=False`; these arguments are only used by "
                 "the chat-template path and will be ignored."
+            )
+
+    @staticmethod
+    def _warn_unsupported_tokenizer_features(tokenizer: AutoTokenizer, config: BenchmarkConfig) -> None:
+        """Warn once, upfront, when a requested prompting feature is unavailable on this tokenizer.
+
+        System-role support is resolved separately (and dropped) in `_build_chat_encode_row_function`.
+        This helper covers the chat-template presence and `enable_thinking` support.
+        """
+        wants_chat = config.use_chat_template or config.reasoning is not None
+        if wants_chat and getattr(tokenizer, "chat_template", None) is None:
+            logging.warning(
+                "Chat template / reasoning was requested, but the tokenizer has no "
+                "chat_template (base model); prompts will be sent raw."
+            )
+            return
+
+        supports_thinking = tokenizer_supports_thinking(tokenizer)
+
+        # Reasoning models must have `reasoning` set explicitly: leaving it unset
+        # falls back to the template default (often thinking ON), which is an
+        # ambiguous, easy-to-miss state. Mirrors the web-API classifier's rule.
+        if config.reasoning is None and supports_thinking:
+            raise ValueError(
+                "This model's chat template supports thinking (Qwen-style `enable_thinking`), "
+                "so `reasoning` must be set explicitly: use '0' to disable thinking, or "
+                "'low'/'medium'/'high'/a token budget to enable it. Leaving it unset would run "
+                "with the template's default (often thinking on)."
+            )
+
+        if config.reasoning is not None and not supports_thinking:
+            logging.warning(
+                f"`reasoning={config.reasoning!r}` was requested, but this tokenizer's chat "
+                "template does not accept the `enable_thinking` kwarg (the Qwen-style switch). "
+                "If the model toggles thinking that way it may be ignored."
             )
 
     @staticmethod
@@ -929,6 +973,7 @@ class Benchmark:
             tokenizer=tokenizer,
             chat_prompt=chat_prompt,
             prompt_config=prompt_config,
+            enable_thinking=reasoning_to_enable_thinking(config.reasoning),
         ), prompt_config
 
     @classmethod
@@ -962,6 +1007,11 @@ class Benchmark:
             f"System prompt: {prompt_config.system_prompt() if prompt_config.system_prompt is not None else '(default)'}"
         )
 
+        # Resolve tokenizer capabilities once, upfront: warn when reasoning/chat is
+        # requested but unavailable, instead of discovering it per row in generation.
+        if tokenizer is not None:
+            cls._warn_unsupported_tokenizer_features(tokenizer, config)
+
         if config.few_shot_config:
             few_shot_config = config.few_shot_config
             # When correcting order bias, encode_row is called once per answer-key
@@ -985,8 +1035,25 @@ class Benchmark:
                 prompt_config=prompt_config,
             ), prompt_config
 
+        # Explicit chat-template request: always use the chat encoder (it raises a
+        # clear error for web-API models with no local tokenizer).
         if config.use_chat_template:
             # _build_chat_encode_row_function already returns (encode_fn, prompt_config)
+            return cls._build_chat_encode_row_function(
+                task=task,
+                tokenizer=tokenizer,
+                config=config,
+                prompt_config=prompt_config,
+            )
+
+        # Generated-text (and, implicitly, reasoning) on a chat model must go
+        # through the chat template so the model is cued to answer as an assistant
+        # and the system prompt (format / CoT / enable_thinking) is applied there.
+        # Mirrors the classifier's own `_default_encode_row`. Only when the
+        # tokenizer actually has a template — base models fall through to raw prompts.
+        if (config.use_generated_text or config.reasoning is not None) and getattr(
+            tokenizer, "chat_template", None
+        ) is not None:
             return cls._build_chat_encode_row_function(
                 task=task,
                 tokenizer=tokenizer,
@@ -1042,14 +1109,12 @@ class Benchmark:
         # Update config with any additional kwargs
         config = config.update(**kwargs)
 
+        # Validate before mutating any shared state.
+        cls._validate_config(config)
+
         # Handle TaskMetadata object and configure its Q&A mode from the config.
         if isinstance(task, str):
             task = TaskMetadata.get_task(task)
-
-        if config.use_generated_text and config.use_generated_text != task.use_text_output_for_qa:
-            task.use_text_output_for_qa = config.use_generated_text
-            if config.numeric_risk_prompting:
-                raise NotImplementedError  # TODO
 
         cls._configure_task_question(task, config)
 
@@ -1065,8 +1130,6 @@ class Benchmark:
 
         if config.population_filter is not None:
             dataset = dataset.filter(config.population_filter)
-
-        cls._validate_config(config)
 
         # Build PromptConfig once from the variation dict. Uses updated question type.
         prompt_config = PromptConfig.from_dict(
@@ -1085,15 +1148,14 @@ class Benchmark:
             prompt_config=prompt_config,
         )
 
-        # Parse LLMClassifier parameters
-        if config.temperature is not None:  # and not use_generated text
+        ## Parse LLMClassifier parameters
+        if config.temperature is not None and not config.use_generated_text:
             logging.warning(
                 "`temperature` only affects text-generation (chain-of-thought) "
                 "prompting; multiple-choice/numeric prompting reads untempered "
                 "token probabilities, so this setting will be ignored."
             )
 
-        # Parse LLMClassifier parameters
         llm_inference_kwargs: dict[str, Any] = {
             "correct_order_bias": config.correct_order_bias,
             "reasoning": config.reasoning,

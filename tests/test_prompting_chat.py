@@ -36,6 +36,7 @@ from folktexts.qa_interface import (
     Choice,
     DirectNumericQA,
     MultipleChoiceQA,
+    TextNumericQA,
 )
 from transformers import AutoTokenizer
 
@@ -149,6 +150,10 @@ def fake_task() -> MagicMock:
     task.question.get_answer_prefix.return_value = "Answer:"
     task.question.default_system_prompt = SYSTEM_PROMPT
     task.question.default_chat_prompt = ANTHROPIC_CHAT_PROMPT
+    # System-prompt resolution goes through `get_default_system_prompt()` (a base
+    # MCQ returns SYSTEM_PROMPT unchanged; generated-text types append a format
+    # instruction). This mock stands in for a base MCQ.
+    task.question.get_default_system_prompt.return_value = SYSTEM_PROMPT
     return task
 
 
@@ -201,6 +206,23 @@ class TestResolveChatDefaults:
         )
         assert sys_p == "custom system"
         assert chat_p == ANTHROPIC_CHAT_PROMPT
+
+    def test_generated_text_appends_format_and_drops_prefill(self):
+        # Upstream's ChainOfThoughtQA resolved to (None, None). Here a
+        # generated-text type instead appends its answer-format instruction to
+        # the system prompt (so the regex parser has a target) and carries NO
+        # scoring prefill (`default_chat_prompt = None`) — the prefill would
+        # fight the format instruction.
+        text_q = TextNumericQA(column="X", text="Q?")
+        sys_p, chat_p = resolve_chat_defaults(question=text_q)
+        assert sys_p is not None and "Probability: X%" in sys_p
+        assert chat_p is None
+
+    def test_generated_text_with_cot_prepends_cot_instruction(self):
+        text_q = TextNumericQA(column="X", text="Q?", use_cot=True)
+        sys_p, chat_p = resolve_chat_defaults(question=text_q)
+        assert text_q.cot_instruction in sys_p
+        assert chat_p is None
 
 
 # ----------------------------------------------------------------------

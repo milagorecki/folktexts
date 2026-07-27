@@ -130,9 +130,10 @@ def setup_arg_parser() -> ArgumentParser:
         type=int,
         default=None,
         help=(
-            "[int] vLLM max_model_len (input + output tokens). If unset, derived "
-            "from --context-size + ReasoningQA.max_new_tokens for the prompting "
-            "mode (currently 8000 for reasoning/thinking, 1 otherwise)."
+            "[int] vLLM max_model_len (input + output tokens). If unset, derived as "
+            "--context-size + output budget + 256, where the output budget is "
+            "GeneratedTextQA.max_new_tokens for reasoning/thinking prompting and 1 "
+            "otherwise (token-probability prompting emits a single answer token)."
         ),
     )
 
@@ -178,6 +179,26 @@ def setup_arg_parser() -> ArgumentParser:
     parser.add_argument(
         "--numeric-risk-prompting",
         help="[bool] Whether to prompt for numeric risk-estimates instead of multiple-choice Q&A",
+        action="store_true",
+        default=False,
+    )
+
+    parser.add_argument(
+        "--cot-prompting",
+        help=(
+            "[bool] Add a chain-of-thought instruction to the system prompt (before the "
+            "answer-format instruction). Only takes effect with --use-generated-text."
+        ),
+        action="store_true",
+        default=False,
+    )
+
+    parser.add_argument(
+        "--impute-failed-as-uniform",
+        help=(
+            "[bool] Set non-parsable / failed risk scores (NaN) to 0.5 (uniform prior) "
+            "and keep them, preserving sample size. By default such rows are dropped from metrics."
+        ),
         action="store_true",
         default=False,
     )
@@ -393,9 +414,14 @@ def main():
 
         max_model_len = args.max_model_len
         if max_model_len is None:
-            max_model_len = args.context_size + (8000 if args.reasoning is not None else 1) + 256
-            # reasoning models may need more context for the generate intermediate tokens
-            # TODO: Define default max as global constant
+            # Generated-text prompting needs room for the full response (and any
+            # thinking trace); token-probability prompting emits a single answer token.
+            # Size the output budget from the QA type's own `max_new_tokens` so it stays
+            # the single source of truth.
+            from folktexts.qa_interface import GeneratedTextQA
+
+            output_budget = GeneratedTextQA.max_new_tokens if args.use_generated_text else 1
+            max_model_len = args.context_size + output_budget + 256
 
         model, tokenizer = load_vllm_model(
             args.model,
@@ -419,11 +445,10 @@ def main():
         model_load_kwargs = {}
         if args.attn_implementation:
             model_load_kwargs["attn_implementation"] = args.attn_implementation
-        if args.use_generated_text:
-            logging.info("Tokenizer padding_side set to 'left'.")
-            model, tokenizer = load_model_tokenizer(model_path, padding_side="left", **model_load_kwargs)
-        else:
-            model, tokenizer = load_model_tokenizer(model_path, **model_load_kwargs)
+        # No padding_side here: the scoring path (query_model_batch_multiple_passes)
+        # and the generation path (generate_text_batch) each set the side they need
+        # ("right" / "left") locally and restore it
+        model, tokenizer = load_model_tokenizer(model_path, **model_load_kwargs)
 
         backend = "transformers"
     # Build FewShotConfig if few-shot prompting is requested
@@ -445,6 +470,7 @@ def main():
     config = BenchmarkConfig(
         few_shot_config=few_shot_config,
         use_generated_text=args.use_generated_text,
+        cot_prompting=args.cot_prompting,
         prompt_variation=prompt_variation_dict,
         numeric_risk_prompting=args.numeric_risk_prompting,
         use_chat_template=args.use_chat_template,
@@ -458,6 +484,7 @@ def main():
         population_filter=population_filter_dict,
         seed=args.seed,
         temperature=args.temperature,
+        impute_failed_as_uniform=args.impute_failed_as_uniform,
     )
 
     # Create Benchmark object

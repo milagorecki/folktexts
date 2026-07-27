@@ -59,13 +59,6 @@ from .task import TaskMetadata
 PROMPT_DEFAULT = object()
 """Sentinel: "use the question type's default system / chat prompt" — as opposed to ``None``, which disables the role."""
 
-COT_SYSTEM_PROMPT = (
-    "You are a helpful assistant. Reason step-by-step about the question "
-    "and provide your final probability estimate. Your response MUST end "
-    "with 'Probability: X%' where X is a number between 0 and 100."
-)
-# TODO: adjust based on question. maybe only "COT instruction" to add to rest of default?
-
 DEFAULT_PROMPT_STYLE: dict[str, Any] = {
     "format": "textbullet",
     "connector": "is:",  # match main's "<feature> is: <value>"; override via --variation connector=is
@@ -657,6 +650,7 @@ class PromptBuilder:
         tokenizer: AutoTokenizer,
         question: QAInterface | None = None,
         chat_prompt: str | None = PROMPT_DEFAULT,  # type: ignore[assignment]
+        enable_thinking: bool | None = None,
         **kwargs,
     ) -> str:
         resolved_question = question or config.suffix.question
@@ -679,6 +673,7 @@ class PromptBuilder:
             user_prompt=user_content,
             system_prompt=system_content,
             chat_prompt=chat_prompt,
+            enable_thinking=enable_thinking,
             **kwargs,
         )
 
@@ -865,7 +860,87 @@ def tokenizer_supports_system_prompt(tokenizer: AutoTokenizer) -> bool:
     except Exception:
         # Defensive fallback for unexpected template-rendering failures —
         # safer to skip the system prompt than to hard-fail the benchmark.
+        logging.debug("Unexpected error probing system-role support; treating as unsupported.")
         return False
+
+
+# Single source of truth for chat-template thinking toggles. Model families name
+# the kwarg differently; probe in order and use the first the template accepts.
+# To support a new local family, add its kwarg name here — nothing else changes.
+# (Web-API reasoning — OpenAI `reasoning_effort`, Claude `budget_tokens` — is a
+# separate axis handled per-provider in `web_api_classifier`, not here.)
+THINKING_TEMPLATE_KWARGS: tuple[str, ...] = ("enable_thinking",)  # Qwen3
+
+
+def _resolve_thinking_kwarg(tokenizer: AutoTokenizer) -> str | None:
+    """Return the thinking-toggle kwarg name this tokenizer's chat template accepts.
+
+    Probes each candidate in ``THINKING_TEMPLATE_KWARGS`` and returns the first
+    the template accepts, or ``None`` if none do (e.g. non-thinking models, whose
+    templates raise ``TypeError`` on the unknown kwarg). Any probe failure is
+    treated as "not supported" (safer than crashing).
+    """
+    probe = [{"role": "user", "content": "test"}]
+    for name in THINKING_TEMPLATE_KWARGS:
+        try:
+            on = tokenizer.apply_chat_template(probe, tokenize=False, add_generation_prompt=True, **{name: True})
+            off = tokenizer.apply_chat_template(probe, tokenize=False, add_generation_prompt=True, **{name: False})
+        except TypeError:
+            continue  # template doesn't accept this kwarg at all
+        except Exception:
+            logging.debug(f"Unexpected error probing {name!r} support; treating as unsupported.")
+            return None
+        # A template must not only *accept* the kwarg but actually change its
+        # output based on it. Non-thinking templates (e.g. Qwen2) silently ignore
+        # an unknown `enable_thinking` (no TypeError) — treat that as unsupported.
+        if on != off:
+            return name
+    return None
+
+
+def tokenizer_supports_thinking(tokenizer: AutoTokenizer) -> bool:
+    """Whether the tokenizer's chat template accepts any known thinking-toggle kwarg.
+
+    Only thinking-capable templates (e.g. Qwen-style ``enable_thinking``) accept
+    one; others raise ``TypeError``. See ``THINKING_TEMPLATE_KWARGS``.
+    """
+    return _resolve_thinking_kwarg(tokenizer) is not None
+
+
+def chat_template_assistant_marker(tokenizer: AutoTokenizer) -> str | None:
+    """Return the substring that opens the assistant turn in *this* tokenizer's
+    chat template, or None if it can't be derived.
+
+    The marker is model-specific and derived: computed as the delta between rendering a
+    dummy user turn with vs without ``add_generation_prompt``. So the returned
+    value is e.g. ``"<|im_start|>assistant"`` (Qwen), ``"<start_of_turn>model"``
+    (Gemma), or ``"<|start_header_id|>assistant<|end_header_id|>"`` (Llama-3),
+    depending on the tokenizer. Returns None for base models (no chat template)
+    or templates that don't behave as a simple append.
+
+    Use with **membership** (``marker in prompt``), not ``endswith``: the marker
+    ends a generation prompt (``add_generation_prompt=True``) but sits *before*
+    the prefill content in a prefilled prompt — so containment holds for both,
+    and only a genuinely un-templated (raw) prompt misses it.
+    """
+    if getattr(tokenizer, "chat_template", None) is None:
+        return None
+    try:
+        with_gen = tokenizer.apply_chat_template(
+            [{"role": "user", "content": "x"}], tokenize=False, add_generation_prompt=True
+        )
+        without_gen = tokenizer.apply_chat_template(
+            [{"role": "user", "content": "x"}], tokenize=False, add_generation_prompt=False
+        )
+    except Exception:
+        logging.debug("Could not derive chat-template assistant marker; skipping the templated-prompt check.")
+        return None
+    # Only reliable when `add_generation_prompt=True` simply appends to the same
+    # render; otherwise we can't isolate the marker, so bail out (return None).
+    if not (isinstance(with_gen, str) and isinstance(without_gen, str) and with_gen.startswith(without_gen)):
+        return None
+    marker = with_gen[len(without_gen) :].strip()
+    return marker or None
 
 
 def resolve_chat_defaults(
@@ -882,13 +957,24 @@ def resolve_chat_defaults(
     a role entirely (e.g. for Gemma-style tokenizers that reject the system role).
     """
     if system_prompt is PROMPT_DEFAULT:
-        # NOTE: the chat-template path uses the `chat_prompt` prefill (a
-        # logprob-scoring construct), so it deliberately reads the *plain*
-        # default system prompt — the generated-text answer-format instruction
-        # (see `get_default_system_prompt`) would contradict that prefill.
-        system_prompt = question.default_system_prompt
+        # Polymorphic default: base (scoring) types return their plain system
+        # prompt; generated-text types append their answer-format instruction.
+        # No contradiction with the prefill — generated-text types set
+        # `default_chat_prompt = None`, so there is no scoring prefill to fight.
+        system_prompt = question.get_default_system_prompt()
     if chat_prompt is PROMPT_DEFAULT:
         chat_prompt = question.default_chat_prompt
+    elif chat_prompt is not None and question.use_generated_text:
+        # A `chat_prompt` is a scoring prefill; generated-text types use none by
+        # default. An explicit one reinstates the prefill-vs-format-instruction
+        # conflict these types exist to avoid, and can degrade text extraction.
+        logging.warning(
+            "An explicit `chat_prompt` (assistant prefill) was provided for a "
+            "generated-text QA type, which uses no prefill by default. It can "
+            "conflict with free-form generation and the answer-format "
+            "instruction, degrading extraction. To change how the model formats "
+            "its answer, set `system_prompt` instead."
+        )
     return system_prompt, chat_prompt
 
 
@@ -900,6 +986,7 @@ def encode_row_prompt_chat(
     chat_prompt: str | None = PROMPT_DEFAULT,  # type: ignore[assignment]
     question: QAInterface | None = None,
     prompt_config: PromptConfig | None = None,
+    enable_thinking: bool | None = None,
 ) -> str:
     """Encode a row prompt using the tokenizer's chat template.
 
@@ -944,6 +1031,7 @@ def encode_row_prompt_chat(
             tokenizer,
             question=question,
             chat_prompt=chat_prompt,
+            enable_thinking=enable_thinking,
         )
     config = PromptConfig.from_dict({}, task=task, question=question, system_prompt=system_prompt)
     return PromptBuilder(task).build_chat(
@@ -951,6 +1039,7 @@ def encode_row_prompt_chat(
         config,
         tokenizer,
         chat_prompt=chat_prompt,
+        enable_thinking=enable_thinking,
     )
 
 
@@ -959,9 +1048,13 @@ def apply_chat_template(
     user_prompt: str,
     system_prompt: str | None = None,
     chat_prompt: str | None = None,
+    enable_thinking: bool | None = None,
     **kwargs,
 ) -> str:
     """Apply the tokenizer's chat template to assemble a single prompt string.
+
+    This is the single config-aware chat assembler used by both the scoring
+    (assistant-prefill) and generation (free-generation) paths.
 
     Notes
     -----
@@ -978,32 +1071,70 @@ def apply_chat_template(
     returning a corrupted prompt.
 
     When `chat_prompt is None`, `add_generation_prompt=True` is used and the
-    model is left to generate freely; this is **not** appropriate for the
-    benchmark scoring path (the last token will be a template-emitted role
-    header, not the prefill).
+    model is left to generate freely (the generation path); this is **not**
+    appropriate for the benchmark scoring path (the last token will be a
+    template-emitted role header, not the prefill).
+
+    `enable_thinking` is the thinking switch forwarded to the template: `True`/
+    `False` toggle it, `None` omits the kwarg (template default). Two features
+    may be unsupported by a given tokenizer and are dropped on the first
+    exception that names them: `enable_thinking` (`TypeError`) and the system
+    role (`TemplateError`/`ValueError`, e.g. Gemma).
     """
-    # Add system prompt
-    conversation = [{"role": "system", "content": system_prompt}] if system_prompt is not None else []
-
-    # Add user prompt
-    conversation.append({"role": "user", "content": user_prompt})
-
-    if chat_prompt is None:
-        # No assistant prefill; let the model generate freely
-        kwargs.setdefault("add_generation_prompt", True)
-    else:
-        # Using the Anthropic-style chat prompt
-        conversation.append({"role": "assistant", "content": chat_prompt})
-        kwargs.setdefault("add_generation_prompt", False)
-
-    # Apply prompt template
+    # `tokenize=False` is enforced — this function returns a string.
     if kwargs.pop("tokenize", False):
         raise ValueError("apply_chat_template always returns a string (tokenize=False); pass tokenize=False or omit it.")
-    filled_prompt = tokenizer.apply_chat_template(  # ignore[attr-defined]
-        conversation=conversation,
-        tokenize=False,
-        **kwargs,
-    )
+
+    # `add_generation_prompt` follows the prefill: no prefill -> generate freely
+    # (True); prefill supplied -> the assistant turn is already there (False).
+    kwargs.setdefault("add_generation_prompt", chat_prompt is None)
+
+    # Drop unsupported features on the first exception that names them and retry
+    # (mirrors the batch generation path so both share one fallback strategy).
+    use_system = system_prompt is not None
+    use_thinking: bool | None = enable_thinking
+    # Resolve the template's thinking-toggle kwarg name once (family-specific,
+    # e.g. Qwen's `enable_thinking`); None if the template accepts none.
+    thinking_kwarg = _resolve_thinking_kwarg(tokenizer) if use_thinking is not None else None
+
+    while True:
+        conversation: list[dict[str, str]] = []
+        if use_system:
+            conversation.append({"role": "system", "content": system_prompt})
+        conversation.append({"role": "user", "content": user_prompt})
+        if chat_prompt is not None:
+            conversation.append({"role": "assistant", "content": chat_prompt})
+
+        think_kw = {thinking_kwarg: use_thinking} if (use_thinking is not None and thinking_kwarg) else {}
+        try:
+            filled_prompt = tokenizer.apply_chat_template(
+                conversation=conversation,
+                tokenize=False,
+                **think_kw,
+                **kwargs,
+            )
+            logging.debug(f"Tokenizer chat template applied successfully with {thinking_kwarg} ={use_thinking}.")
+            # logging.debug(f"Filled prompt:\n{filled_prompt}")
+            break
+        except TypeError:
+            # Thinking kwarg not accepted after all — strip it and retry.
+            if use_thinking is not None:
+                if use_thinking:
+                    logging.warning(
+                        f"Tokenizer does not support {thinking_kwarg or 'a thinking'} kwarg; "
+                        "falling back to standard chat template."
+                    )
+                use_thinking = None
+                thinking_kwarg = None
+            else:
+                raise
+        except (TemplateError, ValueError):
+            # System role rejected (e.g. Gemma) — drop it and retry.
+            if use_system:
+                logging.warning("Tokenizer does not support system role; dropping system prompt.")
+                use_system = False
+            else:
+                raise
 
     if chat_prompt is not None:
         # Trim any special tokens that the template appended after the prefill

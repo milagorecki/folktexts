@@ -1,9 +1,12 @@
 """Regression tests for ``WebAPILLMClassifier._query_webapi_batch``.
 
-These exercise the system-prompt handling without a live web API: the
-classifier is built with ``__new__`` (bypassing the litellm / API-key setup in
-``__init__``) and the network call (``text_completion_api``) is replaced by a
-recorder that captures the ``messages`` payload.
+These exercise the request-building logic without a live web API: the classifier
+is built with ``__new__`` (bypassing the litellm / API-key / ``APIClient`` setup
+in ``__init__``), and the rate-limited network seam
+(``self.client.make_requests_with_retries``) is replaced by a stub that records
+the ``requests_data`` payload and returns canned responses. Each recorded
+request dict carries the ``messages`` (or ``input`` for the responses API) plus
+the merged ``api_call_params`` (temperature, logprobs, …).
 
 The key regression: for numeric/MCQ questions, ``system_prompt`` must always be
 bound. Before the fix it was assigned only inside
@@ -16,23 +19,15 @@ from __future__ import annotations
 
 import pytest
 from folktexts.classifier import WebAPILLMClassifier
+from folktexts.classifier.base import InferenceConfig
 from folktexts.prompting import PromptConfig
 
-# These tests target the litellm-native web_api dispatch (they mock
-# ``text_completion_api`` and build the classifier via ``__new__``). The merged
-# code deliberately kept OURS's rate-limited ``APIClient`` path
-# (``self.client.make_requests_with_retries``) and defers the litellm migration
-# to a follow-up. The behaviors asserted here (system-prompt None/default/custom,
-# temperature=0, unsupported-param filtering, logprobs fail-fast) are all verified
-# correct in ``_query_webapi_batch`` — these tests just can't reach that code
-# through the litellm seam yet. They become the acceptance spec for, and will
-# pass after, the ``llm_api_client`` -> litellm migration. See the memory note
-# ``project-replace-llm-api-client-with-litellm-ratelimit``.
-pytestmark = pytest.mark.xfail(
-    reason="Targets the litellm-native web_api dispatch; merged code uses the APIClient path. "
-    "Behaviors verified correct in _query_webapi_batch; will pass after the llm_api_client->litellm migration.",
-    strict=False,
-)
+
+@pytest.fixture(autouse=True)
+def _fake_api_base(monkeypatch):
+    """`_query_webapi_batch` reads the API base from the environment."""
+    monkeypatch.setenv("AZURE_API_BASE", "https://test.invalid")
+    monkeypatch.setenv("AZURE_AI_API_BASE", "https://test.invalid")
 
 
 @pytest.fixture(scope="module")
@@ -42,21 +37,32 @@ def mcq_task():
     return ACSTaskMetadata.get_task("ACSIncome", use_numeric_qa=False)
 
 
-def _make_classifier(prompt_config: PromptConfig, *, supported_params: set | None = None):
-    """Build a WebAPILLMClassifier without touching litellm / the network."""
+def _make_classifier(
+    prompt_config: PromptConfig,
+    *,
+    supported_params: set | None = None,
+    api_type: str = "completion",
+):
+    """Build a WebAPILLMClassifier without touching litellm / the network.
+
+    Returns ``(clf, calls)`` where ``calls`` accumulates the per-request message
+    lists (one per prompt); the resolved ``api_call_params`` for the last request
+    are exposed on ``clf.last_call_params``.
+    """
     clf = WebAPILLMClassifier.__new__(WebAPILLMClassifier)
     clf._model_name = "test-model"
-    clf._seed = 42
+    clf.deployment_name = "test-model"
+    clf.api_type = api_type
     clf._prompt_config = prompt_config
-    clf._temperature = None  # no override → use each question's default_temperature
-    clf._total_cost = 0  # consumed by __del__
-    clf.max_api_rpm = 10**9  # make the inter-call sleep negligible
+    # No temperature override → defer to each question's default_temperature.
+    clf._inference = InferenceConfig(seed=42, temperature=None)
     clf.supported_params = (
         supported_params
         if supported_params is not None
         else {
             "temperature",
             "max_tokens",
+            "max_completion_tokens",
             "stream",
             "seed",
             "logprobs",
@@ -67,12 +73,24 @@ def _make_classifier(prompt_config: PromptConfig, *, supported_params: set | Non
 
     calls: list[list[dict]] = []
 
-    def _fake_completion(*, model, messages, **kwargs):
-        calls.append(messages)
-        clf.last_call_params = kwargs  # capture the resolved api_call_params
-        return {"choices": [{"message": {"content": "Probability: 50%"}}]}
+    def _messages(req: dict) -> list[dict]:
+        # The responses API renames `messages` -> `input`.
+        return req.get("messages", req.get("input"))
 
-    clf.text_completion_api = _fake_completion
+    class _StubClient:
+        """Stand-in for the rate-limited ``APIClient``."""
+
+        def make_requests_with_retries(self, requests_data, **kwargs):
+            for req in requests_data:
+                calls.append(_messages(req))
+            clf.last_request = requests_data[0]  # raw request dict (routing + params)
+            # `api_call_params` are merged into each request dict alongside the
+            # routing keys; expose them for the param-contract assertions.
+            routing = {"model", "api_base", "messages", "input"}
+            clf.last_call_params = {k: v for k, v in requests_data[0].items() if k not in routing}
+            return [{"choices": [{"message": {"content": "Probability: 50%"}}]} for _ in requests_data]
+
+    clf.client = _StubClient()
     return clf, calls
 
 

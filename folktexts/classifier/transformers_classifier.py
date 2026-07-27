@@ -3,13 +3,25 @@
 from __future__ import annotations
 
 import logging
-import os
+from functools import partial
 from pathlib import Path
 
 import numpy as np
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from folktexts.llm_utils import generate_text_batch, query_model_batch_multiple_passes
+from folktexts.llm_utils import (
+    _postprocess_generated_text,
+    generate_text_batch,
+    get_thinking_end_token_id,
+    query_model_batch_multiple_passes,
+    reasoning_to_enable_thinking,
+)
+from folktexts.prompting import (
+    chat_template_assistant_marker,
+    encode_row_prompt_chat,
+    tokenizer_supports_system_prompt,
+    tokenizer_supports_thinking,
+)
 from folktexts.qa_interface import DirectNumericQA, MultipleChoiceQA
 from folktexts.task import TaskMetadata
 from folktexts.token_tracker import TokenTracker
@@ -80,47 +92,35 @@ class TransformersLLMClassifier(LLMClassifier):
             **inference_kwargs,
         )
 
-        # Logging controls (used mainly for text generation debugging).
-        # By default, log only the first N prompt/generation pairs; users can
-        # enable logging all generations via env var or CLI wrapper.
-        self._log_generations_all = os.getenv("FOLKTEXTS_LOG_GENERATIONS", "0").strip() in {"1", "true", "True"}
-        try:
-            self._log_generations_first_n = int(os.getenv("FOLKTEXTS_LOG_GENERATIONS_FIRST_N", "3"))
-        except ValueError:
-            self._log_generations_first_n = 3
-        self._logged_generations_count = 0
+        self._probe_tokenizer_capabilities(self._tokenizer)
 
-        # Track answer extraction failures across batches so we can warn
-        # if a non-trivial fraction of samples fall back to the silent 0.5
-        # default — otherwise a benchmark with collapsed AUC looks "successful".
-        self._regex_total = 0
-        self._regex_failed = 0
+    def _default_encode_row(self) -> EncodeRowCallable:
+        """Route generated-text tasks on a chat model through the chat template
+        (applying enable_thinking + system prompt there); plain prompt otherwise.
 
-    def _should_log_generation(self) -> bool:
-        """Return True if we should log the next prompt/generation pair."""
-        if self._log_generations_all:
-            return True
-        return self._logged_generations_count < max(self._log_generations_first_n, 0)
-
-    # Warn the first time the failure rate crosses 25% (after ≥20 samples) and
-    # again at every 200-sample boundary, so a benchmark with mostly-failing
-    # extractions surfaces in the logs instead of silently collapsing AUC to 0.5.
-    _REGEX_FAILURE_WARN_THRESHOLD = 0.25
-    _REGEX_FAILURE_WARN_MIN_SAMPLES = 20
-
-    def _maybe_warn_regex_extraction_failure_rate(self) -> None:
-        if self._regex_total < self._REGEX_FAILURE_WARN_MIN_SAMPLES:
-            return
-        if self._regex_total % 200 != 0 and self._regex_total != self._REGEX_FAILURE_WARN_MIN_SAMPLES:
-            return
-        rate = self._regex_failed / self._regex_total
-        if rate >= self._REGEX_FAILURE_WARN_THRESHOLD:
-            logging.warning(
-                f"Probability extraction failed via regex for "
-                f"{self._regex_failed}/{self._regex_total} samples "
-                f"({rate:.1%}); these fall back to 0.5 and will collapse AUC. "
-                f"Inspect generations with FOLKTEXTS_LOG_GENERATIONS_FIRST_N."
+        Local override of the tokenizer-agnostic base default, so a bare
+        classifier (no benchmark) still templates the generation path.
+        """
+        if getattr(self._tokenizer, "chat_template", None) is not None and self.task.question.use_generated_text:
+            logging.info("Routing default encode_row through the chat template (generated-text path).")
+            return partial(
+                encode_row_prompt_chat,
+                task=self.task,
+                tokenizer=self._tokenizer,
+                prompt_config=self._prompt_config,
+                enable_thinking=reasoning_to_enable_thinking(self.reasoning),
             )
+        return super()._default_encode_row()
+
+    def _probe_tokenizer_capabilities(self, tokenizer) -> None:
+        """Detect and log the tokenizer's chat-template capabilities (once, diagnostic)."""
+        self._has_chat_template = getattr(tokenizer, "chat_template", None) is not None
+        self._supports_system_role = tokenizer_supports_system_prompt(tokenizer) if self._has_chat_template else False
+        self._supports_thinking = tokenizer_supports_thinking(tokenizer) if self._has_chat_template else False
+        logging.info(
+            f"Tokenizer capabilities for '{self.model_name}': chat_template={self._has_chat_template}, "
+            f"system_role={self._supports_system_role}, thinking={self._supports_thinking}."
+        )
 
     def __hash__(self) -> int:
         """Generate a unique hash for the LLMClassifier object."""
@@ -169,110 +169,13 @@ class TransformersLLMClassifier(LLMClassifier):
         if self.token_tracker is not None:
             prompt_tokens = sum(len(self._tokenizer.encode(p, add_special_tokens=False)) for p in prompts_batch)
 
-        # Handle ChainOfThoughtQA with text generation
-        #  (kept for future use: numeric questions with use_generated_text can extract
-        # the probability from the generated text via regex instead of token log-probs)
-        # if isinstance(question, ChainOfThoughtQA):
-        #     # Pass enable_thinking to generate_text_batch:
-        #     # - True: enable thinking mode (uses chat template with enable_thinking=True)
-        #     # - False: explicitly disable thinking mode (uses chat template with enable_thinking=False)
-        #     # Always apply chat template for ChainOfThoughtQA to properly format the prompt
-        #     generated_texts = generate_text_batch(
-        #         text_inputs=prompts_batch,
-        #         model=self.model,
-        #         tokenizer=self.tokenizer,
-        #         max_new_tokens=question.max_new_tokens,
-        #         context_size=context_size or self.inference_kwargs["context_size"],
-        #         enable_thinking=question.enable_thinking,
-        #         system_prompt=(self.prompt_config.system_prompt() if self.prompt_config.system_prompt is not None else None),
-        #         temperature=self._resolve_temperature(question),
-        #         seed=self.seed,
-        #     )
-
-        #     # Extract probability from generated text and log each sample
-        #     risk_estimates_batch = []
-        #     for idx, (prompt, generated_text) in enumerate(zip(prompts_batch, generated_texts)):
-        #         extracted = question.extract_probability_from_text(generated_text)
-        #         self._regex_total += 1
-        #         if extracted is None:
-        #             self._regex_failed += 1
-        #         risk_estimate = 0.5 if extracted is None else extracted
-        #         risk_estimates_batch.append(risk_estimate)
-        #         self._maybe_warn_regex_extraction_failure_rate()
-
-        #         if self._should_log_generation():
-        #             # Log prompt, generated answer, and extracted risk score at INFO level
-        #             logging.info(
-        #                 ("\n" + "=" * 60 + "\n")
-        #                 + f"[ChainOfThoughtQA Sample {self._logged_generations_count + 1}]"
-        #                 + ("\n" + "=" * 60 + "\n")
-        #                 + "PROMPT:\n"
-        #                 + prompt
-        #                 + ("\n" + "-" * 60 + "\n")
-        #                 + "GENERATED ANSWER:\n"
-        #                 + generated_text
-        #                 + ("\n" + "-" * 60 + "\n")
-        #                 + f"EXTRACTED RISK SCORE: {risk_estimate:.6f}\n"
-        #                 + "=" * 60
-        #             )
-        #             self._logged_generations_count += 1
-
-        #     return np.asarray(risk_estimates_batch, dtype=float)
-
         if question.use_generated_text:
-            try:
-                # try to apply chat
-                # Query model
-                # Use the system prompt from PromptConfig if available (may be None
-                # to explicitly disable the role, e.g. for Gemma-style templates);
-                # fall back to the QA subclass ClassVar default otherwise.
-                if self.prompt_config is not None:
-                    system_prompt = (
-                        self.prompt_config.system_prompt() if self.prompt_config.system_prompt is not None else None
-                    )
-                else:
-                    system_prompt = question.get_default_system_prompt()
-
-                logging.debug(f"System prompt: {system_prompt}")
-
-                generated_text_batch = generate_text_batch(
-                    text_inputs=prompts_batch,
-                    model=self.model,
-                    tokenizer=self.tokenizer,
-                    context_size=context_size or self.inference_kwargs["context_size"],
-                    max_new_tokens=self.inference_kwargs[
-                        "max_new_tokens"
-                    ],  # TODO: get max nex tokens from task or question or model?
-                    reasoning=self.inference_kwargs.get("reasoning"),
-                    thinking_end_token_id=None,
-                    system_prompt=system_prompt,
-                )
-
-                risk_estimates_batch = [
-                    question.get_answer_from_model_output(
-                        text=text.get("response", ""),
-                    )
-                    for text in generated_text_batch
-                ]
-
-                if self.token_tracker is not None:
-                    completion_tokens = sum(
-                        len(self._tokenizer.encode(t.get("response", ""), add_special_tokens=False))
-                        for t in generated_text_batch
-                    )
-                    self.token_tracker.record_batch(
-                        prompt_tokens=prompt_tokens,
-                        completion_tokens=completion_tokens,
-                        batch_size=len(prompts_batch),
-                    )
-
-                # sanitized_texts = [text.replace(";", "") for text in generated_text_batch]
-                # np.assarray coerces None → nan
-                # TODO; check, if wanted
-                return np.asarray(risk_estimates_batch, dtype=float), generated_text_batch
-            except Exception as error:
-                logging.error(f"Error occurred while querying model: {error}")
-                raise
+            return self._risk_estimates_from_text(
+                formatted_prompts_batch=prompts_batch,
+                question=question,
+                context_size=context_size,
+                prompt_tokens=prompt_tokens if self.token_tracker is not None else None,
+            )
 
         else:
             # TODO: Add support for any unicode character used as a prefix to " A".
@@ -282,19 +185,36 @@ class TransformersLLMClassifier(LLMClassifier):
                 text_inputs=prompts_batch,
                 model=self.model,
                 tokenizer=self.tokenizer,
-                context_size=context_size or self.inference_kwargs["context_size"],
+                context_size=context_size or self.context_size,
                 n_passes=question.num_forward_passes,
                 digits_only=True if isinstance(question, DirectNumericQA) else False,
             )
 
             # Decode model output
-            risk_estimates_batch = [
-                question.get_answer_from_model_output(
+            risk_estimates_batch = []
+            for prompt, ltp in zip(prompts_batch, last_token_probs_batch):
+                risk_estimate = question.get_answer_from_model_output(
                     ltp,
                     tokenizer_vocab=self._tokenizer.vocab,
                 )
-                for ltp in last_token_probs_batch
-            ]
+                risk_estimates_batch.append(risk_estimate)
+                if self._should_log_generation():
+                    # `ltp` is the full per-pass probability distribution
+                    # (n_passes, vocab_dim); take the top-K tokens per pass for
+                    # the logprob-path debug log (only when logging is enabled).
+                    # Invert the same `.vocab` the decode above uses (id -> token).
+                    id_to_token = {tid: tok for tok, tid in self._tokenizer.vocab.items()}
+                    self._maybe_log_logprobs(
+                        prompt,
+                        [
+                            {
+                                id_to_token.get(int(idx), str(int(idx))): float(pass_probs[idx])
+                                for idx in np.argsort(pass_probs)[::-1][:10]
+                            }
+                            for pass_probs in np.asarray(ltp)
+                        ],
+                        risk_estimate,
+                    )
 
             if self.token_tracker is not None:
                 # Each forward pass generates exactly one token per prompt
@@ -306,3 +226,79 @@ class TransformersLLMClassifier(LLMClassifier):
                 )
 
             return np.asarray(risk_estimates_batch, dtype=float), last_token_probs_batch  # type: ignore[return-value]  # ltp not used
+
+    def _risk_estimates_from_text(
+        self,
+        formatted_prompts_batch: list[str],
+        question: MultipleChoiceQA | DirectNumericQA,
+        context_size: int | None,
+        prompt_tokens: int | None = None,
+    ) -> tuple[np.ndarray, list]:
+        # Safety net: the generated-text path expects prompts already chat-templated
+        # by encode_row. Warn if the template's (model-specific, derived) assistant
+        # marker is absent — e.g. a custom encode_row produced raw prompts.
+        marker = chat_template_assistant_marker(self._tokenizer)
+        if marker and formatted_prompts_batch and marker not in formatted_prompts_batch[0]:
+            logging.warning(
+                f"Generated-text prompt does not contain the chat-template assistant marker "
+                f"{marker!r}; encode_row may be producing un-templated (raw) prompts for this "
+                f"chat model."
+            )
+
+        try:
+            # The chat template (incl. system prompt) is applied upstream by
+            # encode_row; here we just generate the raw completions.
+            raw_generations = generate_text_batch(
+                text_inputs=formatted_prompts_batch,
+                model=self.model,
+                tokenizer=self.tokenizer,
+                context_size=context_size or self.context_size,
+                max_new_tokens=self.max_new_tokens,
+                temperature=self._resolve_temperature(question),
+                seed=self.seed,
+            )
+
+            # `enable_thinking` drives only the post-processing (stripping the
+            # `<think>` block); the template was applied upstream. Resolve the
+            # `</think>` token id once for the token-id split. Mirrors vLLM's
+            # `_risk_estimates_from_text` so both backends share one path.
+            enable_thinking = reasoning_to_enable_thinking(self.reasoning)
+            thinking_end_token_id = get_thinking_end_token_id(self._tokenizer)
+
+            # Track regex extraction-failure rate for parity with the vLLM
+            # backend (get_answer_from_model_output returns NaN on parse failure).
+            risk_estimates_batch = []
+            outputs: list = []
+            for idx, (prompt, raw_generation) in enumerate(zip(formatted_prompts_batch, raw_generations)):
+                generated_text = raw_generation["text"]
+                output = _postprocess_generated_text(
+                    enable_thinking=enable_thinking,
+                    i=idx,
+                    n=len(raw_generations),
+                    text=generated_text,
+                    token_ids=raw_generation["token_ids"],
+                    tokenizer=self._tokenizer,
+                    thinking_end_token_id=thinking_end_token_id,
+                )
+                response_text = output["response"]
+                risk_estimate = question.get_answer_from_model_output(text=response_text)
+                self._regex_total += 1
+                if np.isnan(risk_estimate):
+                    self._regex_failed += 1
+                risk_estimates_batch.append(risk_estimate)
+                outputs.append(output)
+                self._maybe_warn_regex_extraction_failure_rate()
+                self._maybe_log_generation(prompt, generated_text, risk_estimate)
+
+            if self.token_tracker is not None:
+                completion_tokens = sum(len(self._tokenizer.encode(o["response"], add_special_tokens=False)) for o in outputs)
+                self.token_tracker.record_batch(
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    batch_size=len(formatted_prompts_batch),
+                )
+
+            return np.asarray(risk_estimates_batch, dtype=float), outputs
+        except Exception as error:
+            logging.error(f"Error occurred while querying model: {error}")
+            raise
