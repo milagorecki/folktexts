@@ -126,6 +126,8 @@ def make_llm_clf_experiment(
     results_dir: str | Path,
     models_dir: str,
     env_vars_str: str = "",
+    job_name: str = "",
+    wrap_job: bool = False,
     **kwargs,
 ) -> Experiment:
     """Create an experiment object to run."""
@@ -170,6 +172,8 @@ def make_llm_clf_experiment(
     exp = Experiment(
         executable_path=executable_path,
         env_vars=env_vars_str,
+        job_name=job_name,
+        wrap_job=wrap_job,
         kwargs=dict(
             model=model_path if "use_web_api_model" not in kwargs else model_name,
             task=task,
@@ -256,6 +260,24 @@ def setup_arg_parser() -> argparse.ArgumentParser:
         required=False,
     )
 
+    parser.add_argument(
+        "--job-name",
+        type=str,
+        help=(
+            "[string] Readable job name for `condor_q` (the executable name under "
+            "--wrap-job, and JobBatchName) instead of the full command."
+        ),
+        required=False,
+        default="",
+    )
+
+    parser.add_argument(
+        "--wrap-job",
+        action="store_true",
+        default=False,
+        help="Submit via a wrapper script (run from the saved JSON config) so `condor_q` hides the full command.",
+    )
+
     return parser
 
 
@@ -298,6 +320,8 @@ def main():
                 results_dir=args.results_dir,
                 models_dir=models_dir,
                 env_vars_str=args.environment,
+                job_name=args.job_name,
+                wrap_job=args.wrap_job,
                 **extra_kwargs,
             )
             for model in models

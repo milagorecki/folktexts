@@ -1,7 +1,10 @@
 ### Folders ###
 data/*
+data
 results/*/
 
+excluded_nodes.txt
+coverage_report*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
