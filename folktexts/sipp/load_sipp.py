@@ -1,4 +1,9 @@
 """Load preprocessed SIPP data."""
+## For documentation see:
+#  https://www2.census.gov/programs-surveys/sipp/tech-documentation/methodology/2014-SIPP-Panel-Users-Guide.pdf
+
+#  Important: The code book and some encodings change between survey years, so be sure to use the code book
+#  for the year of the data you are using.
 
 import gzip
 import io
@@ -47,7 +52,7 @@ health_variables = {
     "HEALTHDISAB": "edisabl",  # does ... have a physical, mental or other health condition that limits the kind or
     # amount of work he/she can do?
     "DAYS_SICK": "tdaysick",  # how many days did illness or injury keep ... in bed more than half of the day?
-    "HOSPITAL_NIGHTS": "thospnit",  # how many nights did ... spend in the hospital
+    "HOSPITAL_NIGHTS": "thospnit",  # how many nights did ... spend in the hospital (0-365)
     "PRESCRIPTION_MEDS": "epresdrg",  # did ... take any prescription medications?
     "VISIT_DENTIST": "tvisdent",  # how many visits has ... made to a dentist or other dental professional?
     "VISIT_DOCTOR": "tvisdoc",  # how many times did ... see or talk to a doctor, nurse, or any other type of medical
@@ -91,8 +96,10 @@ demographics_variables = {
     "AGE": "tage",  # age as of last birthday
     "GENDER": "esex",
     #    'RACE': 'erace', # note, this is much less detailed than `TRACE`
-    "RACE": "trace",  # note, this is much less detailed than `TRACE`
-    "EDUCATION": "eeduc",
+    "RACE": "trace",  # What race(s) does ... consider herself/himself to be? # trace: 21 categories in survey year 2014
+    # (the 2019+ panels collapse trace to 10 categories, so the value map is 2014-specific); erace: 4 categories
+    "EDUCATION": "eeduc",  # What is the highest level of school ... completed or the highest degree received by December
+    # of (reference year)?
     "MARITAL_STATUS": "ems",  # is ... currently married, widowed, divorced, separated, or never married?
     "CITIZENSHIP_STATUS": "ecitizen",  # is ... a citizen of the United States
     "FAMILY_SIZE": "rfpersons",  # number of persons in the family
@@ -104,21 +111,24 @@ income_variables = {
     "HOUSEHOLD_INC": "thtotinc",  # sum of all earnings and income received by a household, from all household
     # members age 15 and older for each month of the reference year
     # combine the next three into one variable
-    "ASSISTANCE_INC": "tptrninc",  # the sum of the reported monthly amounts recieved by an individualfrom TANF
-    # SSI, Pass-through child support payments, General Assistance, or general relief
-    "WORKER_COMP_INC": "tpscininc",  # the sum of the reported monthly amounts received by an individual from
-    # VA benefits (except VA pension), workers' compensation, unemployment compensation, or social security
-    "OTH_INC": "tpothinc",  # a monthly income recode variable, which is the sum of the reported monthly amounts
-    # received by an individual from other income sources, such as: survivor benefits, retirement benefits, disability
-    # benefits, foster child care payments, child support payments, alimony payments, lump sum payments, deferred
-    # payments from prior job, life insurance payments, or miscellaneous income sources
-    # combine the next two into one
-    "INVESTMENT_INC": "tpprpinc",  # the amount of total personal investment and property income during the reference
-    # year
-    "INDIVIDUAL_TOTAL_INC": "tptotinc",  # the sum of reported monthly earnings and income amounts recieved by an
-    # individual during the refernece year
+    "ASSISTANCE_INC": "tptrninc",  # Total Means-Tested Transfer Payments (derived variable) - the sum of the reported
+    # monthly amounts recieved by an individualfrom TANF, SSI, Pass-through child support payments, General Assistance,
+    # or general relief
+    "WORKER_COMP_INC": "tpscininc",  # Total Social Insurance Payments (derived variable) - the sum of the reported
+    # monthly amounts received by an individual from VA benefits (except VA pension), workers' compensation, unemployment
+    # compensation, or social security
+    "OTH_INC": "tpothinc",  # Total Other Income (derived variable) - a monthly income recode variable, which is the sum
+    # of the reported monthly amounts received by an individual from other income sources, such as: survivor benefits,
+    # retirement benefits, disability benefits, foster child care payments, child support payments, alimony payments,
+    # lump sum payments, deferred payments from prior job, life insurance payments, or miscellaneous income sources
+    # For the next two: tptotinc contains tpprpinc
+    "INVESTMENT_INC": "tpprpinc",  # Total Personal Investment & Property Income (derived variable) - the amount of
+    # total personal investment and property income during the reference year
+    "INDIVIDUAL_TOTAL_INC": "tptotinc",  # Total Personal Income (derived variable) - the sum of reported monthly
+    # earnings and income amounts recieved by an individual during the refernece year
+    # (TPTOTINC = TPEARN + TPPRPINC + TPTRNINC + TPSCININC + TPOTHINC)
     # combine the next two into one variable
-    "IRA_AMOUNT": "tirakeoval",  # value of IRA and KEOGH accounts as of hte last day of the reference period
+    "IRA_AMOUNT": "tirakeoval",  # value of IRA and KEOGH accounts as of the last day of the reference period
     "AMOUNT_401": "tthr401val",  # value of 401k, 403b, 503b, and Thrift Savings Plan accounts as of the last day of
     # the reference period
     "RECEIVED_WORK_COMP": "ewc_any",  # did ... receive worker's compensation payments at any time during the
@@ -225,12 +235,15 @@ other_assistance_variables = {
     "PLAN_INVEST_ROLL_OVER": "erollovr2",  # does … plan on re-inventing or rolling over any of the lump sum
     # payment into an IRA or other retirement plan?
     "ROLL_OVER_AMT": "trollamt",  # how much did … roll over or plan to roll over into another retirement account?
-    "DEFERRED_INC_AMT": "tdeferamt",  # what was the total amount of deferred income or final pay-check received?
-    "TOTAL_LIFE_INSURANCE_AMT": "tlifeamt",  # what was the total amount of life insurance payments … received?
+    # the four features below are all components of the derived variable TPOTHINC
+    "DEFERRED_INC_AMT": "tdeferamt",  # what was the total amount of deferred income or final pay-check received? (subset of
+    # TPOTHINC).
+    "TOTAL_LIFE_INSURANCE_AMT": "tlifeamt",  # what was the total amount of life insurance payments … received? (subset of
+    # TPOTHINC).
     "FOSTER_CHILD_CARE_AMT": "tfccamt",  # amount of foster child care payments received in each month of reference
-    # period.
-    "CHILD_SUPPORT_AMT": "tcsamt",  # amount of child support payments in each month of reference period.
-    "ALIMONY_AMT": "taliamt",  # amount of alimony payments received in each month of reference period
+    # period (subset of TPOTHINC)
+    "CHILD_SUPPORT_AMT": "tcsamt",  # amount of child support payments in each month of reference period (subset of TPOTHINC).
+    "ALIMONY_AMT": "taliamt",  # amount of alimony payments received in each month of reference period (subset of TPOTHINC).
 }
 
 # create a list of the dictionaries of the different variables in order to make it easier to extract them
@@ -248,8 +261,12 @@ variables_dicts_list = [
 _sipp_names_nested = [list(vars_dict.values()) for vars_dict in variables_dicts_list]
 sipp_variables_names: list[str] = list(chain.from_iterable(_sipp_names_nested))
 
-_my_names_nested = [chain.from_iterable(list(vars_dict.keys())) for vars_dict in variables_dicts_list]
+_my_names_nested = [list(vars_dict.keys()) for vars_dict in variables_dicts_list]
 my_variables_names: list[str] = list(chain.from_iterable(_my_names_nested))
+
+# Columns of the preprocessed wave files that are not features: the individual identifiers and the wave's own
+# poverty measure. The target is built separately from wave 2's `OPM_RATIO`.
+non_feature_columns: list[str] = ["UNIQUE_ID", "SSUID", "PNUM", "OPMTHRESH", "OPM_RATIO"]
 
 
 def download_sipp(
@@ -265,7 +282,7 @@ def download_sipp(
     save_path = Path(save_path)
     if not save_path.exists():
         logging.info(f"Create SIPP data directory '{save_path}'.")
-        save_path.mkdir(exist_ok=True, parents=False)
+        save_path.mkdir(exist_ok=True, parents=True)
 
     for source in data_source:
         out_file = Path(source).name[:-3]  # remove '.gz'
@@ -290,7 +307,7 @@ def download_sipp_zip(
 
     if not save_path.exists():
         logging.info(f"Create SIPP data directory '{save_path}'.")
-        save_path.mkdir(exist_ok=True, parents=False)
+        save_path.mkdir(exist_ok=True, parents=True)
 
     zip_files = ["w1/pu2014w1_v13.zip", "w2/pu2014w2_v13.zip"]
     for zip_file in zip_files:
@@ -306,21 +323,28 @@ def download_sipp_zip(
             print("Successfully downloaded SIPP data.")
 
 
+def select_features_and_target(w1, w2):
+    """Select the feature columns from wave 1 and derive the binary target from wave 2.
+
+    `non_feature_columns` -- the person identifiers and wave 1's own poverty measure -- are dropped from
+    the features. The target is whether the household income-to-poverty ratio reached 3 in wave 2.
+    """
+    X = w1.drop(columns=non_feature_columns)
+    y = 1.0 * (w2["OPM_RATIO"] >= 3)
+    return X, y
+
+
 def load_sipp(
     data_dir="data/sipp/",
     wave_1_file="sipp_2014_wave_1.csv",
     wave_2_file="sipp_2014_wave_2.csv",
-    file_name="sipp_2014.csv",
 ):
     """Load sipp data from preprocessed csv files."""
+    # Read-only: the combined `sipp_2014.csv` is written by `preprocess_sipp` alongside the wave files,
+    # so loading never has to produce it as a side effect.
     w1 = pd.read_csv(Path(data_dir) / wave_1_file)
     w2 = pd.read_csv(Path(data_dir) / wave_2_file)
-    X = w1[w1.columns[5:]]
-    y = 1.0 * (w2["OPM_RATIO"] >= 3)
-
-    data = pd.concat([X, y], axis=1)
-    data.to_csv(Path(data_dir) / file_name)
-    return X, y
+    return select_features_and_target(w1, w2)
 
 
 def preprocess_sipp(data_dir="./data/sipp/"):
@@ -389,6 +413,7 @@ def preprocess_sipp(data_dir="./data/sipp/"):
             "tpothinc",
             "tpscininc",
             "tptotinc",
+            "tpprpinc",
             "tptrninc",
             "tret1amt",
             "tret2amt",
@@ -415,6 +440,7 @@ def preprocess_sipp(data_dir="./data/sipp/"):
             "tva2amt",
             "tva3amt",
             "tva4amt",
+            "tva5amt",
             "rhpov",
         ],
     }
@@ -440,18 +466,22 @@ def preprocess_sipp(data_dir="./data/sipp/"):
     # the variables we're combining
     variables_to_combine = {
         "combine_via_sum": {
-            "INCOME_FROM_ASSISTANCE": ["tptrninc", "tpscininc", "tpothinc"],
-            "INCOME": ["tpprpinc", "tptotinc"],
+            "INCOME_FROM_ASSISTANCE": [
+                "tptrninc",
+                "tpscininc",  # components also listed in VA_BENEFITS_AMOUNT
+                "tpothinc",
+            ],  # Monthly means-tested transfer payments + Monthly social insurance payments + other
             "SAVINGS_INV_AMOUNT": ["tirakeoval", "tthr401val"],
             "UNEMPLOYMENT_COMP_AMOUNT": ["tuc1amt", "tuc2amt", "tuc3amt"],
             "VA_BENEFITS_AMOUNT": [
                 "tva1amt",
-                "tva2amt",
+                "tva2amt",  # maybe remove: TPTRNINC derived from it, it is pension, not a benefit, also
+                # only term not included in TPSCININC
                 "tva3amt",
                 "tva4amt",
                 "tva5amt",
             ],
-            "RETIREMENT_INCOME_AMOUNT": [
+            "RETIREMENT_INCOME_AMOUNT": [  # selected components of TPOTHINC
                 "tret1amt",
                 "tret2amt",
                 "tret3amt",
@@ -461,7 +491,7 @@ def preprocess_sipp(data_dir="./data/sipp/"):
                 "tret7amt",
                 "tret8amt",
             ],
-            "SURVIVOR_INCOME_AMOUNT": [
+            "SURVIVOR_INCOME_AMOUNT": [  # selected components of TPOTHINC
                 "tsur1amt",
                 "tsur2amt",
                 "tsur3amt",
@@ -473,7 +503,7 @@ def preprocess_sipp(data_dir="./data/sipp/"):
                 "tsur11amt",
                 "tsur13amt",
             ],
-            "DISABILITY_BENEFITS_AMOUNT": [
+            "DISABILITY_BENEFITS_AMOUNT": [  # selected components of TPOTHINC
                 "tdis1amt",
                 "tdis2amt",
                 "tdis3amt",
@@ -562,6 +592,8 @@ def preprocess_sipp(data_dir="./data/sipp/"):
         "NUM_VEHICLES": "tveh_num",
         "ORIGIN": "eorigin",  # Is ... Spanish, Hispanic, or Latino?
         "HOUSEHOLD_INC": "thtotinc",
+        "INCOME": "tptotinc",  # = TPEARN + TPPRPINC + TPTRNINC + TPSCININC + TPOTHINC (official Census total-income recode)
+        # removed TPPRPINC to avoid double counting (prev: "INCOME": [ "tpprpinc", "tptotinc"])
         "RECEIVED_WORK_COMP": "ewc_any",
         "TANF_ASSISTANCE": "etanf",  # percentage of year in which individual received assistance from TANF
         "UNEMPLOYMENT_COMP": "eucany",
@@ -673,6 +705,12 @@ def preprocess_sipp(data_dir="./data/sipp/"):
     # save data
     final_dataframes["wave_1"].to_csv(data_dir / "sipp_2014_wave_1.csv", index=False)
     final_dataframes["wave_2"].to_csv(data_dir / "sipp_2014_wave_2.csv", index=False)
+
+    # Save the combined feature/target table next to the wave files, so that preprocessing produces the
+    # whole 2014 dataset in one go instead of leaving it to be written as a side effect of loading it.
+    X, y = select_features_and_target(final_dataframes["wave_1"], final_dataframes["wave_2"])
+    pd.concat([X, y], axis=1).to_csv(data_dir / "sipp_2014.csv", index=False)
+    print(f"Saved the wave files and the combined 2014 dataset to '{data_dir}'.")
 
 
 def determine_uniqueness_of_column(

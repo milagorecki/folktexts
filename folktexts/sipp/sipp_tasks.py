@@ -105,5 +105,5 @@ class SIPPTaskMetadata(TaskMetadata):
 sipp_task = SIPPTaskMetadata.make_sipp_task(
     name="SIPP",
     target_threshold=sipp_columns.sipp_threshold,
-    description="predict wether a household's income is at least three times the poverty threshold",
+    description="predict whether the income of an individual's household is at least three times the poverty threshold",
 )

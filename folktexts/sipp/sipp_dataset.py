@@ -82,7 +82,7 @@ class SIPPDataset(Dataset[SIPPTaskMetadata]):
         cache_dir = Path(cache_dir or DEFAULT_DATA_DIR).expanduser().resolve() / "sipp"
         if not cache_dir.exists():
             logging.warning(f"Creating cache directory '{cache_dir}' for SIPP data.")
-            cache_dir.mkdir(exist_ok=True, parents=False)
+            cache_dir.mkdir(exist_ok=True, parents=True)
 
         # if not already available, load data
         csv_file = cache_dir / f"{task_obj.name.lower()}_2014.csv"

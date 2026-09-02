@@ -1,7 +1,7 @@
 """
 SIPP task columns
 
-Value Maps adapted from https://github.com/mlfoundations/tableshift/blob/main/tableshift/datasets/brfss.py
+Value Maps adapted from https://github.com/socialfoundations/backward_baselines/blob/main/sipp/data/data_cleaning.ipynb
 
 For more information on the dataset and raw data see:
 * https://www2.census.gov/programs-surveys/sipp/data/datasets/2014/w1/
@@ -24,9 +24,12 @@ sipp_threshold = Threshold(1, "==")
 sipp_livqrt = ColumnToText(
     name="LIVING_QUARTERS_TYPE",
     short_description="type of living quarters",
+    # Universe: THHLDSTATUS in (1, 2, 3, 4); outside it `tlivqtr` is missing and falls to `missing_value_fill`.
     value_map={
         1.0: "House, apartment, flat",
-        2.0: "Other",
+        2.0: "Mobile home/trailer, rooming house/hotel/motel, other housing unit",
+        3.0: "Group quarters",
+        4.0: "Other living quarters",
     },
     missing_value_fill="N/A (refused or unknown)",
 )
@@ -72,19 +75,17 @@ sipp_medicaid = ColumnToText(
 
 sipp_healthdisab = ColumnToText(
     name="HEALTHDISAB",
-    short_description=(
-        "has a physical, mental or other health condition that limits the kind or amount of work he/she can do"
-    ),
+    short_description="work-limiting health condition status",
     value_map={
-        1.0: "Yes",
-        2.0: "No",
+        1.0: "With a physical, mental or other health condition that limits the kind or amount of work",
+        2.0: "Without a physical, mental or other health condition",
     },
     missing_value_fill="N/A (refused or unknown)",
 )
 
 sipp_dayssick = ColumnToText(
     name="DAYS_SICK",
-    short_description="number of days sick in last year",
+    short_description="number of days spent in bed due to illness or injury in the last year",
     value_map=lambda x: f"{int(x)} days",
     missing_value_fill="N/A (refused or unknown)",
 )
@@ -98,10 +99,10 @@ sipp_hospnights = ColumnToText(
 
 sipp_prescriptions = ColumnToText(
     name="PRESCRIPTION_MEDS",
-    short_description="uses prescription medications",
+    short_description="use of prescription medication",
     value_map={
-        1.0: "Yes",
-        2.0: "No",
+        1.0: "Takes prescription medications",
+        2.0: "Does not take prescription medications",
     },
     missing_value_fill="N/A (refused or unknown)",
 )
@@ -109,14 +110,14 @@ sipp_prescriptions = ColumnToText(
 sipp_dentist = ColumnToText(
     name="VISIT_DENTIST_NUM",
     short_description="number of dentist visits",
-    value_map=lambda x: f"{int(x)} vists",
+    value_map=lambda x: f"{int(x)} visits",
     missing_value_fill="N/A (refused or unknown)",
 )
 
 sipp_doctor = ColumnToText(
     name="VISIT_DOCTOR_NUM",
     short_description="number of visits to a doctor, nurse, or any other type of medical provider",
-    value_map=lambda x: f"{int(x)} vists",
+    value_map=lambda x: f"{int(x)} visits",
     missing_value_fill="N/A (refused or unknown)",
 )
 
@@ -143,83 +144,82 @@ sipp_med_care_pay = ColumnToText(
 
 sipp_hearing = ColumnToText(
     name="HEALTH_HEARING",
-    short_description="is deaf of has hearing difficulties",
+    short_description="hearing status",
     value_map={
-        1.0: "Yes",
-        2.0: "No",
+        1.0: "Deaf or with hearing difficulty",
+        2.0: "No hearing difficulty",
     },
     missing_value_fill="N/A (refused or unknown)",
 )
 
 sipp_seeing = ColumnToText(
     name="HEALTH_SEEING",
-    short_description="is blind or has vision difficulties",
+    short_description="vision status",
     value_map={
-        1.0: "Yes",
-        2.0: "No",
+        1.0: "Blind or with vision difficulty",
+        2.0: "No vision difficulty",
     },
     missing_value_fill="N/A (refused or unknown)",
 )
 
 sipp_cognitive = ColumnToText(
     name="HEALTH_COGNITIVE",
-    short_description="has serious difficulty concentrating, remembering, or making decisions",
+    short_description="cognition status",
     value_map={
-        1.0: "Yes",
-        2.0: "No",
+        1.0: "With serious difficulty concentrating, remembering, or making decisions",
+        2.0: "No cognitive difficulty",
     },
     missing_value_fill="N/A (refused or unknown)",
 )
 
 sipp_ambulatory = ColumnToText(
     name="HEALTH_AMBULATORY",
-    short_description="has serious difficulty walking or climbing stairs",
+    short_description="ambulatory status",
     value_map={
-        1.0: "Yes",
-        2.0: "No",
+        1.0: "With serious difficulty walking or climbing stairs",
+        2.0: "No ambulatory difficulty",
     },
     missing_value_fill="N/A (refused or unknown)",
 )
 
 sipp_selfcare = ColumnToText(
     name="HEALTH_SELF_CARE",
-    short_description="has difficulty with self-care such as dressing or bathing",
+    short_description="self-care status",
     value_map={
-        1.0: "Yes",
-        2.0: "No",
+        1.0: "With difficulty dressing or bathing",
+        2.0: "No self-care difficulty",
     },
     missing_value_fill="N/A (refused or unknown)",
 )
 
 sipp_errands = ColumnToText(
     name="HEALTH_ERRANDS_DIFFICULTY",
-    short_description="has difficulty doing errands alone",
+    short_description="independent-living status",
     value_map={
-        1.0: "Yes",
-        2.0: "No",
+        1.0: "With difficulty doing errands alone",
+        2.0: "No difficulty doing errands alone",
     },
     missing_value_fill="N/A (refused or unknown)",
 )
 
 sipp_core_disab = ColumnToText(
     name="HEALTH_CORE_DISABILITY",
-    short_description="has a core disability",
+    short_description="core disability status",
     value_map={
-        1.0: "Yes, with a core disability",
-        2.0: "No, without a core disability",
+        1.0: "With a core disability",
+        2.0: "No core disability",
     },
     missing_value_fill="N/A (refused or unknown)",
 )
 
 sipp_supp_disab = ColumnToText(
     name="HEALTH_SUPPLEMENTAL_DISABILITY",
-    short_description=(
-        "answered positively to at least one core questions, three child disability questions, "
-        "or two work disability questions"
-    ),
+    # Set when the respondent answered positively to at least one core question, three child disability
+    # questions, or two work disability questions.
+    short_description="supplemental disability status",
     value_map={
-        1.0: "Yes, with a disability",
-        2.0: "No, without a disability",
+        1.0: "With a supplemental disability",
+        2.0: "No supplemental disability",
     },
     missing_value_fill="N/A (refused or unknown)",
 )
@@ -230,11 +230,11 @@ sipp_age = ColumnToText(
     value_map=lambda x: f"{int(x)} years old",
     missing_value_fill="N/A (refused or unknown)",
 )
-# Min: 0 Max: 90
+# drop_underage_individuals -> min: 18 max: 90
 
 sipp_gender = ColumnToText(
     name="GENDER",
-    short_description="gender of person",
+    short_description="gender",
     value_map={
         1.0: "Male",
         2.0: "Female",
@@ -244,7 +244,7 @@ sipp_gender = ColumnToText(
 
 sipp_race = ColumnToText(
     name="RACE",
-    short_description="races the person identifies with",
+    short_description="self-identified race(s)",
     value_map={
         1.0: "White only",
         2.0: "Black only",
@@ -338,14 +338,15 @@ sipp_origin = ColumnToText(
 
 sipp_incomehh = ColumnToText(
     name="HOUSEHOLD_INC",
-    short_description="total monthly income of all household members",
+    short_description="total annual income of all household members",
+    # total household income summed across the wave's reference period (roughly a year)
     value_map=lambda x: f"${int(x)}",
     missing_value_fill="N/A (refused or unknown)",
 )
 
 sipp_workcomp = ColumnToText(
     name="RECEIVED_WORK_COMP",
-    short_description="received worker's compensation payments",
+    short_description="receipt of worker's compensation payments",
     value_map={
         1.0: "Yes",
         2.0: "No",
@@ -362,7 +363,7 @@ sipp_tanf = ColumnToText(
 
 sipp_unemp = ColumnToText(
     name="UNEMPLOYMENT_COMP",
-    short_description="receives unemployment compensation payments",
+    short_description="receipt of unemployment compensation payments",
     value_map={
         1.0: "Yes",
         2.0: "No",
@@ -372,7 +373,7 @@ sipp_unemp = ColumnToText(
 
 sipp_sevpay = ColumnToText(
     name="SEVERANCE_PAY_PENSION",
-    short_description="receives any severance pay or lump sum payments from a pension or retirement plan",
+    short_description="receipt of severance pay or a lump sum payment from a pension or retirement plan",
     value_map={
         1.0: "Yes",
         2.0: "No",
@@ -380,37 +381,44 @@ sipp_sevpay = ColumnToText(
     missing_value_fill="N/A (refused or unknown)",
 )
 
+# (subset of TPOTHINC)
 sipp_fostercare = ColumnToText(
     name="FOSTER_CHILD_CARE_AMT",
-    short_description="amount of foster child care payments received per month",
+    short_description="amount of foster child care payments received in given year",
     value_map=lambda x: f"${int(x)}",
     missing_value_fill="N/A (refused or unknown)",
 )
 
+# (subset of TPOTHINC)
 sipp_childsupport = ColumnToText(
     name="CHILD_SUPPORT_AMT",
-    short_description="amount of child support payments received per month",
+    short_description="amount of child support payments received in given year",
     value_map=lambda x: f"${int(x)}",
     missing_value_fill="N/A (refused or unknown)",
 )
 
+# (subset of TPOTHINC)
 sipp_alimony = ColumnToText(
     name="ALIMONY_AMT",
-    short_description="amount of alimony payments received per month",
-    value_map=lambda x: f"${int(x)}",
-    missing_value_fill="N/A (refused or unknown)",
-)
-
-sipp_inc_assist = ColumnToText(
-    name="INCOME_FROM_ASSISTANCE",
-    short_description="total income from public assistance, benefits or compensation",
+    short_description="amount of alimony payments received in given year",
     value_map=lambda x: f"${int(x)}",
     missing_value_fill="N/A (refused or unknown)",
 )
 
 sipp_income = ColumnToText(
     name="INCOME",
-    short_description="total personal income",
+    short_description=(
+        "total personal income from personal earnings, investment and property, "
+        "means-based transfer income, social insurance payments and other sources in given year"
+    ),
+    value_map=lambda x: f"${int(x)}",
+    missing_value_fill="N/A (refused or unknown)",
+)
+
+# note: sipp_inc_assist is a subset of sipp_income
+sipp_inc_assist = ColumnToText(
+    name="INCOME_FROM_ASSISTANCE",
+    short_description="total income from transfers, social insurance and other non-earned sources in given year",
     value_map=lambda x: f"${int(x)}",
     missing_value_fill="N/A (refused or unknown)",
 )
@@ -422,65 +430,70 @@ sipp_savings = ColumnToText(
     missing_value_fill="N/A (refused or unknown)",
 )
 
+# selected unemploym-related components of TPSCININC (i.e. part of INCOME_FROM_ASSISTANCE and INCOME)
 sipp_unemp_amt = ColumnToText(
     name="UNEMPLOYMENT_COMP_AMOUNT",
-    short_description="amount of unemployment compensation per month",
+    short_description="amount of unemployment compensation in given year",
     value_map=lambda x: f"${int(x)}",
     missing_value_fill="N/A (refused or unknown)",
 )
 
+# selected VA-related components of TPSCININC (i.e. part of INCOME_FROM_ASSISTANCE and INCOME) + 1 component of TPTRNINC
 sipp_va = ColumnToText(
     name="VA_BENEFITS_AMOUNT",
-    short_description="total amount of VA benefits per month",
+    short_description="total amount of VA benefits and pension in given year",
     value_map=lambda x: f"${int(x)}",
     missing_value_fill="N/A (refused or unknown)",
 )
 
+# selected retirement-related components of TPOTHINC (i.e. part of INCOME_FROM_ASSISTANCE and INCOME)
 sipp_retire = ColumnToText(
     name="RETIREMENT_INCOME_AMOUNT",
-    short_description="total amount of retirement income per month",
+    short_description="total amount of retirement income in given year",
     value_map=lambda x: f"${int(x)}",
     missing_value_fill="N/A (refused or unknown)",
 )
 
+# selected survivor-related components of TPOTHINC (i.e. part of INCOME_FROM_ASSISTANCE and INCOME)
 sipp_survivor = ColumnToText(
     name="SURVIVOR_INCOME_AMOUNT",
-    short_description="total amount of survivor benefits per month",
+    short_description="total amount of survivor benefits in given year",
     value_map=lambda x: f"${int(x)}",
     missing_value_fill="N/A (refused or unknown)",
 )
 
+# selected diasability-related components of TPOTHINC (i.e. part of INCOME_FROM_ASSISTANCE and INCOME)
 sipp_disab_inc = ColumnToText(
     name="DISABILITY_BENEFITS_AMOUNT",
-    short_description="total amount of disability benefits or income per month",
+    short_description="total amount of disability benefits or income in given year",
     value_map=lambda x: f"${int(x)}",
     missing_value_fill="N/A (refused or unknown)",
 )
 
 sipp_foodassist = ColumnToText(
     name="FOOD_ASSISTANCE",
-    short_description="received food assistance",
+    short_description="receipt of food assistance",
     value_map={0.0: "No", 1.0: "Yes"},
     missing_value_fill="N/A (refused or unknown)",
 )
 
 sipp_transassist = ColumnToText(
     name="TRANSPORTATION_ASSISTANCE",
-    short_description="received transportation assistance",
+    short_description="receipt of transportation assistance",
     value_map={0.0: "No", 1.0: "Yes"},
     missing_value_fill="N/A (refused or unknown)",
 )
 
 sipp_socialsec = ColumnToText(
     name="SOCIAL_SEC_BENEFITS",
-    short_description="received Social Security benefits",
+    short_description="receipt of social security benefits",
     value_map={0.0: "No", 1.0: "Yes"},
     missing_value_fill="N/A (refused or unknown)",
 )
 
 sipp_opm = ColumnToText(
     name="OPM_RATIO",
-    short_description="Household income-to-poverty ratio in this calendar year is equal or larger than 3",
+    short_description="Whether this individual's household income-to-poverty ratio in this calendar year is at least 3",
     value_map={0.0: "No", 1.0: "Yes"},
     missing_value_fill="N/A (refused or unknown)",
 )
@@ -488,19 +501,19 @@ sipp_opm = ColumnToText(
 sipp_qa = MultipleChoiceQA(
     column=sipp_threshold.apply_to_column_name("OPM_RATIO"),
     text=(
-        "Is this household's income at least three times the poverty threshold"
-        "based on the Officual Poverty Measure (OPM)?"
+        "Is the income of this individual's household at least three times the poverty threshold "
+        "based on the Official Poverty Measure (OPM)?"
     ),
     choices=(
-        Choice("Yes, this household's income is at least three times the poverty threshold", 1),
-        Choice("No, this household's income is at less than three times the poverty threshold", 0),
+        Choice("Yes, this individual's household income is at least three times the poverty threshold", 1),
+        Choice("No, this individual's household income is less than three times the poverty threshold", 0),
     ),
 )
 
 sipp_numeric_qa = DirectNumericQA(
     column=sipp_threshold.apply_to_column_name("OPM_RATIO"),
     text=(
-        "What is the probability that this individual's income is "
+        "What is the probability that the income of this individual's household is "
         "at least three times the poverty threshold based on the Official Poverty Measure (OPM)?"
     ),
 )
@@ -510,7 +523,7 @@ sipp_numeric_qa = DirectNumericQA(
 sipp_target_col = ColumnToText(
     name=sipp_threshold.apply_to_column_name("OPM_RATIO"),
     short_description=(
-        "Is this individual's income at least three times the poverty threshold "
+        "Whether the income of this individual's household is at least three times the poverty threshold "
         "based on the Official Poverty Measure (OPM)"
     ),
     value_map={
