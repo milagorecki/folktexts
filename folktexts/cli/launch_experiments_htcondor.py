@@ -312,6 +312,15 @@ def main():
 
     # Otherwise, run all experiments planned
     else:
+        # Always suffix the job name with a short model tag so every job shows the
+        # model distinctly in `condor_q` — including single-model calls (e.g. a
+        # lone `o1` rerun), so the model is never lost from the wrap text. Batched
+        # calls get one distinct name per model as before.
+        def job_name_for(model: str) -> str:
+            if not args.job_name:
+                return args.job_name
+            return f"{args.job_name}/{model.split('/')[-1]}"
+
         all_experiments = [
             make_llm_clf_experiment(
                 executable_path=executable_path.as_posix(),
@@ -320,7 +329,7 @@ def main():
                 results_dir=args.results_dir,
                 models_dir=models_dir,
                 env_vars_str=args.environment,
-                job_name=args.job_name,
+                job_name=job_name_for(model),
                 wrap_job=args.wrap_job,
                 **extra_kwargs,
             )
