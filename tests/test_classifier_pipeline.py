@@ -618,7 +618,8 @@ class TestTemperatureWiring:
         return captured, risks
 
     def test_generated_text_defaults_to_greedy_and_threads_seed(self, tiny_model_and_tokenizer, acs_income_task):
-        captured, risks = self._run_generated_text(tiny_model_and_tokenizer, acs_income_task, seed=7)
+        # Generation reads the decoupled `generation_seed`, not the init `seed`.
+        captured, risks = self._run_generated_text(tiny_model_and_tokenizer, acs_income_task, generation_seed=7)
         assert captured["temperature"] == 0.0
         assert captured["seed"] == 7
         assert risks[0] == pytest.approx(0.4)
@@ -637,6 +638,24 @@ class TestTemperatureWiring:
         clf_default = TransformersLLMClassifier(model=model, tokenizer=tokenizer, task=acs_income_task)
         clf_override = TransformersLLMClassifier(model=model, tokenizer=tokenizer, task=acs_income_task, temperature=0.7)
         assert hash(clf_default) != hash(clf_override)
+
+    def test_generation_seed_changes_hash_only_on_generated_text_path(self, tiny_model_and_tokenizer, acs_income_task):
+        """`generation_seed` only affects outputs when text is sampled, so it must
+        enter result identity on the generated-text path and be ignored on the
+        deterministic token-probability path (no redundant result folders)."""
+        model, tokenizer = tiny_model_and_tokenizer
+
+        # Token-probability path: generation_seed is a no-op -> same hash.
+        acs_income_task.use_text_output_for_qa = False
+        h_logprob_a = hash(TransformersLLMClassifier(model=model, tokenizer=tokenizer, task=acs_income_task, generation_seed=1))
+        h_logprob_b = hash(TransformersLLMClassifier(model=model, tokenizer=tokenizer, task=acs_income_task, generation_seed=2))
+        assert h_logprob_a == h_logprob_b
+
+        # Generated-text path: generation_seed changes sampling -> distinct hash.
+        acs_income_task.use_text_output_for_qa = True
+        h_text_a = hash(TransformersLLMClassifier(model=model, tokenizer=tokenizer, task=acs_income_task, generation_seed=1))
+        h_text_b = hash(TransformersLLMClassifier(model=model, tokenizer=tokenizer, task=acs_income_task, generation_seed=2))
+        assert h_text_a != h_text_b
 
 
 # ----------------------------------------------------------------------

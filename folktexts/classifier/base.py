@@ -63,6 +63,10 @@ class InferenceConfig:
     reasoning: str | None = None
     temperature: float | None = None
     seed: int = DEFAULT_SEED
+    # Generation-only seed: seeds the model's output sampling (same input ->
+    # different generations across values), decoupled from `seed` which governs
+    # init/reproducibility. Read by the backends' generation RNG.
+    generation_seed: int = DEFAULT_SEED
     # Throughput-only; excluded from result identity.
     batch_size: int = field(default=DEFAULT_BATCH_SIZE)
 
@@ -197,13 +201,22 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
         # result-affecting fields (context_size, max_new_tokens, reasoning,
         # temperature, seed — but NOT the throughput-only batch_size) enter here
         # so runs that differ only in e.g. `reasoning` don't collide in the cache.
+        inference_identity = self._inference.identity_dict()
+
+        # The generation seed only changes outputs on the generated-text
+        # (sampling) path. On the token-probability path decoding is deterministic,
+        # so varying `generation_seed` there would spawn a redundant results folder
+        # with identical scores — exclude it from identity in that case.
+        if not self.task.question.use_generated_text:
+            inference_identity.pop("generation_seed", None)
+
         hash_params = dict(
             model_name=self.model_name,
             task_hash=hash(self.task),
             prompt_config_hash=hash(self.prompt_config),
             correct_order_bias=self.correct_order_bias,
             threshold=self.threshold,
-            inference_config=self._inference.identity_dict(),
+            inference_config=inference_identity,
             encode_row_hash=hash_function(self.encode_row),
         )
 
@@ -256,6 +269,11 @@ class LLMClassifier(BaseEstimator, ClassifierMixin, ABC):
     @property
     def seed(self) -> int:
         return self._inference.seed
+
+    @property
+    def generation_seed(self) -> int:
+        """Seed for the model's output sampling (see :class:`InferenceConfig`)."""
+        return self._inference.generation_seed
 
     @property
     def context_size(self) -> int:

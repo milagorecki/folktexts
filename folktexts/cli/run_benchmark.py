@@ -68,6 +68,7 @@ def setup_arg_parser() -> ArgumentParser:
         ("--fit-threshold", int, "[int] Whether to fit the prediction threshold, and on how many samples", False),
         ("--subsampling", float, "[float] Which fraction of the dataset to use (if omitted will use all data)", False),
         ("--seed", int, "[int] Random seed -- to set for reproducibility", False, DEFAULT_SEED),
+        ("--generation-seed", int, "[int] Seed for text-generation sampling; vary to resample generations", False, DEFAULT_SEED),
     ]
 
     for arg in cli_args:
@@ -483,6 +484,7 @@ def main():
         feature_subset=args.use_feature_subset or None,
         population_filter=population_filter_dict,
         seed=args.seed,
+        generation_seed=args.generation_seed,
         temperature=args.temperature,
         impute_failed_as_uniform=args.impute_failed_as_uniform,
     )

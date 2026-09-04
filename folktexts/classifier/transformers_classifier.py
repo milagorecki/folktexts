@@ -255,7 +255,7 @@ class TransformersLLMClassifier(LLMClassifier):
                 context_size=context_size or self.context_size,
                 max_new_tokens=self.max_new_tokens,
                 temperature=self._resolve_temperature(question),
-                seed=self.seed,
+                seed=self.generation_seed,
             )
 
             # `enable_thinking` drives only the post-processing (stripping the

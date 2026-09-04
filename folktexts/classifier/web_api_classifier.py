@@ -390,7 +390,7 @@ class WebAPILLMClassifier(LLMClassifier):
                 temperature=self._resolve_temperature(question),  # 1
                 max_completion_tokens=self.max_new_tokens,
                 stream=False,
-                seed=self.seed,
+                seed=self.generation_seed,
             )
         else:
             # Token-probability decoding: read top_logprobs of the answer tokens
@@ -401,7 +401,7 @@ class WebAPILLMClassifier(LLMClassifier):
                 temperature=0,
                 max_tokens=num_forward_passes,  # max(num_forward_passes, self.inference_kwargs.get("max_new_tokens", 0)),
                 stream=False,
-                seed=self.seed,
+                seed=self.generation_seed,
                 logprobs=True,
                 top_logprobs=20,
             )

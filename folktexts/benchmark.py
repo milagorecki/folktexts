@@ -96,6 +96,13 @@ class BenchmarkConfig:
         `{"column_name": "value"}`.
     seed : int, optional
         Random seed -- to set for reproducibility.
+    generation_seed : int, optional
+        Seed for the model's text-generation sampling only (same input ->
+        different generations across seeds). Fed to every backend's generation
+        RNG (transformers ``torch.manual_seed``, vLLM ``SamplingParams.seed``,
+        web-API request ``seed``), independent of the global ``seed`` that
+        governs data/model init. Vary it to resample generations on identical
+        rows and model. Default is DEFAULT_SEED.
     temperature : float | None, optional
         Sampling-temperature override for text-generation (chain-of-thought)
         prompting. When None (default), text generation uses greedy decoding (0.0),
@@ -126,6 +133,7 @@ class BenchmarkConfig:
     feature_subset: list[str] | None = None
     population_filter: dict | None = None
     seed: int = DEFAULT_SEED
+    generation_seed: int = DEFAULT_SEED
     temperature: float | None = None
     impute_failed_as_uniform: bool = False
     prompt_variation: dict | None = None
@@ -1161,6 +1169,12 @@ class Benchmark:
             "reasoning": config.reasoning,
             "prompt_config": prompt_config,  # may be patched (e.g. Gemma drops system_prompt)
             "temperature": config.temperature,
+            "seed": config.seed,
+            # Generation-only seed: drives the sampling RNG in every backend
+            # (transformers `torch.manual_seed`, vLLM `SamplingParams.seed`,
+            # web-API request `seed`), decoupled from the global `seed` that
+            # governs data/model init. Same input -> different generations.
+            "generation_seed": config.generation_seed,
         }
         if config.batch_size is not None:
             llm_inference_kwargs["batch_size"] = config.batch_size

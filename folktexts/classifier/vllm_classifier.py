@@ -291,7 +291,7 @@ class VLLMClassifier(LLMClassifier):
         sampling_params = SamplingParams(
             temperature=self._resolve_temperature(question),
             max_tokens=self.max_new_tokens,
-            seed=self.seed,
+            seed=self.generation_seed,
         )
         raw_generations = self._llm.generate(formatted_prompts_batch, sampling_params)
 
@@ -396,7 +396,7 @@ class VLLMClassifier(LLMClassifier):
             max_tokens=question.num_forward_passes,
             logprobs=_TOPK_LOGPROBS,
             allowed_token_ids=digit_token_ids,
-            seed=self.seed,
+            seed=self.generation_seed,
         )
 
         return sampling_params
@@ -419,7 +419,7 @@ class VLLMClassifier(LLMClassifier):
             temperature=0.0,
             max_tokens=question.num_forward_passes,
             logprobs=_TOPK_LOGPROBS,
-            seed=self.seed,
+            seed=self.generation_seed,
         )
         return sampling_params
 
