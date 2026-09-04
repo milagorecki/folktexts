@@ -58,14 +58,13 @@ brfss_hypertension_qa = MultipleChoiceQA(
 brfss_hypertension_numeric_qa = DirectNumericQA(
     column=brfss_hypertension_threshold.apply_to_column_name("HIGH_BLOOD_PRESS"),
     text=(
-        "What is the probability that this person has ever been told"
-        " they have high blood pressure by a health professional?"
+        "What is the probability that this person has ever been told they have high blood pressure by a health professional?"
     ),
 )
 
 tableshift_hypertension_target_col = ColumnToText(
     name=brfss_hypertension_threshold.apply_to_column_name("HIGH_BLOOD_PRESS"),
-    short_description="prior diagnosis of diabetes",
+    short_description="prior diagnosis of high blood pressure",
     value_map={
         0.0: "No",
         1.0: "Yes",
@@ -159,10 +158,10 @@ tableshift_cvdstrk3 = ColumnToText(
 
 tableshift_michd = ColumnToText(
     name="MICHD",
-    short_description="previous event of a myocardial infarction (MI) or coronary heart disease (CHD)",
+    short_description="history of myocardial infarction (MI) or coronary heart disease (CHD)",
     value_map={
-        1.0: "Yes, reported myocardial infarction or coronary heart disease.",
-        2.0: "No, did not report myocardial infarction or coronary heart disease.",
+        1.0: "Yes",
+        2.0: "No",
     },  # TODO: Check if mapping should be changed to 0,1
     missing_value_fill="N/A (missing)",
 )
@@ -210,7 +209,7 @@ tableshift_totinda = ColumnToText(
     name="TOTINDA",
     short_description="leisure-time physical activity in the past 30 days",
     value_map={
-        1.0: "Yes, had physical activity or exercise during the past 30 days other than regular job.",
+        1.0: "Yes, had physical activity or exercise during the past 30 days other than regular job",
         2.0: "No physical activity or exercise during the past 30 days other than regular job",
     },
     missing_value_fill="N/A (missing)",
@@ -309,6 +308,7 @@ tableshift_iyear = ColumnToText(
 def parse_state(val):
     state_dict = {
         1.0: "Alabama",
+        2.0: "Alaska",
         4.0: "Arizona",
         5.0: "Arkansas",
         6.0: "California",
@@ -360,6 +360,7 @@ def parse_state(val):
         56.0: "Wyoming",
         66.0: "Guam",
         72.0: "Puerto Rico",
+        78.0: "U.S. Virgin Islands",
     }
     if val not in state_dict.keys():
         logging.debug("Could not find FIPS code for state in dictionary.")
@@ -449,7 +450,7 @@ brfss_diabetes_numeric_qa = DirectNumericQA(
 
 tableshift_diabetes_target_col = ColumnToText(
     name=brfss_diabetes_threshold.apply_to_column_name("DIABETES"),
-    short_description="ever told to have diabetes",
+    short_description="prior diagnosis of diabetes",
     value_map={
         0: "No",
         1: "Yes",
@@ -461,24 +462,27 @@ tableshift_diabetes_target_col = ColumnToText(
 
 def parse_age_group(val):
     age_dict = {
-        1.0: "18-24",
-        2.0: "25-29",
-        3.0: "30-34",
-        4.0: "35-39",
-        5.0: "40-44",
-        6.0: "45-49",
-        7.0: "50-54",
-        8.0: "55-59",
-        9.0: "60-61",
-        10.0: "62-64",
-        11.0: "65-66",
-        12.0: "67-69",
-        13.0: "70-74",
-        14.0: "75-79",
-        15.0: "80-84",
-        16.0: "85 or",
+        1.0: "18-24 years old",
+        2.0: "25-29 years old",
+        3.0: "30-34 years old",
+        4.0: "35-39 years old",
+        5.0: "40-44 years old",
+        6.0: "45-49 years old",
+        7.0: "50-54 years old",
+        8.0: "55-59 years old",
+        9.0: "60-64 years old",
+        10.0: "65-69 years old",
+        11.0: "70-74 years old",
+        12.0: "75-79 years old",
+        13.0: "80 years or older",  # open-ended bucket, so it does not take the "<band> years old" form
     }
-    return f"{age_dict[val]} years old"
+    # Code 14 is 'Don't know/Refused/Missing'; tableshift drops it as an na_value, but guard anyway
+    # so an unexpected code renders as N/A instead of raising, matching `parse_state`.
+    if val not in age_dict.keys():
+        logging.debug("Could not find age group code in dictionary.")
+        return "N/A"
+    else:
+        return age_dict[val]
 
 
 tableshift_age_group = ColumnToText(
@@ -514,14 +518,11 @@ tableshift_chcocncr = ColumnToText(
 
 
 logging.debug(
-    "POVERTY columns gets overwritten in tableshift preprocessing using INCOME "
-    "and a slightly lower threshold of $25,000."
+    "POVERTY columns gets overwritten in tableshift preprocessing using INCOME and a slightly lower threshold of $25,000."
 )
 tableshift_poverty = ColumnToText(
     name="POVERTY",
-    short_description=(
-        "binary indicator of whether individual's income falls below 2021 poverty guideline for a family of four"
-    ),
+    short_description="individual's income falls below 2021 poverty guideline for a family of four",
     value_map={
         1: "Yes",
         0: "No",

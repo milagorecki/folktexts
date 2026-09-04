@@ -202,5 +202,5 @@ if _TABLESHIFT_AVAILABLE:
     tableshift_brfss_hypertension_task = TableshiftBRFSSTaskMetadata.make_tableshift_task(
         name="BRFSS_Blood_Pressure",
         target_threshold=brfss_hypertension_threshold,
-        description="predict whether an individual has ever been told they have diabetes",
+        description="predict whether an individual has ever been told they have high blood pressure",
     )
